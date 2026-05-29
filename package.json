@@ -1,0 +1,38 @@
+{
+  "name": "ai-journey-dj",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TIDAL-first AI journey DJ for Tesla road trips.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0",
+    "npm": ">=10.0.0"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n api,web -c cyan,green \"npm run dev -w @ai-journey-dj/api\" \"npm run dev -w @ai-journey-dj/web\"",
+    "dev:clean": "node scripts/free-dev-ports.mjs && npm run dev",
+    "free-ports": "node scripts/free-dev-ports.mjs",
+    "build": "npm run build --workspaces",
+    "typecheck": "npm run typecheck --workspaces",
+    "test": "npm --workspaces --if-present run test",
+    "test:e2e": "npm run test:e2e -w @ai-journey-dj/web",
+    "test:watch": "npm --workspaces --if-present run test:watch",
+    "lint": "eslint .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@types/node": "^25.0.0",
+    "concurrently": "^9.2.1",
+    "eslint": "^9.39.1",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.47.0",
+    "vitest": "^4.0.14"
+  }
+}

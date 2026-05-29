@@ -1,0 +1,37 @@
+{
+  "name": "@ai-journey-dj/api",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsup src/index.ts --format esm --target node22 --sourcemap",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "lint": "eslint src test --ext .ts",
+    "telemetry:sim": "tsx scripts/telemetry-simulator.ts"
+  },
+  "dependencies": {
+    "@ai-journey-dj/core": "0.1.0",
+    "@ai-journey-dj/crypto": "0.1.0",
+    "@ai-journey-dj/open-music": "0.1.0",
+    "@ai-journey-dj/recommendation": "0.1.0",
+    "@ai-journey-dj/spotify": "0.1.0",
+    "@ai-journey-dj/telemetry": "0.1.0",
+    "@ai-journey-dj/tidal": "0.1.0",
+    "@fastify/cors": "^11.1.0",
+    "@fastify/sensible": "^6.0.3",
+    "dotenv": "^17.4.2",
+    "fastify": "^5.6.2",
+    "kafkajs": "^2.2.4",
+    "tsx": "^4.21.0",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.14"
+  }
+}

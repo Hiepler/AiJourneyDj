@@ -1,0 +1,16 @@
+node_modules/
+dist/
+**/dist/
+coverage/
+data/
+.env
+.env.local
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
+.vite/
+.playwright-cli/
+output/
+playwright-report/
+test-results/
