@@ -167,3 +167,27 @@ export function clampConfidence(value: number): number {
   if (Number.isNaN(value)) return 0;
   return Math.max(0, Math.min(1, value));
 }
+
+const VERSION_QUALIFIER = /\b(live|remaster(?:ed)?|extended|radio edit|mono|stereo|deluxe|acoustic|version|intro)\b/i;
+
+/**
+ * Reduces a track title to its "base song" form for de-duplication: drops bracketed segments
+ * ((...) / [...]) and a trailing version qualifier after " - " or " / " (Live, Remaster, Extended,
+ * Acoustic, …). Remixes and numbered parts are intentionally preserved as distinct songs.
+ */
+export function normalizeBaseTitle(title: string): string {
+  let base = title.replace(/\([^)]*\)/g, " ").replace(/\[[^\]]*\]/g, " ");
+  const separator = base.match(/\s[-/]\s/);
+  if (separator && separator.index !== undefined) {
+    const tail = base.slice(separator.index);
+    if (VERSION_QUALIFIER.test(tail)) {
+      base = base.slice(0, separator.index);
+    }
+  }
+  return normalizeText(base);
+}
+
+/** Journey-scoped identity for a song: normalized artist + base title. Used to prevent repeats. */
+export function songKey(artist: string, title: string): string {
+  return `${normalizeText(artist)}::${normalizeBaseTitle(title)}`;
+}
