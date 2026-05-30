@@ -429,7 +429,7 @@ export class JourneyService {
       );
       const newQueueTracks = newQueueIds
         .map((id) => stored.find((track) => track.id === id))
-        .filter((track): track is ResolvedTrack & { id: string; addedToPlaylist: boolean } => Boolean(track));
+        .filter((track): track is ResolvedTrack & { id: string; addedToPlaylist: boolean; savedToPlaylist: boolean } => Boolean(track));
 
       if (effectiveDeviceId) {
         // Single source of truth: play the exact previous track and reset Spotify's context to our
@@ -638,7 +638,7 @@ export class JourneyService {
 
     const currentQueued = (session?.queuedTrackIds ?? [])
       .map((id) => stored.find((track) => track.id === id))
-      .filter((track): track is ResolvedTrack & { id: string; addedToPlaylist: boolean } => Boolean(track));
+      .filter((track): track is ResolvedTrack & { id: string; addedToPlaylist: boolean; savedToPlaylist: boolean } => Boolean(track));
     const needed = Math.max(0, 5 - currentQueued.length);
     const selected = queueTracksForBuffer(stored, {
       activeProviderTrackId: activeTrack?.providerTrackId,
@@ -736,16 +736,16 @@ export class JourneyService {
   }
 
   private pickSpotifyPlaybackTracks(
-    stored: Array<ResolvedTrack & { id: string; addedToPlaylist: boolean }>,
+    stored: Array<ResolvedTrack & { id: string; addedToPlaylist: boolean; savedToPlaylist: boolean }>,
     session?: PlaybackSession
   ): {
-    activeTrack?: ResolvedTrack & { id: string; addedToPlaylist: boolean };
-    queueTracks: Array<ResolvedTrack & { id: string; addedToPlaylist: boolean }>;
+    activeTrack?: ResolvedTrack & { id: string; addedToPlaylist: boolean; savedToPlaylist: boolean };
+    queueTracks: Array<ResolvedTrack & { id: string; addedToPlaylist: boolean; savedToPlaylist: boolean }>;
     queuedTrackIds: string[];
   } {
     const queued = (session?.queuedTrackIds ?? [])
       .map((id) => stored.find((track) => track.id === id))
-      .filter((track): track is ResolvedTrack & { id: string; addedToPlaylist: boolean } => Boolean(track));
+      .filter((track): track is ResolvedTrack & { id: string; addedToPlaylist: boolean; savedToPlaylist: boolean } => Boolean(track));
 
     if (session?.activeTrack) {
       const active = stored.find((track) => track.id === session.activeTrack?.id);
