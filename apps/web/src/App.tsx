@@ -31,6 +31,8 @@ import {
   type SpotifyPlayerInstance,
   type SpotifySdkStatus
 } from "./spotifyPlayer.js";
+import { MOOD_PRESETS, moodPromptFor } from "./lib/moods.js";
+import { buildContextPills } from "./lib/driveContext.js";
 
 const passengerModes = ["solo", "couple", "family", "friends"];
 
@@ -50,9 +52,9 @@ function phaseMeta(phase?: string) {
 // Familiarity↔discovery mix: discrete, deliberate taps (re-curation costs AI tokens, so no
 // continuous slider). Each step maps to the per-journey tasteWeight (0..1).
 const VIBE_MIX: { key: string; label: string; weight: number; Icon: typeof Navigation }[] = [
-  { key: "familiar", label: "Vertraut", weight: 0.25, Icon: Heart },
-  { key: "balanced", label: "Ausgewogen", weight: 0.5, Icon: Scale },
-  { key: "discovery", label: "Entdeckung", weight: 0.75, Icon: Compass }
+  { key: "familiar", label: "Familiar", weight: 0.25, Icon: Heart },
+  { key: "balanced", label: "Balanced", weight: 0.5, Icon: Scale },
+  { key: "discovery", label: "Discover", weight: 0.75, Icon: Compass }
 ];
 
 const DEFAULT_TASTE_WEIGHT = 0.4;
@@ -77,7 +79,7 @@ export function App() {
   const [activeJourneyId, setActiveJourneyId] = useState<string>();
   const [detail, setDetail] = useState<JourneyDetail>();
   const [destination, setDestination] = useState("Lago di Garda");
-  const [userPrompt, setUserPrompt] = useState("cinematic golden-hour drive, focused but emotional");
+  const [selectedMood, setSelectedMood] = useState(MOOD_PRESETS[0].key);
   const [passengerMode, setPassengerMode] = useState("couple");
   const [spotifyStatus, setSpotifyStatus] = useState<SpotifySdkStatus>("idle");
   const [spotifyDeviceId, setSpotifyDeviceId] = useState<string>();
@@ -129,6 +131,18 @@ export function App() {
     const queued = new Set(queuedIds);
     return detail.tracks.filter((track) => queued.has(track.id));
   }, [detail, queuedIds]);
+  const recentDestinations = useMemo(() => {
+    const seen = new Set<string>();
+    const places: string[] = [];
+    for (const journey of history) {
+      if (journey.destination && !seen.has(journey.destination)) {
+        seen.add(journey.destination);
+        places.push(journey.destination);
+      }
+      if (places.length === 4) break;
+    }
+    return places;
+  }, [history]);
   const displayTracks = bufferTracks.length > 0 ? bufferTracks : (detail?.tracks ?? []).slice(0, 8);
   const bufferCount = queuedIds.length > 0 ? queuedIds.length : displayTracks.length;
   const activeTrack = detail?.playbackSession?.activeTrack;
@@ -217,7 +231,7 @@ export function App() {
       const deviceId = await ensureSpotifyDevice();
       const journey = await api.startJourney({
         destination,
-        userPrompt,
+        userPrompt: moodPromptFor(selectedMood),
         passengerMode,
         provider: "spotify",
         deviceId
@@ -389,7 +403,7 @@ export function App() {
     try {
       const journey = await api.startJourney({
         destination,
-        userPrompt,
+        userPrompt: moodPromptFor(selectedMood),
         passengerMode,
         provider: "tidal"
       });
@@ -432,6 +446,7 @@ export function App() {
   const currentPhase = phaseMeta(detail?.journey.phase);
   const PhaseIcon = currentPhase.Icon;
   const activeVibe = nearestVibe(detail?.journey.tasteWeight);
+  const contextPills = buildContextPills(detail?.context);
   const demo = Boolean(health?.spotifyMock);
   const playing = isPaused === undefined ? isPlayingInBrowser : !isPaused;
   const nowLabel = activeTrack ? (playing ? "Now playing" : "Paused") : "Up next";
@@ -505,10 +520,42 @@ export function App() {
                 value={destination}
               />
             </label>
-            <label className="field">
-              <span>Mood &amp; direction</span>
-              <textarea onChange={(event) => setUserPrompt(event.target.value)} rows={2} value={userPrompt} />
-            </label>
+            {recentDestinations.length > 0 ? (
+              <div className="quick-picks" aria-label="Recent destinations">
+                {recentDestinations.map((place) => (
+                  <button
+                    className={`quick-pick${place === destination ? " on" : ""}`}
+                    key={place}
+                    onClick={() => setDestination(place)}
+                    type="button"
+                  >
+                    <MapPin size={13} /> {place}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+
+            <div className="field">
+              <span>Mood</span>
+              <div className="mood-grid" role="group" aria-label="Pick a mood">
+                {MOOD_PRESETS.map((preset) => {
+                  const Icon = preset.Icon;
+                  const isActive = preset.key === selectedMood;
+                  return (
+                    <button
+                      aria-pressed={isActive}
+                      className={`mood${isActive ? " on" : ""}`}
+                      key={preset.key}
+                      onClick={() => setSelectedMood(preset.key)}
+                      type="button"
+                    >
+                      <Icon size={20} />
+                      <span>{preset.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
 
             <div className="segments">
               {passengerModes.map((mode) => (
@@ -576,6 +623,17 @@ export function App() {
                   <MapPin size={14} /> {detail?.journey.destination}
                 </span>
               </div>
+
+              {contextPills.length > 0 ? (
+                <div className="context-strip" aria-label="Live drive context">
+                  {contextPills.map((pill) => (
+                    <span className="ctx-pill" key={pill.key}>
+                      <span className="ctx-label">{pill.label}</span>
+                      <span className="ctx-value">{pill.value}</span>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
 
               {heroTrack ? (
                 <div className="hero">
@@ -718,7 +776,7 @@ export function App() {
                   <span className="vibe-title">
                     <Sparkles size={13} /> Vibe-Mix
                   </span>
-                  <span className="vibe-sub">Vertraut ↔ Entdeckung</span>
+                  <span className="vibe-sub">Familiar ↔ Discover</span>
                 </div>
                 <div className="vibe-segments" role="group">
                   {VIBE_MIX.map((entry) => {
@@ -741,6 +799,11 @@ export function App() {
                     );
                   })}
                 </div>
+                {detail?.taste?.topGenres?.length ? (
+                  <p className="vibe-genres">
+                    <span>Your genres</span> {detail.taste.topGenres.slice(0, 4).join(" · ")}
+                  </p>
+                ) : null}
               </div>
             </aside>
 
@@ -748,7 +811,7 @@ export function App() {
               <div className="retuning" role="status">
                 <div className="retuning-card">
                   <span className="retuning-orb" aria-hidden="true" />
-                  <span className="retuning-label">{vibeTuning ? "Mix anpassen" : "Re-tuning the vibe"}</span>
+                  <span className="retuning-label">{vibeTuning ? "Adjusting mix" : "Re-tuning the vibe"}</span>
                   <strong className="retuning-phase">{vibeTuning ?? phaseMeta(retuningPhase).label}</strong>
                 </div>
               </div>
