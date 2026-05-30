@@ -25,7 +25,12 @@ describe("buildContextPills", () => {
     });
     expect(pills.map((pill) => pill.key)).toEqual(["phase", "tempo", "eta", "weather", "region"]);
     expect(pills.find((pill) => pill.key === "tempo")?.value).toBe("Highway");
-    expect(pills.find((pill) => pill.key === "eta")?.value).toMatch(/75/);
+    expect(pills.find((pill) => pill.key === "eta")?.value).toBe("1 h 15 min");
     expect(pills.find((pill) => pill.key === "weather")?.value).toBe("Warm");
+  });
+
+  it("formats a sub-hour eta as minutes", () => {
+    const pills = buildContextPills({ phase: "departure", etaMinutes: 45, coarseRegion: "X" });
+    expect(pills.find((pill) => pill.key === "eta")?.value).toBe("45 min");
   });
 });
