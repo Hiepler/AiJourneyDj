@@ -336,8 +336,14 @@ export class JourneyService {
   async skipSpotifyTrack(
     journeyId: string,
     direction: "next" | "previous",
-    deviceId?: string
+    deviceId?: string,
+    options: { clientControlled?: boolean } = {}
   ): Promise<PlaybackSession> {
+    // When the browser Web Playback SDK already advanced the track client-side, the backend must
+    // NOT also command Spotify — a second (relative) skip double-advances the player and desyncs
+    // what plays from what the queue shows. The backend then only mirrors the move in bookkeeping.
+    // Without a client SDK player (clientControlled false), the backend stays authoritative.
+    const clientControlled = options.clientControlled === true;
     const journey = this.getJourneyOrThrow(journeyId);
     if (journey.provider !== "spotify") {
       throw new Error("Track skip is only supported for Spotify journeys.");
@@ -380,7 +386,7 @@ export class JourneyService {
       const newQueue = queueTracks.slice(1);
       const newPlayed = activeTrack?.id ? [...playedIds, activeTrack.id] : playedIds;
 
-      if (effectiveDeviceId && newActive) {
+      if (effectiveDeviceId && newActive && !clientControlled) {
         // Authoritative skip: tell Spotify to play THIS exact track (+ the rest as context),
         // instead of a relative skipToNext that trusts Spotify's own queue position. This keeps
         // the actually-played track identical to what the web app shows.
@@ -431,7 +437,7 @@ export class JourneyService {
         .map((id) => stored.find((track) => track.id === id))
         .filter((track): track is ResolvedTrack & { id: string; addedToPlaylist: boolean } => Boolean(track));
 
-      if (effectiveDeviceId) {
+      if (effectiveDeviceId && !clientControlled) {
         // Authoritative skip-back: play the exact previous track (+ rest as context) rather than
         // a relative skipToPrevious, so the played track matches what the web app shows.
         const applied = await this.syncSpotifyPlayback({

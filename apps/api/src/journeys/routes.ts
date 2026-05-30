@@ -120,10 +120,13 @@ export async function registerJourneyRoutes(
     const payload = z
       .object({
         direction: z.enum(["next", "previous"]),
-        deviceId: z.string().min(1).optional()
+        deviceId: z.string().min(1).optional(),
+        clientControlled: z.boolean().optional()
       })
       .parse(request.body);
-    return service.skipSpotifyTrack(id, payload.direction, payload.deviceId);
+    return service.skipSpotifyTrack(id, payload.direction, payload.deviceId, {
+      clientControlled: payload.clientControlled
+    });
   });
 
   app.post("/journeys/:id/playback/device", async (request) => {

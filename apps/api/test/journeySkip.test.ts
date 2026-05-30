@@ -115,6 +115,32 @@ describe("spotify track skip", () => {
     expect(after.queuedTrackIds[0]).not.toBe(nextId);
   });
 
+  it("does not issue a competing transport command when the client SDK already advanced", async () => {
+    const adapter = new SkipSpotifyAdapter();
+    const { service, store } = buildService(adapter);
+
+    const journey = await service.startJourney({
+      destination: "Dijon",
+      userPrompt: "road trip",
+      passengerMode: "solo",
+      provider: "spotify",
+      deviceId: "web-device"
+    });
+
+    const before = store.getPlaybackSession(journey.id);
+    const activeId = before?.activeTrack?.id;
+    const nextId = before?.queuedTrackIds[0];
+
+    adapter.startCalls.length = 0;
+    // clientControlled => the browser SDK player already advanced; the backend must only update
+    // bookkeeping and NOT re-command Spotify (a second skip is what desyncs play vs. preview).
+    const after = await service.skipSpotifyTrack(journey.id, "next", "web-device", { clientControlled: true });
+
+    expect(adapter.startCalls.length).toBe(0);
+    expect(after.activeTrack?.id).toBe(nextId);
+    expect(after.playedTrackIds).toContain(activeId);
+  });
+
   it("restores the previous track from journey history", async () => {
     const adapter = new SkipSpotifyAdapter();
     const { service, store } = buildService(adapter);

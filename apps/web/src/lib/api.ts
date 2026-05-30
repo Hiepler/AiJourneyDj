@@ -165,7 +165,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload)
     }),
-  skipTrack: (id: string, payload: { direction: "next" | "previous"; deviceId?: string }) =>
+  skipTrack: (
+    id: string,
+    payload: { direction: "next" | "previous"; deviceId?: string; clientControlled?: boolean }
+  ) =>
     request<NonNullable<JourneyDetail["playbackSession"]>>(`/journeys/${id}/playback/skip`, {
       method: "POST",
       body: JSON.stringify(payload)
