@@ -495,7 +495,33 @@ export class JourneyService {
     const journeyId = journey.id;
     const telemetry = this.store.latestTelemetry(journeyId);
     const context = contextFromJourney(journey, telemetry);
-    const candidates = await this.generateAndStoreCandidates(journeyId, context, 8);
+
+    // Cost control: only the LLM lenses cost tokens. Run them when the vibe actually changes;
+    // for routine top-ups, reuse the already-generated candidate pool if it can refill the buffer.
+    const vibeChangingReasons = new Set(["initial", "phase-change", "phase-override", "manual", "recovery"]);
+    const priorSession = this.store.getPlaybackSession(journeyId);
+    const inUseIds = new Set([...(priorSession?.queuedTrackIds ?? []), ...(priorSession?.playedTrackIds ?? [])]);
+    const unusedPool = this.store
+      .listResolvedTracks(journeyId)
+      .filter(
+        (track) =>
+          track.provider === "spotify" && track.providerUri && track.isPlayable !== false && !inUseIds.has(track.id)
+      );
+    const neededNow = Math.max(0, 5 - (priorSession?.queuedTrackIds?.length ?? 0));
+    const mustGenerate = vibeChangingReasons.has(reason) || unusedPool.length < neededNow;
+
+    let candidates: SongCandidate[] = [];
+    if (mustGenerate) {
+      candidates = await this.generateAndStoreCandidates(journeyId, context, 8);
+    } else {
+      this.logger.info({ journeyId, reason, poolSize: unusedPool.length, needed: neededNow }, "scout.pool_reuse");
+      this.store.audit(
+        journeyId,
+        "recommendation.pool_reuse",
+        `Reused ${unusedPool.length} already-generated candidates; skipped AI generation.`,
+        { reason }
+      );
+    }
     const tokenStartedAt = Date.now();
     const accessToken = await this.spotifyAuth.getAccessToken();
     this.logger.info({ journeyId, ms: Date.now() - tokenStartedAt }, "spotify.token.done");
@@ -503,7 +529,12 @@ export class JourneyService {
       accessToken,
       market: this.config.SPOTIFY_MARKET,
       searchTimeoutMs: 8_000,
-      targetResolveCount: 5
+      targetResolveCount: 5,
+      // Persistent cache: each song is searched on Spotify at most once across the whole drive.
+      cache: {
+        get: (key) => this.store.getCachedSpotifySearch(key),
+        set: (key, value) => this.store.saveCachedSpotifySearch(key, value)
+      }
     });
     const resolveStartedAt = Date.now();
     const resolved = await resolver.resolveCandidates(candidates);

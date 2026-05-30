@@ -1,15 +1,18 @@
 import { describe, expect, it } from "vitest";
 
-import type { JourneyContext, ResolvedTrack } from "@ai-journey-dj/core";
+import type { JourneyContext, ResolvedTrack, SongCandidate } from "@ai-journey-dj/core";
 
 import {
   assertJourneyContextIsPrivacySafe,
   assertPromptIsPrivacySafe,
+  balanceCandidates,
   buildJourneyPrompt,
+  buildMusicalBrief,
   createSongScout,
   extractXaiResponseText,
   fallbackCandidates,
   GeminiSongScout,
+  MultiLensSongScout,
   parseCandidateJson,
   repairJsonString,
   resolveXaiModel,
@@ -223,5 +226,65 @@ describe("recommendation", () => {
       "track-4",
       "track-5"
     ]);
+  });
+
+  it("buildMusicalBrief maps telemetry to energy/era/genre targets", () => {
+    const fast = buildMusicalBrief(context); // highway + golden_hour, daytime
+    expect(fast.targetEnergy).toBeGreaterThan(0.6);
+    expect(fast.intensity).toBe("cinematic");
+    expect(fast.genres.length).toBeGreaterThan(2);
+    expect(fast.regionHint).toBe("Northern Italy");
+
+    const calm = buildMusicalBrief({
+      ...context,
+      speedBucket: "parked",
+      phase: "rest",
+      localTimeIso: "2026-05-28T23:30:00.000Z"
+    });
+    expect(calm.targetEnergy).toBeLessThan(fast.targetEnergy);
+    expect(calm.intensity).toBe("winding-down");
+  });
+
+  it("balanceCandidates dedupes and spreads across decades/genres/artists", () => {
+    const brief = buildMusicalBrief(context);
+    const cands: SongCandidate[] = [
+      { artist: "A", title: "1", year: 1985, genre: "rock", reason: "", source: "gemini", confidence: 0.8 },
+      { artist: "A", title: "1", year: 1985, genre: "rock", reason: "", source: "gemini", confidence: 0.8 }, // dup
+      { artist: "B", title: "2", year: 1986, genre: "rock", reason: "", source: "gemini", confidence: 0.7 },
+      { artist: "C", title: "3", year: 2024, genre: "electronic", reason: "", source: "gemini", confidence: 0.6 },
+      { artist: "D", title: "4", year: 1995, genre: "pop", reason: "", source: "gemini", confidence: 0.5 }
+    ];
+    const out = balanceCandidates(cands, brief, 3);
+    expect(out).toHaveLength(3);
+    expect(out.filter((c) => c.artist === "A")).toHaveLength(1); // deduped
+    const decades = new Set(out.map((c) => Math.floor((c.year ?? 0) / 10) * 10));
+    expect(decades.size).toBeGreaterThanOrEqual(2); // spread across eras, not all 1980s
+  });
+
+  it("MultiLensSongScout fans out lenses and balances; falls back in mock mode", async () => {
+    const scout = new MultiLensSongScout({
+      apiKey: "k",
+      baseUrl: "https://gemini.test/v1beta",
+      model: "gemini-3.5-flash",
+      mock: false,
+      perLensCount: 2,
+      lensRunner: async (lens) => [
+        {
+          artist: `${lens.key}-artist`,
+          title: "t",
+          year: lens.key === "classics" ? 1979 : 2025,
+          genre: lens.key,
+          reason: "",
+          source: "gemini",
+          confidence: 0.8
+        }
+      ]
+    });
+    const out = await scout.generateCandidates(context, 4);
+    expect(out.length).toBeGreaterThan(1);
+    expect(out.length).toBeLessThanOrEqual(4);
+
+    const mockScout = new MultiLensSongScout({ apiKey: "k", baseUrl: "x", model: "m", mock: true });
+    expect(await mockScout.generateCandidates(context, 5)).toHaveLength(5);
   });
 });

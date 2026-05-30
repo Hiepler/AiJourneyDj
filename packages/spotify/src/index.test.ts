@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { SongCandidate } from "@ai-journey-dj/core";
+import type { ResolvedTrack, SongCandidate } from "@ai-journey-dj/core";
 
 import {
   MockSpotifyAdapter,
@@ -67,6 +67,54 @@ describe("spotify resolver", () => {
       market: "DE",
       matchReason: "isrc match"
     });
+  });
+
+  it("uses the search cache to avoid re-searching the same song", async () => {
+    let searchCalls = 0;
+    const adapter: Pick<SpotifyAdapter, "searchTracks"> = {
+      searchTracks: async () => {
+        searchCalls += 1;
+        return [
+          { id: "id1", uri: "spotify:track:id1", title: "Wait", artist: "M83", isPlayable: true, market: "DE" }
+        ];
+      }
+    };
+    const store = new Map<string, ResolvedTrack | null>();
+    const cache = {
+      get: (key: string) => (store.has(key) ? store.get(key) : undefined),
+      set: (key: string, value: ResolvedTrack | null) => void store.set(key, value)
+    };
+    const resolver = new SpotifyResolver(adapter as SpotifyAdapter, { accessToken: "t", market: "DE", cache });
+
+    const first = await resolver.resolveCandidates([candidate]);
+    expect(first).toHaveLength(1);
+    expect(searchCalls).toBe(1);
+
+    const second = await resolver.resolveCandidates([candidate]);
+    expect(second).toHaveLength(1);
+    expect(second[0].providerTrackId).toBe("id1");
+    expect(searchCalls).toBe(1); // cache hit — no second Spotify search
+  });
+
+  it("negative-caches a no-match so it is not searched again", async () => {
+    let searchCalls = 0;
+    const adapter: Pick<SpotifyAdapter, "searchTracks"> = {
+      searchTracks: async () => {
+        searchCalls += 1;
+        return []; // no results -> no match
+      }
+    };
+    const store = new Map<string, ResolvedTrack | null>();
+    const cache = {
+      get: (key: string) => (store.has(key) ? store.get(key) : undefined),
+      set: (key: string, value: ResolvedTrack | null) => void store.set(key, value)
+    };
+    const resolver = new SpotifyResolver(adapter as SpotifyAdapter, { accessToken: "t", market: "DE", cache });
+
+    expect(await resolver.resolveCandidates([candidate])).toHaveLength(0);
+    expect(searchCalls).toBe(1);
+    expect(await resolver.resolveCandidates([candidate])).toHaveLength(0);
+    expect(searchCalls).toBe(1); // negative cache — no re-search
   });
 
   it("fills a five-track buffer from mock resolver output", async () => {

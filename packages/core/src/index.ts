@@ -48,6 +48,10 @@ export interface SongCandidate {
   album?: string;
   year?: number;
   isrc?: string;
+  /** Coarse genre label used for diversity balancing across the candidate set. */
+  genre?: string;
+  /** Generation lens this candidate came from (e.g. "current", "classics") — diagnostics/balancing. */
+  lens?: string;
   reason: string;
   source: "grok" | "gemini" | "fallback" | "musicbrainz" | "listenbrainz";
   confidence: number;

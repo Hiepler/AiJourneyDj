@@ -358,11 +358,22 @@ export class MockSpotifyAdapter implements SpotifyAdapter {
   }
 }
 
+/**
+ * Persistent search cache. `get` returns the cached resolved track, `null` for a cached
+ * "no match", or `undefined` when the query was never searched.
+ */
+export interface SpotifySearchCache {
+  get(key: string): ResolvedTrack | null | undefined;
+  set(key: string, value: ResolvedTrack | null): void;
+}
+
 export interface SpotifyResolverOptions {
   accessToken: string;
   market: string;
   searchTimeoutMs?: number;
   targetResolveCount?: number;
+  /** Optional persistent cache so the same song is searched on Spotify at most once. */
+  cache?: SpotifySearchCache;
   onSearch?: (event: {
     index: number;
     artist: string;
@@ -391,6 +402,17 @@ export class SpotifyResolver {
 
       const candidate = candidates[index];
       const query = candidate.isrc ? `isrc:${candidate.isrc}` : `${candidate.artist} - ${candidate.title}`;
+      const cacheKey = `${this.options.market}:${query.toLowerCase()}`;
+
+      // Cache hit (resolved track) or cached "no match" (null) -> skip the Spotify API call.
+      const cached = this.options.cache?.get(cacheKey);
+      if (cached !== undefined) {
+        if (cached) {
+          resolved.push(cached);
+        }
+        continue;
+      }
+
       const startedAt = Date.now();
       try {
         const results = await this.adapter.searchTracks({
@@ -401,21 +423,27 @@ export class SpotifyResolver {
           signal: AbortSignal.timeout(timeoutMs)
         });
         const best = bestSpotifyMatch(candidate, results);
-        if (best && best.confidence >= 0.7) {
-          resolved.push({
-            provider: "spotify",
-            providerTrackId: best.track.id,
-            providerUri: best.track.uri,
-            externalUrl: best.track.externalUrl,
-            isPlayable: best.track.isPlayable ?? true,
-            market: best.track.market ?? this.options.market,
-            albumArtUrl: best.track.albumArtUrl,
-            artist: best.track.artist,
-            title: best.track.title,
-            isrc: best.track.isrc,
-            matchConfidence: best.confidence,
-            matchReason: best.reason
-          });
+        const resolvedTrack: ResolvedTrack | null =
+          best && best.confidence >= 0.7
+            ? {
+                provider: "spotify",
+                providerTrackId: best.track.id,
+                providerUri: best.track.uri,
+                externalUrl: best.track.externalUrl,
+                isPlayable: best.track.isPlayable ?? true,
+                market: best.track.market ?? this.options.market,
+                albumArtUrl: best.track.albumArtUrl,
+                artist: best.track.artist,
+                title: best.track.title,
+                isrc: best.track.isrc,
+                matchConfidence: best.confidence,
+                matchReason: best.reason
+              }
+            : null;
+        // Cache hit and miss alike, so the same song is never searched twice over a drive.
+        this.options.cache?.set(cacheKey, resolvedTrack);
+        if (resolvedTrack) {
+          resolved.push(resolvedTrack);
         }
         this.options.onSearch?.({
           index,

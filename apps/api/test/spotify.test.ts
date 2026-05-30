@@ -41,7 +41,7 @@ describe("spotify api", () => {
       spotifyMock: true,
       spotifyPremium: true,
       songScout: {
-        provider: "gemini",
+        provider: "multilens",
         model: "gemini-3.5-flash",
         webSearch: false,
         mock: true

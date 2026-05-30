@@ -349,13 +349,14 @@ const GEMINI_SYSTEM_INSTRUCTION = [
   "Never include streaming-service data, raw GPS coordinates, VINs, or user-library references."
 ].join(" ");
 
-export type SongScoutProvider = "gemini" | "xai";
+export type SongScoutProvider = "multilens" | "gemini" | "xai";
 
 export interface SongScoutInfo {
   provider: SongScoutProvider;
   model: string;
   webSearch: boolean;
   mock: boolean;
+  lenses?: number;
 }
 
 export function createSongScout(input: {
@@ -363,10 +364,36 @@ export function createSongScout(input: {
   mock: boolean;
   gemini: GeminiSongScoutOptions;
   xai: XaiSongScoutOptions;
+  multilens?: { perLensCount?: number; maxOutputTokens?: number; lenses?: SongLens[] };
 }): { scout: SongScout; info: SongScoutInfo } {
-  const useGemini = input.provider !== "xai" && (input.mock || Boolean(input.gemini.apiKey));
+  const geminiUsable = input.mock || Boolean(input.gemini.apiKey);
 
-  if (useGemini) {
+  // Default/preferred path: telemetry-driven multi-lens engine (needs the Gemini path usable).
+  if (input.provider === "multilens" && geminiUsable) {
+    const lenses = input.multilens?.lenses ?? DEFAULT_LENSES;
+    return {
+      scout: new MultiLensSongScout({
+        apiKey: input.gemini.apiKey,
+        baseUrl: input.gemini.baseUrl,
+        model: input.gemini.model,
+        mock: input.mock,
+        requestTimeoutMs: input.gemini.requestTimeoutMs,
+        fetchImpl: input.gemini.fetchImpl,
+        lenses,
+        perLensCount: input.multilens?.perLensCount,
+        maxOutputTokens: input.multilens?.maxOutputTokens
+      }),
+      info: {
+        provider: "multilens",
+        model: input.gemini.model,
+        webSearch: !input.mock && Boolean(input.gemini.apiKey),
+        mock: input.mock,
+        lenses: lenses.length
+      }
+    };
+  }
+
+  if (input.provider !== "xai" && geminiUsable) {
     return {
       scout: new GeminiSongScout(input.gemini),
       info: {
@@ -537,6 +564,7 @@ function mapCandidateItems(
       album: typeof item.album === "string" ? item.album : undefined,
       year: typeof item.year === "number" ? item.year : undefined,
       isrc: typeof item.isrc === "string" ? item.isrc : undefined,
+      genre: typeof item.genre === "string" ? item.genre : undefined,
       reason: typeof item.reason === "string" ? item.reason : "fits the current drive context",
       source,
       confidence: clampConfidence(typeof item.confidence === "number" ? item.confidence : 0.65)
@@ -737,6 +765,270 @@ export class GeminiSongScout implements SongScout {
       throw new Error("Gemini response did not include text.");
     }
     return text;
+  }
+}
+
+// ============================================================================
+// Multi-lens engine: telemetry brief -> parallel lenses -> diversity balancing
+// ============================================================================
+
+const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
+
+export interface MusicalBrief {
+  /** 0 = calm, 1 = high-energy. Drives the per-lens prompts. */
+  targetEnergy: number;
+  intensity: string;
+  eras: string;
+  genres: string[];
+  regionHint?: string;
+  moodWords: string[];
+  destination: string;
+  userPrompt: string;
+  passengerMode: string;
+}
+
+const SPEED_ENERGY: Record<string, number> = {
+  parked: 0.3,
+  city: 0.45,
+  country: 0.6,
+  highway: 0.8,
+  unknown: 0.55
+};
+
+const PHASE_PROFILE: Record<string, { delta: number; intensity: string; mood: string[] }> = {
+  departure: { delta: 0.05, intensity: "building", mood: ["anticipation", "fresh start"] },
+  cruise: { delta: 0, intensity: "steady", mood: ["momentum", "open road"] },
+  golden_hour: { delta: -0.05, intensity: "cinematic", mood: ["warm", "emotional", "expansive"] },
+  focus: { delta: -0.05, intensity: "focused", mood: ["steady", "low-distraction"] },
+  arrival: { delta: -0.15, intensity: "resolving", mood: ["uplift", "arrival"] },
+  rest: { delta: -0.25, intensity: "winding-down", mood: ["calm", "mellow"] }
+};
+
+function deriveGenres(targetEnergy: number): string[] {
+  const broad = ["indie", "electronic", "rock", "soul/funk", "pop", "hip-hop", "folk/acoustic", "ambient/cinematic"];
+  if (targetEnergy >= 0.7) {
+    return ["electronic", "rock", "hip-hop", "pop", "indie", "funk"];
+  }
+  if (targetEnergy <= 0.4) {
+    return ["ambient/cinematic", "folk/acoustic", "soul", "indie", "downtempo electronic", "classic"];
+  }
+  return broad;
+}
+
+/** Deterministic mapping from live telemetry to musical targets — the dynamic core, zero tokens. */
+export function buildMusicalBrief(context: JourneyContext): MusicalBrief {
+  const baseEnergy = SPEED_ENERGY[context.speedBucket ?? "unknown"] ?? 0.55;
+  const profile = PHASE_PROFILE[context.phase ?? "departure"] ?? PHASE_PROFILE.departure;
+  const hour = context.localTimeIso ? new Date(context.localTimeIso).getHours() : 12;
+  const isNight = Number.isFinite(hour) && (hour >= 22 || hour < 6);
+  const targetEnergy = clamp01(baseEnergy + profile.delta + (isNight ? -0.1 : 0));
+
+  const moodWords = [...profile.mood];
+  if (context.temperatureBucket === "warm" || context.temperatureBucket === "hot") moodWords.push("sunlit");
+  if (context.temperatureBucket === "cold") moodWords.push("moody");
+  if (isNight) moodWords.push("nocturnal");
+
+  return {
+    targetEnergy,
+    intensity: profile.intensity,
+    eras: "1970s through current releases",
+    genres: deriveGenres(targetEnergy),
+    regionHint: context.coarseRegion || context.destination,
+    moodWords,
+    destination: context.destination,
+    userPrompt: context.userPrompt,
+    passengerMode: context.passengerMode
+  };
+}
+
+export interface SongLens {
+  key: string;
+  /** When true the lens uses Google Search grounding (current data); false = model knowledge. */
+  grounded: boolean;
+  instruction: string;
+}
+
+export const DEFAULT_LENSES: SongLens[] = [
+  { key: "current", grounded: true, instruction: "Focus on current, recently released or charting tracks (roughly the last 24 months)." },
+  { key: "classics", grounded: false, instruction: "Focus on timeless, iconic tracks spanning several past decades — beloved, well-known cuts." },
+  { key: "crossgenre", grounded: false, instruction: "Deliberately span diverse genres with surprising-but-fitting picks the listener may not expect." },
+  { key: "regional", grounded: true, instruction: "Favor artists connected to, or culturally evocative of, the journey's region/destination." }
+];
+
+export function buildLensPrompt(lens: SongLens, brief: MusicalBrief, count: number): string {
+  return [
+    `You are AI Journey DJ curating the "${lens.key}" portion of a road-trip set.`,
+    lens.instruction,
+    `Target energy: ${brief.targetEnergy.toFixed(2)} (0=calm, 1=high). Intensity: ${brief.intensity}. Mood: ${brief.moodWords.join(", ")}.`,
+    `Span eras (${brief.eras}) and vary genres broadly (e.g. ${brief.genres.join(", ")}).`,
+    brief.regionHint ? `Region/destination context: ${brief.regionHint}.` : "",
+    `Listener mode: ${brief.passengerMode}. Direction: "${brief.userPrompt}".`,
+    `Return ONLY JSON {"songs":[{"artist","title","year","genre","reason"}]} with exactly ${count} real, released songs.`,
+    "Vary artists; no duplicates. Keep 'reason' to one short clause tying the pick to the drive.",
+    "Never include streaming-service data, raw GPS coordinates, VINs, or user-library references."
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function decadeOf(year?: number): string {
+  return typeof year === "number" && year > 1900 ? `${Math.floor(year / 10) * 10}s` : "unknown";
+}
+
+/**
+ * Deterministic diversity selection: dedupe, then greedily pick to spread across decades,
+ * genres and artists so the set never collapses to one era/genre.
+ */
+export function balanceCandidates(candidates: SongCandidate[], _brief: MusicalBrief, count: number): SongCandidate[] {
+  const seen = new Set<string>();
+  const pool: SongCandidate[] = [];
+  for (const candidate of candidates) {
+    const key = candidate.isrc
+      ? `isrc:${candidate.isrc}`
+      : `${normalizeText(candidate.artist)}::${normalizeText(candidate.title)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    pool.push(candidate);
+  }
+
+  const selected: SongCandidate[] = [];
+  const usedDecades = new Map<string, number>();
+  const usedGenres = new Map<string, number>();
+  const usedArtists = new Map<string, number>();
+
+  while (selected.length < count && pool.length > 0) {
+    let bestIndex = 0;
+    let bestScore = -Infinity;
+    for (let i = 0; i < pool.length; i += 1) {
+      const candidate = pool[i];
+      const decade = decadeOf(candidate.year);
+      const genre = (candidate.genre ?? "unknown").toLowerCase();
+      const artist = normalizeText(candidate.artist);
+      // Lower repetition counts -> higher diversity score; confidence breaks ties.
+      const score =
+        -3 * (usedDecades.get(decade) ?? 0) -
+        3 * (usedGenres.get(genre) ?? 0) -
+        5 * (usedArtists.get(artist) ?? 0) +
+        candidate.confidence;
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = i;
+      }
+    }
+    const [picked] = pool.splice(bestIndex, 1);
+    selected.push(picked);
+    const decade = decadeOf(picked.year);
+    const genre = (picked.genre ?? "unknown").toLowerCase();
+    const artist = normalizeText(picked.artist);
+    usedDecades.set(decade, (usedDecades.get(decade) ?? 0) + 1);
+    usedGenres.set(genre, (usedGenres.get(genre) ?? 0) + 1);
+    usedArtists.set(artist, (usedArtists.get(artist) ?? 0) + 1);
+  }
+
+  return selected;
+}
+
+async function geminiRequestText(
+  url: string,
+  body: Record<string, unknown>,
+  apiKey: string,
+  timeoutMs: number,
+  fetchImpl: typeof fetch
+): Promise<string> {
+  const response = await fetchImpl(url, {
+    method: "POST",
+    signal: AbortSignal.timeout(timeoutMs),
+    headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+    body: JSON.stringify(body)
+  });
+  const responseBody = await response.text();
+  if (!response.ok) {
+    throw new Error(`Gemini request failed with ${response.status}: ${responseBody}`);
+  }
+  const text = extractGeminiText(JSON.parse(responseBody));
+  if (!text) {
+    throw new Error("Gemini response did not include text.");
+  }
+  return text;
+}
+
+export interface MultiLensSongScoutOptions {
+  apiKey?: string;
+  baseUrl: string;
+  model: string;
+  mock: boolean;
+  lenses?: SongLens[];
+  /** Songs requested per lens (cost lever — keep small). */
+  perLensCount?: number;
+  /** Output-token cap per lens call (cost lever). */
+  maxOutputTokens?: number;
+  requestTimeoutMs?: number;
+  fetchImpl?: typeof fetch;
+  /** Test seam: overrides the real Gemini call per lens. */
+  lensRunner?: (lens: SongLens, brief: MusicalBrief, count: number) => Promise<SongCandidate[]>;
+}
+
+/**
+ * Telemetry-driven, multi-lens song scout. Builds a deterministic brief, runs several lenses
+ * in parallel (current/classics/cross-genre/regional), then balances for diversity.
+ */
+export class MultiLensSongScout implements SongScout {
+  private readonly fetchImpl: typeof fetch;
+  private readonly requestTimeoutMs: number;
+  private readonly perLensCount: number;
+  private readonly maxOutputTokens: number;
+  private readonly lenses: SongLens[];
+
+  constructor(private readonly options: MultiLensSongScoutOptions) {
+    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_SCOUT_TIMEOUT_MS;
+    this.perLensCount = options.perLensCount ?? 5;
+    this.maxOutputTokens = options.maxOutputTokens ?? 2048;
+    this.lenses = options.lenses ?? DEFAULT_LENSES;
+  }
+
+  async generateCandidates(context: JourneyContext, targetCount: number): Promise<SongCandidate[]> {
+    if (this.options.mock || !this.options.apiKey) {
+      return fallbackCandidates(context, targetCount);
+    }
+
+    try {
+      assertJourneyContextIsPrivacySafe(context);
+      const brief = buildMusicalBrief(context);
+      const runner = this.options.lensRunner ?? ((lens, b, count) => this.runLens(lens, b, count));
+      const settled = await Promise.all(
+        this.lenses.map((lens) => runner(lens, brief, this.perLensCount).catch(() => [] as SongCandidate[]))
+      );
+      const all = settled.flat();
+      if (all.length === 0) {
+        return fallbackCandidates(context, targetCount);
+      }
+      const balanced = balanceCandidates(all, brief, targetCount);
+      return balanced.length > 0 ? balanced : fallbackCandidates(context, targetCount);
+    } catch {
+      return fallbackCandidates(context, targetCount);
+    }
+  }
+
+  private async runLens(lens: SongLens, brief: MusicalBrief, count: number): Promise<SongCandidate[]> {
+    const url = `${this.options.baseUrl.replace(/\/$/, "")}/models/${this.options.model}:generateContent`;
+    const body: Record<string, unknown> = {
+      systemInstruction: { parts: [{ text: GEMINI_SYSTEM_INSTRUCTION }] },
+      contents: [{ role: "user", parts: [{ text: buildLensPrompt(lens, brief, count) }] }],
+      generationConfig: {
+        temperature: 0.85,
+        maxOutputTokens: this.maxOutputTokens,
+        // Flash "thinking" otherwise eats the output budget (MAX_TOKENS with empty JSON) and bills
+        // extra tokens. Song lists need no reasoning trace — disable it: cheaper, faster, complete.
+        thinkingConfig: { thinkingBudget: 0 }
+      }
+    };
+    if (lens.grounded) {
+      body.tools = [{ google_search: {} }];
+    }
+    const text = await geminiRequestText(url, body, this.options.apiKey!, this.requestTimeoutMs, this.fetchImpl);
+    const parsed = tryParseCandidateJson(text, count, "gemini") ?? [];
+    return parsed.map((candidate) => ({ ...candidate, lens: lens.key }));
   }
 }
 

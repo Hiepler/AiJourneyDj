@@ -45,6 +45,10 @@ export async function buildApp(config: AppConfig) {
       model: config.XAI_MODEL,
       mock: config.XAI_MOCK,
       requestTimeoutMs: config.SONG_SCOUT_TIMEOUT_MS
+    },
+    multilens: {
+      perLensCount: config.SONG_SCOUT_PER_LENS,
+      maxOutputTokens: config.SONG_SCOUT_MAX_OUTPUT_TOKENS
     }
   });
   const openMusic = config.XAI_MOCK

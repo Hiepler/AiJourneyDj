@@ -150,6 +150,12 @@ export function migrate(db: Db): void {
       payload_json TEXT,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS spotify_search_cache (
+      cache_key TEXT PRIMARY KEY,
+      track_json TEXT,
+      created_at TEXT NOT NULL
+    );
   `);
 
   tryAddColumn(db, "journeys", "provider", "TEXT NOT NULL DEFAULT 'tidal'");

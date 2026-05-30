@@ -14,6 +14,9 @@ import type { Db } from "./database.js";
 
 const now = () => new Date().toISOString();
 
+/** Spotify catalog is stable; cache search resolutions for 30 days. */
+const SPOTIFY_SEARCH_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
 export interface StoredCredentials {
   accessToken: string;
   refreshToken?: string;
@@ -211,6 +214,32 @@ export class Store {
         "SELECT id FROM resolved_tracks WHERE journey_id = ? AND provider = ? AND provider_track_id = ?",
         [journeyId, track.provider, track.providerTrackId]
       )?.id ?? id
+    );
+  }
+
+  /**
+   * Persistent Spotify search cache. Returns the cached resolved track, `null` for a cached
+   * "no match", or `undefined` when never searched or the entry has expired (30-day TTL).
+   */
+  getCachedSpotifySearch(cacheKey: string): ResolvedTrack | null | undefined {
+    const row = this.db.get<{ track_json: string | null; created_at: string }>(
+      "SELECT track_json, created_at FROM spotify_search_cache WHERE cache_key = ?",
+      [cacheKey]
+    );
+    if (!row) {
+      return undefined;
+    }
+    if (Date.now() - new Date(row.created_at).getTime() > SPOTIFY_SEARCH_CACHE_TTL_MS) {
+      this.db.run("DELETE FROM spotify_search_cache WHERE cache_key = ?", [cacheKey]);
+      return undefined;
+    }
+    return row.track_json ? (JSON.parse(row.track_json) as ResolvedTrack) : null;
+  }
+
+  saveCachedSpotifySearch(cacheKey: string, track: ResolvedTrack | null): void {
+    this.db.run(
+      "INSERT OR REPLACE INTO spotify_search_cache (cache_key, track_json, created_at) VALUES (?, ?, ?)",
+      [cacheKey, track ? JSON.stringify(track) : null, now()]
     );
   }
 

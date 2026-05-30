@@ -60,13 +60,17 @@ const schema = z.object({
   XAI_MODEL: z.string().default("grok-4.3"),
   // XAI_MOCK is the shared "mock all AI providers" switch (also gates open-music enrichment).
   XAI_MOCK: envBoolean(true),
-  // Song scout provider: gemini (default) uses Gemini Flash + Google Search grounding; xai uses Grok web_search.
-  SONG_SCOUT: z.enum(["gemini", "xai"]).default("gemini"),
+  // Song scout provider: multilens (default) = telemetry-brief + parallel lenses + diversity
+  // balancing; gemini = single grounded call; xai = Grok web_search.
+  SONG_SCOUT: z.enum(["multilens", "gemini", "xai"]).default("multilens"),
   GEMINI_API_KEY: z.string().optional(),
   GEMINI_BASE_URL: z.string().url().default("https://generativelanguage.googleapis.com/v1beta"),
   GEMINI_MODEL: z.string().default("gemini-3.5-flash"),
   // Hard cap on the LLM song-scout request so a hung provider can never block a journey.
   SONG_SCOUT_TIMEOUT_MS: z.coerce.number().int().min(1000).default(30_000),
+  // Multi-lens cost levers: songs requested per lens and output-token cap per lens call.
+  SONG_SCOUT_PER_LENS: z.coerce.number().int().min(2).max(12).default(5),
+  SONG_SCOUT_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(256).max(8192).default(2048),
   MUSICBRAINZ_BASE_URL: z.string().url().default("https://musicbrainz.org/ws/2"),
   LISTENBRAINZ_BASE_URL: z.string().url().default("https://api.listenbrainz.org/1"),
   TESLA_TELEMETRY_ENABLED: envBoolean(false),
