@@ -70,8 +70,8 @@ export class Store {
   createJourney(record: JourneyRecord): void {
     this.db.run(
       `INSERT INTO journeys
-       (id, user_id, provider, destination, user_prompt, passenger_mode, phase, status, taste_weight, spotify_device_id, tidal_playlist_id, tidal_playlist_url, created_at, stopped_at)
-       VALUES (?, 'local', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, user_id, provider, destination, user_prompt, passenger_mode, phase, status, taste_weight, spotify_device_id, spotify_playlist_id, spotify_playlist_url, tidal_playlist_id, tidal_playlist_url, created_at, stopped_at)
+       VALUES (?, 'local', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         record.id,
         record.provider,
@@ -82,12 +82,22 @@ export class Store {
         record.status,
         record.tasteWeight ?? null,
         record.spotifyDeviceId,
+        record.spotifyPlaylistId ?? null,
+        record.spotifyPlaylistUrl ?? null,
         record.tidalPlaylistId,
         record.tidalPlaylistUrl,
         record.createdAtIso,
         record.stoppedAtIso
       ]
     );
+  }
+
+  updateJourneySpotifyPlaylist(journeyId: string, playlistId: string, playlistUrl?: string): void {
+    this.db.run("UPDATE journeys SET spotify_playlist_id = ?, spotify_playlist_url = ? WHERE id = ?", [
+      playlistId,
+      playlistUrl ?? null,
+      journeyId
+    ]);
   }
 
   updateJourneyTasteWeight(journeyId: string, tasteWeight: number): void {
@@ -278,7 +288,9 @@ export class Store {
     );
   }
 
-  listResolvedTracks(journeyId: string): Array<ResolvedTrack & { id: string; addedToPlaylist: boolean }> {
+  listResolvedTracks(
+    journeyId: string
+  ): Array<ResolvedTrack & { id: string; addedToPlaylist: boolean; savedToPlaylist: boolean }> {
     return this.db
       .all<any>("SELECT * FROM resolved_tracks WHERE journey_id = ? ORDER BY created_at ASC", [journeyId])
       .map((row) => ({
@@ -295,13 +307,20 @@ export class Store {
         isrc: row.isrc,
         matchConfidence: row.match_confidence,
         matchReason: row.match_reason,
-        addedToPlaylist: row.added_to_playlist === 1
+        addedToPlaylist: row.added_to_playlist === 1,
+        savedToPlaylist: row.saved_to_playlist === 1
       }));
   }
 
   markTracksAdded(ids: string[]): void {
     for (const id of ids) {
       this.db.run("UPDATE resolved_tracks SET added_to_playlist = 1 WHERE id = ?", [id]);
+    }
+  }
+
+  markTracksSavedToPlaylist(ids: string[]): void {
+    for (const id of ids) {
+      this.db.run("UPDATE resolved_tracks SET saved_to_playlist = 1 WHERE id = ?", [id]);
     }
   }
 
@@ -469,6 +488,8 @@ function mapJourney(row: any): JourneyRecord {
     status: row.status,
     tasteWeight: row.taste_weight ?? undefined,
     spotifyDeviceId: row.spotify_device_id ?? undefined,
+    spotifyPlaylistId: row.spotify_playlist_id ?? undefined,
+    spotifyPlaylistUrl: row.spotify_playlist_url ?? undefined,
     tidalPlaylistId: row.tidal_playlist_id ?? undefined,
     tidalPlaylistUrl: row.tidal_playlist_url ?? undefined,
     createdAtIso: row.created_at,

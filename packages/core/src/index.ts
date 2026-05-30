@@ -123,6 +123,8 @@ export interface JourneyRecord {
   /** Familiarity↔discovery balance for this drive, 0 = discovery … 1 = familiar. */
   tasteWeight?: number;
   spotifyDeviceId?: string;
+  spotifyPlaylistId?: string;
+  spotifyPlaylistUrl?: string;
   tidalPlaylistId?: string;
   tidalPlaylistUrl?: string;
   createdAtIso: string;

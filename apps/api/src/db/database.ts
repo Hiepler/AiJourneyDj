@@ -53,6 +53,8 @@ export function migrate(db: Db): void {
       status TEXT NOT NULL,
       taste_weight REAL,
       spotify_device_id TEXT,
+      spotify_playlist_id TEXT,
+      spotify_playlist_url TEXT,
       tidal_playlist_id TEXT,
       tidal_playlist_url TEXT,
       created_at TEXT NOT NULL,
@@ -104,6 +106,7 @@ export function migrate(db: Db): void {
       match_confidence REAL NOT NULL,
       match_reason TEXT NOT NULL,
       added_to_playlist INTEGER NOT NULL DEFAULT 0,
+      saved_to_playlist INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       UNIQUE (journey_id, provider, provider_track_id)
     );
@@ -168,6 +171,9 @@ export function migrate(db: Db): void {
   tryAddColumn(db, "journeys", "provider", "TEXT NOT NULL DEFAULT 'tidal'");
   tryAddColumn(db, "journeys", "spotify_device_id", "TEXT");
   tryAddColumn(db, "journeys", "taste_weight", "REAL");
+  tryAddColumn(db, "journeys", "spotify_playlist_id", "TEXT");
+  tryAddColumn(db, "journeys", "spotify_playlist_url", "TEXT");
+  tryAddColumn(db, "resolved_tracks", "saved_to_playlist", "INTEGER NOT NULL DEFAULT 0");
   tryAddColumn(db, "resolved_tracks", "provider_uri", "TEXT");
   tryAddColumn(db, "resolved_tracks", "external_url", "TEXT");
   tryAddColumn(db, "resolved_tracks", "is_playable", "INTEGER");
