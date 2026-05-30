@@ -11,6 +11,8 @@ export interface Journey {
   status: "active" | "stopped";
   tasteWeight?: number;
   spotifyDeviceId?: string;
+  spotifyPlaylistId?: string;
+  spotifyPlaylistUrl?: string;
   tidalPlaylistId?: string;
   tidalPlaylistUrl?: string;
   createdAtIso: string;

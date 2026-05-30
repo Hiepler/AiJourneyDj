@@ -5,6 +5,7 @@ import {
   Compass,
   Crosshair,
   Heart,
+  ListMusic,
   Loader2,
   MapPin,
   Music2,
@@ -710,6 +711,18 @@ export function App() {
                   <RefreshCw className={loading ? "spin" : undefined} size={20} />
                   <span>Refresh</span>
                 </button>
+                {detail?.journey.spotifyPlaylistUrl ? (
+                  <a
+                    className="ctrl"
+                    href={detail.journey.spotifyPlaylistUrl}
+                    rel="noreferrer"
+                    target="_blank"
+                    title="Open this journey's playlist on Spotify"
+                  >
+                    <ListMusic size={20} />
+                    <span>Playlist</span>
+                  </a>
+                ) : null}
                 <button className="ctrl danger" disabled={loading} onClick={stop} title="Stop journey" type="button">
                   <Power size={20} />
                   <span>Stop</span>
