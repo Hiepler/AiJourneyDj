@@ -141,6 +141,35 @@ describe("spotify track skip", () => {
     expect(after.playedTrackIds).toContain(activeId);
   });
 
+  it("never re-surfaces an already-played song when advancing", async () => {
+    const adapter = new SkipSpotifyAdapter();
+    const { service, store } = buildService(adapter);
+
+    // No device: skips the real playback-sync timers, so the test stays fast and deterministic
+    // while still exercising the candidate selection / consumed-set logic under test.
+    const journey = await service.startJourney({
+      destination: "Dijon",
+      userPrompt: "road trip",
+      passengerMode: "solo",
+      provider: "spotify"
+    });
+
+    const actives: string[] = [];
+    const first = store.getPlaybackSession(journey.id);
+    if (first?.activeTrack?.id) actives.push(first.activeTrack.id);
+
+    // Advance well past the initial buffer so the engine must refill at least once.
+    for (let i = 0; i < 7; i += 1) {
+      const session = await service.skipSpotifyTrack(journey.id, "next", undefined, { clientControlled: true });
+      // Force a deterministic refill before the next skip (fire-and-forget low-buffer otherwise).
+      await service.analyzeJourney(journey.id, "manual");
+      if (session.activeTrack?.id) actives.push(session.activeTrack.id);
+    }
+
+    // No song is ever heard twice in a journey.
+    expect(new Set(actives).size).toBe(actives.length);
+  });
+
   it("restores the previous track from journey history", async () => {
     const adapter = new SkipSpotifyAdapter();
     const { service, store } = buildService(adapter);

@@ -10,6 +10,7 @@ import type {
   StreamingProvider,
   TasteProfile
 } from "@ai-journey-dj/core";
+import { songKey } from "@ai-journey-dj/core";
 import { derivePhase } from "@ai-journey-dj/telemetry";
 import { TidalResolver, type TidalAdapter } from "@ai-journey-dj/tidal";
 import {
@@ -560,13 +561,29 @@ export class JourneyService {
       "recovery"
     ]);
     const priorSession = this.store.getPlaybackSession(journeyId);
-    const inUseIds = new Set([...(priorSession?.queuedTrackIds ?? []), ...(priorSession?.playedTrackIds ?? [])]);
-    const unusedPool = this.store
-      .listResolvedTracks(journeyId)
-      .filter(
-        (track) =>
-          track.provider === "spotify" && track.providerUri && track.isPlayable !== false && !inUseIds.has(track.id)
-      );
+    const storedForGate = this.store.listResolvedTracks(journeyId).filter((track) => track.provider === "spotify");
+
+    // "Consumed" = every track already surfaced this journey (active, queued, played, or ever added
+    // to the buffer). Selection and generation must never resurface these — neither the exact
+    // recording (provider id) nor another version of the same song (song key).
+    const consumedTrackIds = new Set<string>();
+    for (const id of priorSession?.queuedTrackIds ?? []) consumedTrackIds.add(id);
+    for (const id of priorSession?.playedTrackIds ?? []) consumedTrackIds.add(id);
+    if (priorSession?.activeTrack?.id) consumedTrackIds.add(priorSession.activeTrack.id);
+    for (const track of storedForGate) {
+      if (track.addedToPlaylist) consumedTrackIds.add(track.id);
+    }
+    const consumedTracks = storedForGate.filter((track) => consumedTrackIds.has(track.id));
+    const consumedProviderIds = new Set(consumedTracks.map((track) => track.providerTrackId));
+    const consumedSongKeys = new Set(consumedTracks.map((track) => songKey(track.artist, track.title)));
+
+    const unusedPool = storedForGate.filter(
+      (track) =>
+        track.providerUri &&
+        track.isPlayable !== false &&
+        !consumedTrackIds.has(track.id) &&
+        !consumedSongKeys.has(songKey(track.artist, track.title))
+    );
     const neededNow = Math.max(0, 5 - (priorSession?.queuedTrackIds?.length ?? 0));
     const mustGenerate = vibeChangingReasons.has(reason) || unusedPool.length < neededNow;
 
@@ -585,7 +602,9 @@ export class JourneyService {
         tasteProfile,
         tasteWeight: journey.tasteWeight ?? DEFAULT_TASTE_WEIGHT
       };
-      candidates = await this.generateAndStoreCandidates(journeyId, scoutContext, 8);
+      candidates = (await this.generateAndStoreCandidates(journeyId, scoutContext, 8)).filter(
+        (candidate) => !consumedSongKeys.has(songKey(candidate.artist, candidate.title))
+      );
     } else {
       this.logger.info({ journeyId, reason, poolSize: unusedPool.length, needed: neededNow }, "scout.pool_reuse");
       this.store.audit(
@@ -632,12 +651,16 @@ export class JourneyService {
     const selected = queueTracksForBuffer(stored, {
       activeProviderTrackId: activeTrack?.providerTrackId,
       alreadyQueuedProviderIds: new Set(currentQueued.map((track) => track.providerTrackId)),
+      excludeProviderTrackIds: consumedProviderIds,
+      excludeSongKeys: consumedSongKeys,
       targetBufferSize: needed
     });
 
     if (currentQueued.length + selected.length < 5) {
       this.store.audit(journeyId, "recommendation.fallback", "Spotify analysis resolved fewer than 5 future tracks; running fallback.");
-      const fallbackCandidates = await this.generateAndStoreCandidates(journeyId, scoutContext, 8);
+      const fallbackCandidates = (await this.generateAndStoreCandidates(journeyId, scoutContext, 8)).filter(
+        (candidate) => !consumedSongKeys.has(songKey(candidate.artist, candidate.title))
+      );
       const fallbackResolved = await resolver.resolveCandidates(fallbackCandidates);
       this.storeResolved(journeyId, fallbackCandidates, fallbackResolved);
       stored = this.store.listResolvedTracks(journeyId).filter((track) => track.provider === "spotify");
@@ -648,6 +671,8 @@ export class JourneyService {
       const additional = queueTracksForBuffer(stored, {
         activeProviderTrackId: activeTrack?.providerTrackId,
         alreadyQueuedProviderIds: alreadyQueued,
+        excludeProviderTrackIds: consumedProviderIds,
+        excludeSongKeys: consumedSongKeys,
         targetBufferSize: Math.max(0, 5 - currentQueued.length - selected.length)
       });
       for (const track of additional) {
