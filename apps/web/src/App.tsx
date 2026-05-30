@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   BadgeCheck,
   Coffee,
+  Compass,
   Crosshair,
+  Heart,
   Loader2,
   MapPin,
   Music2,
@@ -12,6 +14,7 @@ import {
   Power,
   RefreshCw,
   Route,
+  Scale,
   SkipBack,
   SkipForward,
   Sparkles,
@@ -44,6 +47,23 @@ function phaseMeta(phase?: string) {
   return PHASES.find((entry) => entry.key === phase) ?? PHASES[0];
 }
 
+// Familiarity↔discovery mix: discrete, deliberate taps (re-curation costs AI tokens, so no
+// continuous slider). Each step maps to the per-journey tasteWeight (0..1).
+const VIBE_MIX: { key: string; label: string; weight: number; Icon: typeof Navigation }[] = [
+  { key: "familiar", label: "Vertraut", weight: 0.25, Icon: Heart },
+  { key: "balanced", label: "Ausgewogen", weight: 0.5, Icon: Scale },
+  { key: "discovery", label: "Entdeckung", weight: 0.75, Icon: Compass }
+];
+
+const DEFAULT_TASTE_WEIGHT = 0.4;
+
+function nearestVibe(weight?: number) {
+  const target = weight ?? DEFAULT_TASTE_WEIGHT;
+  return VIBE_MIX.reduce((best, entry) =>
+    Math.abs(entry.weight - target) < Math.abs(best.weight - target) ? entry : best
+  );
+}
+
 function humanizeAnalysisError(message: string): string {
   if (/json|syntaxerror|unexpected token/i.test(message)) {
     return "Song suggestions could not be loaded. Tap Retry below — the server will try again.";
@@ -63,6 +83,7 @@ export function App() {
   const [spotifyDeviceId, setSpotifyDeviceId] = useState<string>();
   const [isPaused, setIsPaused] = useState<boolean | undefined>();
   const [retuningPhase, setRetuningPhase] = useState<string>();
+  const [vibeTuning, setVibeTuning] = useState<string>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -313,7 +334,7 @@ export function App() {
   }
 
   async function selectPhase(key: string) {
-    if (!activeJourneyId || retuningPhase) return;
+    if (!activeJourneyId || retuningPhase || vibeTuning) return;
     if (key === detail?.journey.phase) return;
     setRetuningPhase(key);
     setError(undefined);
@@ -324,6 +345,21 @@ export function App() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setRetuningPhase(undefined);
+    }
+  }
+
+  async function selectVibeMix(entry: { key: string; label: string; weight: number }) {
+    if (!activeJourneyId || retuningPhase || vibeTuning) return;
+    if (entry.key === nearestVibe(detail?.journey.tasteWeight).key) return;
+    setVibeTuning(entry.label);
+    setError(undefined);
+    try {
+      await api.setTasteWeight(activeJourneyId, entry.weight);
+      setDetail(await api.journey(activeJourneyId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setVibeTuning(undefined);
     }
   }
 
@@ -395,6 +431,7 @@ export function App() {
   const upcoming = displayTracks.filter((track) => track.id !== heroTrack?.id).slice(0, 5);
   const currentPhase = phaseMeta(detail?.journey.phase);
   const PhaseIcon = currentPhase.Icon;
+  const activeVibe = nearestVibe(detail?.journey.tasteWeight);
   const demo = Boolean(health?.spotifyMock);
   const playing = isPaused === undefined ? isPlayingInBrowser : !isPaused;
   const nowLabel = activeTrack ? (playing ? "Now playing" : "Paused") : "Up next";
@@ -433,7 +470,7 @@ export function App() {
           {health?.songScout && !health.songScout.mock ? (
             <span className="chip" title={health.songScout.webSearch ? "Web-grounded song picks" : "AI song picks"}>
               <Sparkles size={15} />{" "}
-              {health.songScout.provider === "gemini" ? "Gemini" : "Grok"}
+              {health.songScout.provider === "xai" ? "Grok" : "Gemini"}
               {health.songScout.webSearch ? " · Search" : ""}
             </span>
           ) : null}
@@ -663,7 +700,7 @@ export function App() {
                     <button
                       aria-pressed={isActive}
                       className={`phase${isActive ? " on" : ""}${isPending ? " pending" : ""}`}
-                      disabled={Boolean(retuningPhase)}
+                      disabled={Boolean(retuningPhase) || Boolean(vibeTuning)}
                       key={entry.key}
                       onClick={() => selectPhase(entry.key)}
                       title={`Steer the soundtrack toward "${entry.label}"`}
@@ -675,14 +712,44 @@ export function App() {
                   );
                 })}
               </div>
+
+              <div className="vibe-mix" aria-label="Familiarity versus discovery">
+                <div className="vibe-head">
+                  <span className="vibe-title">
+                    <Sparkles size={13} /> Vibe-Mix
+                  </span>
+                  <span className="vibe-sub">Vertraut ↔ Entdeckung</span>
+                </div>
+                <div className="vibe-segments" role="group">
+                  {VIBE_MIX.map((entry) => {
+                    const Icon = entry.Icon;
+                    const isActive = entry.key === activeVibe.key;
+                    const isPending = entry.label === vibeTuning;
+                    return (
+                      <button
+                        aria-pressed={isActive}
+                        className={`vibe${isActive ? " on" : ""}${isPending ? " pending" : ""}`}
+                        disabled={Boolean(vibeTuning) || Boolean(retuningPhase)}
+                        key={entry.key}
+                        onClick={() => selectVibeMix(entry)}
+                        title={`${entry.label} — ${Math.round(entry.weight * 100)}% an deinem Geschmack`}
+                        type="button"
+                      >
+                        {isPending ? <Loader2 className="spin" size={15} /> : <Icon size={15} />}
+                        <span>{entry.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             </aside>
 
-            {retuningPhase ? (
+            {retuningPhase || vibeTuning ? (
               <div className="retuning" role="status">
                 <div className="retuning-card">
                   <span className="retuning-orb" aria-hidden="true" />
-                  <span className="retuning-label">Re-tuning the vibe</span>
-                  <strong className="retuning-phase">{phaseMeta(retuningPhase).label}</strong>
+                  <span className="retuning-label">{vibeTuning ? "Mix anpassen" : "Re-tuning the vibe"}</span>
+                  <strong className="retuning-phase">{vibeTuning ?? phaseMeta(retuningPhase).label}</strong>
                 </div>
               </div>
             ) : null}

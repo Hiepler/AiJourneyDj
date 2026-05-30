@@ -51,6 +51,7 @@ export function migrate(db: Db): void {
       passenger_mode TEXT NOT NULL,
       phase TEXT NOT NULL,
       status TEXT NOT NULL,
+      taste_weight REAL,
       spotify_device_id TEXT,
       tidal_playlist_id TEXT,
       tidal_playlist_url TEXT,
@@ -156,10 +157,17 @@ export function migrate(db: Db): void {
       track_json TEXT,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS taste_profile_cache (
+      user_id TEXT PRIMARY KEY,
+      profile_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
   `);
 
   tryAddColumn(db, "journeys", "provider", "TEXT NOT NULL DEFAULT 'tidal'");
   tryAddColumn(db, "journeys", "spotify_device_id", "TEXT");
+  tryAddColumn(db, "journeys", "taste_weight", "REAL");
   tryAddColumn(db, "resolved_tracks", "provider_uri", "TEXT");
   tryAddColumn(db, "resolved_tracks", "external_url", "TEXT");
   tryAddColumn(db, "resolved_tracks", "is_playable", "INTEGER");

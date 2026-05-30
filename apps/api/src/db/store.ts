@@ -6,7 +6,8 @@ import type {
   PlaylistUpdate,
   QueueOperation,
   ResolvedTrack,
-  SongCandidate
+  SongCandidate,
+  TasteProfile
 } from "@ai-journey-dj/core";
 import { speedBucket, temperatureBucket } from "@ai-journey-dj/telemetry";
 
@@ -16,6 +17,9 @@ const now = () => new Date().toISOString();
 
 /** Spotify catalog is stable; cache search resolutions for 30 days. */
 const SPOTIFY_SEARCH_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Taste evolves slowly; refresh the listener's top-artist profile at most once per day. */
+const TASTE_PROFILE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 export interface StoredCredentials {
   accessToken: string;
@@ -66,8 +70,8 @@ export class Store {
   createJourney(record: JourneyRecord): void {
     this.db.run(
       `INSERT INTO journeys
-       (id, user_id, provider, destination, user_prompt, passenger_mode, phase, status, spotify_device_id, tidal_playlist_id, tidal_playlist_url, created_at, stopped_at)
-       VALUES (?, 'local', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, user_id, provider, destination, user_prompt, passenger_mode, phase, status, taste_weight, spotify_device_id, tidal_playlist_id, tidal_playlist_url, created_at, stopped_at)
+       VALUES (?, 'local', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         record.id,
         record.provider,
@@ -76,6 +80,7 @@ export class Store {
         record.passengerMode,
         record.phase,
         record.status,
+        record.tasteWeight ?? null,
         record.spotifyDeviceId,
         record.tidalPlaylistId,
         record.tidalPlaylistUrl,
@@ -83,6 +88,10 @@ export class Store {
         record.stoppedAtIso
       ]
     );
+  }
+
+  updateJourneyTasteWeight(journeyId: string, tasteWeight: number): void {
+    this.db.run("UPDATE journeys SET taste_weight = ? WHERE id = ?", [tasteWeight, journeyId]);
   }
 
   updateJourneyProvider(journeyId: string, provider: "spotify" | "tidal"): void {
@@ -240,6 +249,32 @@ export class Store {
     this.db.run(
       "INSERT OR REPLACE INTO spotify_search_cache (cache_key, track_json, created_at) VALUES (?, ?, ?)",
       [cacheKey, track ? JSON.stringify(track) : null, now()]
+    );
+  }
+
+  /**
+   * Cached taste profile (derived from Spotify top artists). Returns `undefined` when never
+   * cached or the entry has expired (24h TTL), so the caller refetches at most once per day.
+   */
+  getCachedTasteProfile(userId: string): TasteProfile | undefined {
+    const row = this.db.get<{ profile_json: string; created_at: string }>(
+      "SELECT profile_json, created_at FROM taste_profile_cache WHERE user_id = ?",
+      [userId]
+    );
+    if (!row) {
+      return undefined;
+    }
+    if (Date.now() - new Date(row.created_at).getTime() > TASTE_PROFILE_CACHE_TTL_MS) {
+      this.db.run("DELETE FROM taste_profile_cache WHERE user_id = ?", [userId]);
+      return undefined;
+    }
+    return JSON.parse(row.profile_json) as TasteProfile;
+  }
+
+  saveCachedTasteProfile(userId: string, profile: TasteProfile): void {
+    this.db.run(
+      "INSERT OR REPLACE INTO taste_profile_cache (user_id, profile_json, created_at) VALUES (?, ?, ?)",
+      [userId, JSON.stringify(profile), now()]
     );
   }
 
@@ -432,6 +467,7 @@ function mapJourney(row: any): JourneyRecord {
     passengerMode: row.passenger_mode,
     phase: row.phase,
     status: row.status,
+    tasteWeight: row.taste_weight ?? undefined,
     spotifyDeviceId: row.spotify_device_id ?? undefined,
     tidalPlaylistId: row.tidal_playlist_id ?? undefined,
     tidalPlaylistUrl: row.tidal_playlist_url ?? undefined,

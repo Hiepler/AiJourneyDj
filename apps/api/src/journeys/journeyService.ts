@@ -1,4 +1,5 @@
 import type {
+  JourneyContext,
   JourneyPhase,
   JourneyRecord,
   NormalizedTelemetryEvent,
@@ -6,7 +7,8 @@ import type {
   PlaylistUpdate,
   ResolvedTrack,
   SongCandidate,
-  StreamingProvider
+  StreamingProvider,
+  TasteProfile
 } from "@ai-journey-dj/core";
 import { derivePhase } from "@ai-journey-dj/telemetry";
 import { TidalResolver, type TidalAdapter } from "@ai-journey-dj/tidal";
@@ -19,7 +21,12 @@ import {
 } from "@ai-journey-dj/spotify";
 import type { OpenMusicClient, NoopOpenMusicClient } from "@ai-journey-dj/open-music";
 import type { SongScout } from "@ai-journey-dj/recommendation";
-import { fallbackCandidates, selectRollingBatch } from "@ai-journey-dj/recommendation";
+import { deriveTasteProfile, fallbackCandidates, selectRollingBatch } from "@ai-journey-dj/recommendation";
+
+/** Default familiarity↔discovery mix for a new drive — between "light" and "balanced". */
+export const DEFAULT_TASTE_WEIGHT = 0.4;
+/** Hard cap on the top-artists fetch so taste loading can never block a journey. */
+const TASTE_FETCH_TIMEOUT_MS = 8_000;
 
 import type { AppConfig } from "../config/env.js";
 import { contextFromJourney, type Store } from "../db/store.js";
@@ -76,6 +83,7 @@ export class JourneyService {
       passengerMode: input.passengerMode,
       phase: "departure",
       status: "active",
+      tasteWeight: DEFAULT_TASTE_WEIGHT,
       spotifyDeviceId: provider === "spotify" ? input.deviceId : undefined,
       createdAtIso
     };
@@ -196,6 +204,53 @@ export class JourneyService {
     this.store.audit(journeyId, "phase.manual_override", `Drive phase manually set to ${phase}.`, { phase });
     await this.analyzeJourney(journeyId, "phase-override");
     return this.getJourneyOrThrow(journeyId);
+  }
+
+  /** Sets the familiarity↔discovery mix (0..1) and re-curates the queue around it. */
+  async setTasteWeight(journeyId: string, weight: number): Promise<JourneyRecord> {
+    const journey = this.getJourneyOrThrow(journeyId);
+    if (journey.status !== "active") {
+      throw new Error("Cannot change the taste mix of a stopped journey.");
+    }
+    const clamped = Math.max(0, Math.min(1, weight));
+    this.store.updateJourneyTasteWeight(journeyId, clamped);
+    this.store.audit(journeyId, "taste.weight_set", `Vibe mix set to ${Math.round(clamped * 100)}% familiar.`, {
+      tasteWeight: clamped
+    });
+    await this.analyzeJourney(journeyId, "taste-override");
+    return this.getJourneyOrThrow(journeyId);
+  }
+
+  /**
+   * Loads the listener's taste profile (top artists → favored genres) for personalization.
+   * Cached ~24h so the Spotify API is touched at most once/day; any failure degrades to no taste.
+   */
+  private async loadTasteProfile(accessToken: string): Promise<TasteProfile | undefined> {
+    try {
+      const cached = this.store.getCachedTasteProfile("local");
+      if (cached) {
+        return cached;
+      }
+      if (!this.spotifyAdapter.getTopArtists) {
+        return undefined;
+      }
+      const artists = await this.spotifyAdapter.getTopArtists({
+        accessToken,
+        timeRange: "medium_term",
+        limit: 30,
+        signal: AbortSignal.timeout(TASTE_FETCH_TIMEOUT_MS)
+      });
+      if (artists.length === 0) {
+        return undefined;
+      }
+      const profile = deriveTasteProfile(artists);
+      this.store.saveCachedTasteProfile("local", profile);
+      return profile;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn({ err: message }, "taste.load.failed");
+      return undefined;
+    }
   }
 
   async registerSpotifyDevice(
@@ -498,7 +553,14 @@ export class JourneyService {
 
     // Cost control: only the LLM lenses cost tokens. Run them when the vibe actually changes;
     // for routine top-ups, reuse the already-generated candidate pool if it can refill the buffer.
-    const vibeChangingReasons = new Set(["initial", "phase-change", "phase-override", "manual", "recovery"]);
+    const vibeChangingReasons = new Set([
+      "initial",
+      "phase-change",
+      "phase-override",
+      "taste-override",
+      "manual",
+      "recovery"
+    ]);
     const priorSession = this.store.getPlaybackSession(journeyId);
     const inUseIds = new Set([...(priorSession?.queuedTrackIds ?? []), ...(priorSession?.playedTrackIds ?? [])]);
     const unusedPool = this.store
@@ -510,9 +572,22 @@ export class JourneyService {
     const neededNow = Math.max(0, 5 - (priorSession?.queuedTrackIds?.length ?? 0));
     const mustGenerate = vibeChangingReasons.has(reason) || unusedPool.length < neededNow;
 
+    const tokenStartedAt = Date.now();
+    const accessToken = await this.spotifyAuth.getAccessToken();
+    this.logger.info({ journeyId, ms: Date.now() - tokenStartedAt }, "spotify.token.done");
+
+    // Personalize the brief with the listener's taste (cached ~24h). Built once and reused for any
+    // fallback regeneration below so the whole drive shares one taste signal.
+    let scoutContext: JourneyContext = context;
     let candidates: SongCandidate[] = [];
     if (mustGenerate) {
-      candidates = await this.generateAndStoreCandidates(journeyId, context, 8);
+      const tasteProfile = await this.loadTasteProfile(accessToken);
+      scoutContext = {
+        ...context,
+        tasteProfile,
+        tasteWeight: journey.tasteWeight ?? DEFAULT_TASTE_WEIGHT
+      };
+      candidates = await this.generateAndStoreCandidates(journeyId, scoutContext, 8);
     } else {
       this.logger.info({ journeyId, reason, poolSize: unusedPool.length, needed: neededNow }, "scout.pool_reuse");
       this.store.audit(
@@ -522,9 +597,6 @@ export class JourneyService {
         { reason }
       );
     }
-    const tokenStartedAt = Date.now();
-    const accessToken = await this.spotifyAuth.getAccessToken();
-    this.logger.info({ journeyId, ms: Date.now() - tokenStartedAt }, "spotify.token.done");
     const resolver = new SpotifyResolver(this.spotifyAdapter, {
       accessToken,
       market: this.config.SPOTIFY_MARKET,
@@ -559,7 +631,7 @@ export class JourneyService {
       .map((id) => stored.find((track) => track.id === id))
       .filter((track): track is ResolvedTrack & { id: string; addedToPlaylist: boolean } => Boolean(track));
     const needed = Math.max(0, 5 - currentQueued.length);
-    let selected = queueTracksForBuffer(stored, {
+    const selected = queueTracksForBuffer(stored, {
       activeProviderTrackId: activeTrack?.providerTrackId,
       alreadyQueuedProviderIds: new Set(currentQueued.map((track) => track.providerTrackId)),
       targetBufferSize: needed
@@ -567,7 +639,7 @@ export class JourneyService {
 
     if (currentQueued.length + selected.length < 5) {
       this.store.audit(journeyId, "recommendation.fallback", "Spotify analysis resolved fewer than 5 future tracks; running fallback.");
-      const fallbackCandidates = await this.generateAndStoreCandidates(journeyId, context, 8);
+      const fallbackCandidates = await this.generateAndStoreCandidates(journeyId, scoutContext, 8);
       const fallbackResolved = await resolver.resolveCandidates(fallbackCandidates);
       this.storeResolved(journeyId, fallbackCandidates, fallbackResolved);
       stored = this.store.listResolvedTracks(journeyId).filter((track) => track.provider === "spotify");

@@ -28,6 +28,17 @@ export type PlaybackSessionStatus =
   | "playback_error"
   | "autoplay_failed";
 
+/**
+ * Steering signal derived from the listener's Spotify top artists. Used to personalize
+ * the musical brief without ever exposing raw streaming-library data to prompts.
+ */
+export interface TasteProfile {
+  /** Favorite genres, most representative first. */
+  topGenres: string[];
+  /** A few representative artist names that exemplify the taste. */
+  representativeArtists: string[];
+}
+
 export interface JourneyContext {
   destination: string;
   coarseRegion?: string;
@@ -39,6 +50,10 @@ export interface JourneyContext {
   phase: JourneyPhase;
   userPrompt: string;
   passengerMode: PassengerMode;
+  /** Optional personalization signal from the listener's Spotify top artists. */
+  tasteProfile?: TasteProfile;
+  /** Familiarity↔discovery balance, 0 = pure discovery … 1 = lean into known taste. */
+  tasteWeight?: number;
 }
 
 export interface SongCandidate {
@@ -105,6 +120,8 @@ export interface JourneyRecord {
   passengerMode: PassengerMode;
   phase: JourneyPhase;
   status: "active" | "stopped";
+  /** Familiarity↔discovery balance for this drive, 0 = discovery … 1 = familiar. */
+  tasteWeight?: number;
   spotifyDeviceId?: string;
   tidalPlaylistId?: string;
   tidalPlaylistUrl?: string;

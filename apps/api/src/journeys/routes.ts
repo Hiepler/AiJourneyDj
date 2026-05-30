@@ -95,6 +95,12 @@ export async function registerJourneyRoutes(
     return service.setPhase(id, phase);
   });
 
+  app.post("/journeys/:id/taste", async (request) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const { weight } = z.object({ weight: z.number().min(0).max(1) }).parse(request.body);
+    return service.setTasteWeight(id, weight);
+  });
+
   app.post("/journeys/:id/playback/skip", async (request) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const payload = z

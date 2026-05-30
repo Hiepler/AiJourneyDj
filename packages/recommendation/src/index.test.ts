@@ -7,8 +7,11 @@ import {
   assertPromptIsPrivacySafe,
   balanceCandidates,
   buildJourneyPrompt,
+  buildLensPrompt,
   buildMusicalBrief,
   createSongScout,
+  DEFAULT_LENSES,
+  deriveTasteProfile,
   extractXaiResponseText,
   fallbackCandidates,
   GeminiSongScout,
@@ -259,6 +262,74 @@ describe("recommendation", () => {
     expect(out.filter((c) => c.artist === "A")).toHaveLength(1); // deduped
     const decades = new Set(out.map((c) => Math.floor((c.year ?? 0) / 10) * 10));
     expect(decades.size).toBeGreaterThanOrEqual(2); // spread across eras, not all 1980s
+  });
+
+  it("deriveTasteProfile aggregates genres by frequency and caps representative artists", () => {
+    const profile = deriveTasteProfile(
+      [
+        { name: "Bonobo", genres: ["electronica", "downtempo", "trip hop"] },
+        { name: "Tycho", genres: ["electronica", "chillwave"] },
+        { name: "Tame Impala", genres: ["psychedelic rock", "electronica"] },
+        { name: "Khruangbin", genres: ["psychedelic rock", "funk"] },
+        { name: "Air", genres: ["downtempo"] },
+        { name: "Caribou", genres: [] }
+      ],
+      { maxGenres: 3, maxArtists: 4 }
+    );
+
+    // electronica appears 3x, then downtempo + psychedelic rock (2x each) -> top 3.
+    expect(profile.topGenres[0]).toBe("electronica");
+    expect(profile.topGenres).toHaveLength(3);
+    expect(profile.topGenres).toContain("downtempo");
+    expect(profile.topGenres).toContain("psychedelic rock");
+    // Representative artists are capped and preserve input order.
+    expect(profile.representativeArtists).toEqual(["Bonobo", "Tycho", "Tame Impala", "Khruangbin"]);
+  });
+
+  it("deriveTasteProfile is empty-safe", () => {
+    const profile = deriveTasteProfile([]);
+    expect(profile.topGenres).toEqual([]);
+    expect(profile.representativeArtists).toEqual([]);
+  });
+
+  it("buildMusicalBrief folds the taste profile into favored genres + weight", () => {
+    const brief = buildMusicalBrief({
+      ...context,
+      tasteWeight: 0.75,
+      tasteProfile: { topGenres: ["electronica", "indie"], representativeArtists: ["Bonobo", "Tycho"] }
+    });
+    expect(brief.tasteWeight).toBeCloseTo(0.75);
+    expect(brief.favoredGenres).toEqual(["electronica", "indie"]);
+    expect(brief.representativeArtists).toEqual(["Bonobo", "Tycho"]);
+
+    // No taste signal -> neutral defaults, never undefined.
+    const neutral = buildMusicalBrief(context);
+    expect(neutral.tasteWeight).toBe(0);
+    expect(neutral.favoredGenres).toEqual([]);
+    expect(neutral.representativeArtists).toEqual([]);
+  });
+
+  it("buildLensPrompt steers familiar lenses by taste but keeps cross-genre as pure discovery", () => {
+    const brief = buildMusicalBrief({
+      ...context,
+      tasteWeight: 0.75,
+      tasteProfile: { topGenres: ["electronica", "indie"], representativeArtists: ["Bonobo"] }
+    });
+    const current = DEFAULT_LENSES.find((lens) => lens.key === "current")!;
+    const crossgenre = DEFAULT_LENSES.find((lens) => lens.key === "crossgenre")!;
+
+    const currentPrompt = buildLensPrompt(current, brief, 5);
+    expect(currentPrompt).toMatch(/75%/);
+    expect(currentPrompt.toLowerCase()).toContain("electronica");
+    expect(currentPrompt.toLowerCase()).toContain("bonobo");
+
+    // The discovery lens must NOT be biased toward the listener's taste.
+    const crossPrompt = buildLensPrompt(crossgenre, brief, 5);
+    expect(crossPrompt).not.toMatch(/%/);
+
+    // With no taste weight, even familiar lenses stay neutral.
+    const neutralBrief = buildMusicalBrief(context);
+    expect(buildLensPrompt(current, neutralBrief, 5)).not.toMatch(/%/);
   });
 
   it("MultiLensSongScout fans out lenses and balances; falls back in mock mode", async () => {

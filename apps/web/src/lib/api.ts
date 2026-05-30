@@ -9,6 +9,7 @@ export interface Journey {
   passengerMode: string;
   phase: string;
   status: "active" | "stopped";
+  tasteWeight?: number;
   spotifyDeviceId?: string;
   tidalPlaylistId?: string;
   tidalPlaylistUrl?: string;
@@ -57,10 +58,11 @@ export interface JourneyDetail {
 }
 
 export interface SongScoutHealth {
-  provider: "gemini" | "xai";
+  provider: "multilens" | "gemini" | "xai";
   model: string;
   webSearch: boolean;
   mock: boolean;
+  lenses?: number;
 }
 
 export interface Health {
@@ -141,6 +143,11 @@ export const api = {
     request<Journey>(`/journeys/${id}/phase`, {
       method: "POST",
       body: JSON.stringify({ phase })
+    }),
+  setTasteWeight: (id: string, weight: number) =>
+    request<Journey>(`/journeys/${id}/taste`, {
+      method: "POST",
+      body: JSON.stringify({ weight })
     }),
   registerSpotifyDevice: (id: string, payload: { deviceId: string; status?: string; syncOnly?: boolean }) =>
     request<JourneyDetail["playbackSession"]>(`/journeys/${id}/playback/device`, {

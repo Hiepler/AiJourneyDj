@@ -27,6 +27,12 @@ export interface SpotifyPlaylist {
   url?: string;
 }
 
+export interface SpotifyArtist {
+  id: string;
+  name: string;
+  genres: string[];
+}
+
 export interface SpotifyAdapter {
   searchTracks(args: {
     accessToken: string;
@@ -35,6 +41,16 @@ export interface SpotifyAdapter {
     limit: number;
     signal?: AbortSignal;
   }): Promise<SpotifyTrackSearchResult[]>;
+  /**
+   * Reads the listener's top artists (needs the `user-top-read` scope). Optional: adapters that
+   * cannot supply taste data simply omit it, and personalization degrades gracefully.
+   */
+  getTopArtists?(args: {
+    accessToken: string;
+    timeRange?: "short_term" | "medium_term" | "long_term";
+    limit?: number;
+    signal?: AbortSignal;
+  }): Promise<SpotifyArtist[]>;
   transferPlayback(args: { accessToken: string; deviceId: string }): Promise<void>;
   resolvePlaybackDeviceId(args: { accessToken: string; preferredDeviceId: string }): Promise<string>;
   skipToNext(args: { accessToken: string; deviceId: string }): Promise<void>;
@@ -95,6 +111,25 @@ export class OfficialSpotifyAdapter implements SpotifyAdapter {
     const payload = await this.request<any>(url, args.accessToken, { signal: args.signal });
     const items = Array.isArray(payload?.tracks?.items) ? payload.tracks.items : [];
     return items.map((item: any) => mapSpotifyTrack(item, args.market));
+  }
+
+  async getTopArtists(args: {
+    accessToken: string;
+    timeRange?: "short_term" | "medium_term" | "long_term";
+    limit?: number;
+    signal?: AbortSignal;
+  }): Promise<SpotifyArtist[]> {
+    const url = new URL(`${this.baseUrl}/me/top/artists`);
+    url.searchParams.set("time_range", args.timeRange ?? "medium_term");
+    url.searchParams.set("limit", String(args.limit ?? 20));
+
+    const payload = await this.request<any>(url, args.accessToken, { signal: args.signal });
+    const items = Array.isArray(payload?.items) ? payload.items : [];
+    return items.map((item: any) => ({
+      id: String(item?.id ?? ""),
+      name: String(item?.name ?? ""),
+      genres: Array.isArray(item?.genres) ? item.genres.filter((genre: unknown): genre is string => typeof genre === "string") : []
+    }));
   }
 
   async transferPlayback(args: { accessToken: string; deviceId: string }): Promise<void> {
@@ -311,6 +346,22 @@ export class MockSpotifyAdapter implements SpotifyAdapter {
         albumArtUrl: `https://i.scdn.co/image/${id}`
       };
     });
+  }
+
+  async getTopArtists(args?: {
+    accessToken: string;
+    timeRange?: "short_term" | "medium_term" | "long_term";
+    limit?: number;
+    signal?: AbortSignal;
+  }): Promise<SpotifyArtist[]> {
+    const artists: SpotifyArtist[] = [
+      { id: "mock-bonobo", name: "Bonobo", genres: ["electronica", "downtempo", "trip hop"] },
+      { id: "mock-tame-impala", name: "Tame Impala", genres: ["psychedelic rock", "indie"] },
+      { id: "mock-khruangbin", name: "Khruangbin", genres: ["funk", "psychedelic rock"] },
+      { id: "mock-tycho", name: "Tycho", genres: ["electronica", "chillwave"] },
+      { id: "mock-the-war-on-drugs", name: "The War on Drugs", genres: ["indie", "heartland rock"] }
+    ];
+    return typeof args?.limit === "number" ? artists.slice(0, args.limit) : artists;
   }
 
   async transferPlayback(): Promise<void> {}

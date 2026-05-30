@@ -140,6 +140,64 @@ describe("spotify api", () => {
     await app.close();
   });
 
+  it("adjusts the familiarity↔discovery taste mix and re-curates the queue", async () => {
+    const { app } = await buildApp(testConfig());
+
+    const start = await app.inject({
+      method: "POST",
+      url: "/journeys",
+      payload: {
+        destination: "Dijon",
+        userPrompt: "golden hour drive",
+        passengerMode: "couple",
+        deviceId: "tesla-webplayer"
+      }
+    });
+    const journey = start.json<{ id: string }>();
+
+    const before = await app.inject({ method: "GET", url: `/journeys/${journey.id}` });
+    const beforeUpdateId = before.json<{ latestUpdate?: { id: string } }>().latestUpdate?.id;
+
+    const setTaste = await app.inject({
+      method: "POST",
+      url: `/journeys/${journey.id}/taste`,
+      payload: { weight: 0.75 }
+    });
+    expect(setTaste.statusCode).toBe(200);
+    expect(setTaste.json<{ tasteWeight: number }>().tasteWeight).toBeCloseTo(0.75);
+
+    const after = await app.inject({ method: "GET", url: `/journeys/${journey.id}` });
+    expect(after.json()).toMatchObject({ journey: { tasteWeight: 0.75 } });
+    // A fresh analysis ran for the new mix.
+    expect(after.json<{ latestUpdate?: { id: string } }>().latestUpdate?.id).not.toBe(beforeUpdateId);
+
+    const events = await app.inject({ method: "GET", url: `/history/${journey.id}` });
+    expect(
+      events.json<{ events: Array<{ type: string }> }>().events.some((event) => event.type === "taste.weight_set")
+    ).toBe(true);
+
+    await app.close();
+  });
+
+  it("rejects an out-of-range taste weight", async () => {
+    const { app } = await buildApp(testConfig());
+    const start = await app.inject({
+      method: "POST",
+      url: "/journeys",
+      payload: { destination: "Dijon", userPrompt: "drive", passengerMode: "solo", deviceId: "dev" }
+    });
+    const journey = start.json<{ id: string }>();
+
+    const bad = await app.inject({
+      method: "POST",
+      url: `/journeys/${journey.id}/taste`,
+      payload: { weight: 1.5 }
+    });
+    expect(bad.statusCode).toBeGreaterThanOrEqual(400);
+
+    await app.close();
+  });
+
   it("rejects an unknown drive phase", async () => {
     const { app } = await buildApp(testConfig());
     const start = await app.inject({
@@ -220,7 +278,7 @@ describe("spotify api", () => {
     expect(url.searchParams.get("redirect_uri")).toBe("http://localhost:3000/auth/spotify/callback");
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
     expect(url.searchParams.get("scope")).toBe(
-      "streaming user-read-email user-read-private user-read-playback-state user-modify-playback-state"
+      "streaming user-read-email user-read-private user-read-playback-state user-modify-playback-state user-top-read"
     );
 
     await app.close();

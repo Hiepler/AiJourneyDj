@@ -1,4 +1,4 @@
-import type { JourneyContext, ResolvedTrack, SongCandidate } from "@ai-journey-dj/core";
+import type { JourneyContext, ResolvedTrack, SongCandidate, TasteProfile } from "@ai-journey-dj/core";
 import { clampConfidence, normalizeText } from "@ai-journey-dj/core";
 
 const FALLBACK_CANDIDATES: SongCandidate[] = [
@@ -785,6 +785,52 @@ export interface MusicalBrief {
   destination: string;
   userPrompt: string;
   passengerMode: string;
+  /** Familiarity↔discovery balance, 0 = discovery … 1 = lean into known taste. */
+  tasteWeight: number;
+  /** Listener's favorite genres (from their Spotify top artists). */
+  favoredGenres: string[];
+  /** A few representative artists that exemplify the listener's taste. */
+  representativeArtists: string[];
+}
+
+/**
+ * Aggregates a listener's Spotify top artists into a compact, prompt-safe taste signal:
+ * most-frequent genres first, plus a handful of representative artist names. Pure + cheap;
+ * the result is cached upstream so the Spotify API is touched at most ~once/day.
+ */
+export function deriveTasteProfile(
+  artists: Array<{ name: string; genres?: string[] }>,
+  options: { maxGenres?: number; maxArtists?: number } = {}
+): TasteProfile {
+  const maxGenres = options.maxGenres ?? 6;
+  const maxArtists = options.maxArtists ?? 5;
+
+  const counts = new Map<string, number>();
+  const firstSeen = new Map<string, number>();
+  let order = 0;
+  for (const artist of artists) {
+    for (const rawGenre of artist.genres ?? []) {
+      const genre = rawGenre.trim().toLowerCase();
+      if (!genre) continue;
+      counts.set(genre, (counts.get(genre) ?? 0) + 1);
+      if (!firstSeen.has(genre)) {
+        firstSeen.set(genre, order++);
+      }
+    }
+  }
+
+  const topGenres = [...counts.entries()]
+    // Higher frequency first; ties keep the order they were first encountered.
+    .sort((a, b) => b[1] - a[1] || (firstSeen.get(a[0]) ?? 0) - (firstSeen.get(b[0]) ?? 0))
+    .slice(0, maxGenres)
+    .map(([genre]) => genre);
+
+  const representativeArtists = artists
+    .map((artist) => artist.name.trim())
+    .filter(Boolean)
+    .slice(0, maxArtists);
+
+  return { topGenres, representativeArtists };
 }
 
 const SPEED_ENERGY: Record<string, number> = {
@@ -837,7 +883,10 @@ export function buildMusicalBrief(context: JourneyContext): MusicalBrief {
     moodWords,
     destination: context.destination,
     userPrompt: context.userPrompt,
-    passengerMode: context.passengerMode
+    passengerMode: context.passengerMode,
+    tasteWeight: clamp01(context.tasteWeight ?? 0),
+    favoredGenres: context.tasteProfile?.topGenres ?? [],
+    representativeArtists: context.tasteProfile?.representativeArtists ?? []
   };
 }
 
@@ -855,6 +904,25 @@ export const DEFAULT_LENSES: SongLens[] = [
   { key: "regional", grounded: true, instruction: "Favor artists connected to, or culturally evocative of, the journey's region/destination." }
 ];
 
+/**
+ * Taste steering: the "crossgenre" lens is the discovery counterweight and stays neutral so the
+ * set never collapses into an echo chamber. The other lenses lean toward the listener's favorite
+ * genres in proportion to tasteWeight (a single number changes only prompt text — zero extra tokens).
+ */
+function tasteSteeringLine(lens: SongLens, brief: MusicalBrief): string {
+  if (lens.key === "crossgenre") return "";
+  if (brief.tasteWeight <= 0 || brief.favoredGenres.length === 0) return "";
+  const familiarPct = Math.round(brief.tasteWeight * 100);
+  const artistHint = brief.representativeArtists.length
+    ? `, e.g. artists like ${brief.representativeArtists.join(", ")}`
+    : "";
+  return [
+    `Listener taste: aim for roughly ${familiarPct}% of picks to lean toward their favorite genres`,
+    `(${brief.favoredGenres.join(", ")}${artistHint});`,
+    `keep the remaining ${100 - familiarPct}% as fresh discovery beyond their usual taste.`
+  ].join(" ");
+}
+
 export function buildLensPrompt(lens: SongLens, brief: MusicalBrief, count: number): string {
   return [
     `You are AI Journey DJ curating the "${lens.key}" portion of a road-trip set.`,
@@ -862,6 +930,7 @@ export function buildLensPrompt(lens: SongLens, brief: MusicalBrief, count: numb
     `Target energy: ${brief.targetEnergy.toFixed(2)} (0=calm, 1=high). Intensity: ${brief.intensity}. Mood: ${brief.moodWords.join(", ")}.`,
     `Span eras (${brief.eras}) and vary genres broadly (e.g. ${brief.genres.join(", ")}).`,
     brief.regionHint ? `Region/destination context: ${brief.regionHint}.` : "",
+    tasteSteeringLine(lens, brief),
     `Listener mode: ${brief.passengerMode}. Direction: "${brief.userPrompt}".`,
     `Return ONLY JSON {"songs":[{"artist","title","year","genre","reason"}]} with exactly ${count} real, released songs.`,
     "Vary artists; no duplicates. Keep 'reason' to one short clause tying the pick to the drive.",

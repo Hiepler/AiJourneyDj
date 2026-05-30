@@ -756,6 +756,98 @@ button:disabled,
   }
 }
 
+/* ---------- Vibe-Mix (familiarity ↔ discovery) ---------- */
+
+.vibe-mix {
+  margin-top: 10px;
+  padding: 12px;
+  border-radius: var(--r-md);
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--border);
+}
+
+.vibe-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 9px;
+}
+
+.vibe-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text);
+}
+
+.vibe-sub {
+  font-size: 0.72rem;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.vibe-segments {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.vibe {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 40px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-faint);
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.28s var(--ease), color 0.28s var(--ease), transform 0.18s var(--ease),
+    box-shadow 0.28s var(--ease);
+}
+
+.vibe:hover:not(.on):not(:disabled) {
+  color: var(--text);
+  transform: translateY(-1px);
+}
+
+.vibe:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.vibe:disabled {
+  cursor: default;
+}
+
+.vibe.on {
+  background: linear-gradient(135deg, var(--accent), #19b294);
+  color: var(--accent-ink);
+  box-shadow: 0 10px 26px -12px rgba(47, 227, 192, 0.8);
+  animation: phasePop 0.42s var(--ease);
+}
+
+.vibe.pending {
+  color: var(--accent);
+}
+
+.vibe.pending::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  border: 1.5px solid var(--accent);
+  animation: phasePulse 1s var(--ease) infinite;
+}
+
 /* Queue items cascade in (replays when the phase changes -> "morph"). */
 .q-row {
   animation: qIn 0.5s var(--ease) both;

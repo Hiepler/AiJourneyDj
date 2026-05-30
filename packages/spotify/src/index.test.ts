@@ -371,4 +371,42 @@ describe("spotify playback helpers", () => {
       /404/
     );
   });
+
+  it("fetches top artists with genres from /me/top/artists", async () => {
+    let captured: { url: string; auth: string | null } | undefined;
+    const fetchImpl: typeof fetch = async (input, init) => {
+      captured = { url: String(input), auth: new Headers(init?.headers).get("Authorization") };
+      return new Response(
+        JSON.stringify({
+          items: [
+            { id: "a1", name: "Bonobo", genres: ["electronica", "downtempo"] },
+            { id: "a2", name: "Tame Impala", genres: ["psychedelic rock"] },
+            { id: "a3", name: "No Genre Artist" }
+          ]
+        }),
+        { status: 200 }
+      );
+    };
+    const adapter = new OfficialSpotifyAdapter({ baseUrl: "https://api.spotify.test/v1", fetchImpl });
+
+    const artists = await adapter.getTopArtists!({ accessToken: "tok", timeRange: "medium_term", limit: 20 });
+
+    expect(captured?.url).toContain("/me/top/artists");
+    expect(captured?.url).toContain("time_range=medium_term");
+    expect(captured?.url).toContain("limit=20");
+    expect(captured?.auth).toBe("Bearer tok");
+    expect(artists).toEqual([
+      { id: "a1", name: "Bonobo", genres: ["electronica", "downtempo"] },
+      { id: "a2", name: "Tame Impala", genres: ["psychedelic rock"] },
+      { id: "a3", name: "No Genre Artist", genres: [] }
+    ]);
+  });
+
+  it("MockSpotifyAdapter returns deterministic top artists with genres", async () => {
+    const mock = new MockSpotifyAdapter();
+    const artists = await mock.getTopArtists!({ accessToken: "t" });
+    expect(artists.length).toBeGreaterThan(0);
+    expect(artists.every((artist) => typeof artist.name === "string" && Array.isArray(artist.genres))).toBe(true);
+    expect(artists.some((artist) => artist.genres.length > 0)).toBe(true);
+  });
 });

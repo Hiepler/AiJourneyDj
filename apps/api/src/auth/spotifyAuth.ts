@@ -10,7 +10,9 @@ export const SPOTIFY_SCOPES = [
   "user-read-email",
   "user-read-private",
   "user-read-playback-state",
-  "user-modify-playback-state"
+  "user-modify-playback-state",
+  // Reads the listener's top artists to personalize the soundtrack (familiarity↔discovery mix).
+  "user-top-read"
 ] as const;
 
 export interface SpotifyTokenStatus {
