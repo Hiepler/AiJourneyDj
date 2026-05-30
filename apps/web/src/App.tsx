@@ -25,7 +25,6 @@ import {
 import { api, type Health, type Journey, type JourneyDetail } from "./lib/api.js";
 import {
   connectSpotifyWebPlayer,
-  skipSpotifyBrowserTrack,
   spotifySdkStatusLabel,
   startSpotifyBrowserPlayback,
   type SpotifyPlayerInstance,
@@ -319,9 +318,9 @@ export function App() {
     setLoading(true);
     setError(undefined);
     try {
-      if (playerRef.current && spotifyStatus === "ready") {
-        await skipSpotifyBrowserTrack(playerRef.current, direction);
-      }
+      // The backend is the single playback authority: it (re)starts the exact intended track on
+      // the device. We must NOT also skip via the Web Playback SDK here — a second, relative skip
+      // desyncs what plays from what the queue shows.
       const deviceId = spotifyDeviceId ?? (await ensureSpotifyDevice().catch(() => undefined));
       await api.skipTrack(activeJourneyId, { direction, deviceId });
       setDetail(await api.journey(activeJourneyId));

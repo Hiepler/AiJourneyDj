@@ -381,22 +381,18 @@ export class JourneyService {
       const newPlayed = activeTrack?.id ? [...playedIds, activeTrack.id] : playedIds;
 
       if (effectiveDeviceId && newActive) {
-        const resolvedDeviceId = await this.spotifyAdapter.resolvePlaybackDeviceId({
-          accessToken,
-          preferredDeviceId: effectiveDeviceId
-        });
-        const applied = await this.applySpotifySkip({
+        // Authoritative skip: tell Spotify to play THIS exact track (+ the rest as context),
+        // instead of a relative skipToNext that trusts Spotify's own queue position. This keeps
+        // the actually-played track identical to what the web app shows.
+        const applied = await this.syncSpotifyPlayback({
           journeyId,
           accessToken,
-          deviceId: resolvedDeviceId,
-          direction: "next",
-          fallback: {
-            activeTrack: newActive,
-            queueTracks: newQueue,
-            shouldStart: true
-          }
+          deviceId: effectiveDeviceId,
+          activeTrack: newActive,
+          queueTracks: newQueue,
+          shouldStart: true
         });
-        if (!applied) {
+        if (!applied.deviceReachable) {
           throw new Error("Could not skip to the next track on Spotify.");
         }
       }
@@ -431,26 +427,22 @@ export class JourneyService {
       const newQueueIds = [activeTrack?.id, ...queueTracks.map((track) => track.id)].filter(
         (id): id is string => Boolean(id)
       );
+      const newQueueTracks = newQueueIds
+        .map((id) => stored.find((track) => track.id === id))
+        .filter((track): track is ResolvedTrack & { id: string; addedToPlaylist: boolean } => Boolean(track));
 
       if (effectiveDeviceId) {
-        const resolvedDeviceId = await this.spotifyAdapter.resolvePlaybackDeviceId({
-          accessToken,
-          preferredDeviceId: effectiveDeviceId
-        });
-        const applied = await this.applySpotifySkip({
+        // Authoritative skip-back: play the exact previous track (+ rest as context) rather than
+        // a relative skipToPrevious, so the played track matches what the web app shows.
+        const applied = await this.syncSpotifyPlayback({
           journeyId,
           accessToken,
-          deviceId: resolvedDeviceId,
-          direction: "previous",
-          fallback: {
-            activeTrack: newActive,
-            queueTracks: newQueueIds
-              .map((id) => stored.find((track) => track.id === id))
-              .filter((track): track is ResolvedTrack & { id: string; addedToPlaylist: boolean } => Boolean(track)),
-            shouldStart: true
-          }
+          deviceId: effectiveDeviceId,
+          activeTrack: newActive,
+          queueTracks: newQueueTracks,
+          shouldStart: true
         });
-        if (!applied) {
+        if (!applied.deviceReachable) {
           throw new Error("Could not skip to the previous track on Spotify.");
         }
       }
@@ -759,39 +751,6 @@ export class JourneyService {
     };
   }
 
-  private async applySpotifySkip(args: {
-    journeyId: string;
-    accessToken: string;
-    deviceId: string;
-    direction: "next" | "previous";
-    fallback: {
-      activeTrack?: ResolvedTrack;
-      queueTracks: ResolvedTrack[];
-      shouldStart: boolean;
-    };
-  }): Promise<boolean> {
-    try {
-      if (args.direction === "next") {
-        await this.spotifyAdapter.skipToNext({ accessToken: args.accessToken, deviceId: args.deviceId });
-      } else {
-        await this.spotifyAdapter.skipToPrevious({ accessToken: args.accessToken, deviceId: args.deviceId });
-      }
-      return true;
-    } catch (error) {
-      if (isSpotifyDeviceNotFoundError(error) || isSpotifyRateLimitError(error)) {
-        const playback = await this.syncSpotifyPlayback({
-          journeyId: args.journeyId,
-          accessToken: args.accessToken,
-          deviceId: args.deviceId,
-          activeTrack: args.fallback.activeTrack,
-          queueTracks: args.fallback.queueTracks,
-          shouldStart: args.fallback.shouldStart
-        });
-        return playback.deviceReachable;
-      }
-      throw error;
-    }
-  }
 
   private async syncSpotifyPlayback(args: {
     journeyId: string;

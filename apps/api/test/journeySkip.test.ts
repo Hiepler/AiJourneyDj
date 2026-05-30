@@ -24,8 +24,7 @@ afterEach(() => {
 });
 
 class SkipSpotifyAdapter implements SpotifyAdapter {
-  skipNextCalls = 0;
-  skipPrevCalls = 0;
+  startCalls: { uris: string[] }[] = [];
 
   async searchTracks(args: { query: string; market: string }): Promise<SpotifyTrackSearchResult[]> {
     const [artist, ...rest] = args.query.split(" - ");
@@ -47,13 +46,11 @@ class SkipSpotifyAdapter implements SpotifyAdapter {
   async resolvePlaybackDeviceId(args: { preferredDeviceId: string }): Promise<string> {
     return args.preferredDeviceId;
   }
-  async skipToNext(): Promise<void> {
-    this.skipNextCalls += 1;
+  async skipToNext(): Promise<void> {}
+  async skipToPrevious(): Promise<void> {}
+  async startPlayback(args: { deviceId: string; uris: string[] }): Promise<void> {
+    this.startCalls.push({ uris: args.uris });
   }
-  async skipToPrevious(): Promise<void> {
-    this.skipPrevCalls += 1;
-  }
-  async startPlayback(): Promise<void> {}
   async addToQueue(): Promise<void> {}
   async getPlaybackState(): Promise<SpotifyPlaybackState> {
     return { isPlaying: true, queuedProviderTrackIds: [] };
@@ -109,8 +106,10 @@ describe("spotify track skip", () => {
     expect(activeId).toBeTruthy();
     expect(nextId).toBeTruthy();
 
+    adapter.startCalls.length = 0;
     const after = await service.skipSpotifyTrack(journey.id, "next", "web-device");
-    expect(adapter.skipNextCalls).toBe(1);
+    // Authoritative skip: Spotify is told to play the exact track now shown as active.
+    expect(adapter.startCalls.at(-1)?.uris[0]).toBe(after.activeTrack?.providerUri);
     expect(after.activeTrack?.id).toBe(nextId);
     expect(after.playedTrackIds).toContain(activeId);
     expect(after.queuedTrackIds[0]).not.toBe(nextId);
@@ -131,9 +130,11 @@ describe("spotify track skip", () => {
     const first = store.getPlaybackSession(journey.id);
     const firstActiveId = first?.activeTrack?.id;
     await service.skipSpotifyTrack(journey.id, "next", "web-device");
+    adapter.startCalls.length = 0;
     const restored = await service.skipSpotifyTrack(journey.id, "previous", "web-device");
 
-    expect(adapter.skipPrevCalls).toBe(1);
+    // Authoritative skip-back: Spotify is told to play the exact restored track.
+    expect(adapter.startCalls.at(-1)?.uris[0]).toBe(restored.activeTrack?.providerUri);
     expect(restored.activeTrack?.id).toBe(firstActiveId);
     expect(restored.playedTrackIds ?? []).not.toContain(firstActiveId);
   });

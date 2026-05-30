@@ -133,6 +133,36 @@ describe("spotify playback initiation", () => {
   });
 
 
+  it("on skip, commands Spotify to play exactly the track shown as active (no queue desync)", async () => {
+    const adapter = new RaceSpotifyAdapter();
+    const { service, store } = buildService(adapter);
+
+    const journey = await service.startJourney({
+      destination: "Dijon",
+      userPrompt: "cinematic golden-hour drive",
+      passengerMode: "solo",
+      provider: "spotify",
+      deviceId: "tesla-web-device"
+    });
+    // Device becomes reachable so playback is fully synced before the skip.
+    await service.registerSpotifyDevice(journey.id, "tesla-web-device", "ready", { syncOnly: true });
+
+    const before = store.getPlaybackSession(journey.id);
+    expect((before?.queuedTrackIds.length ?? 0)).toBeGreaterThan(0);
+
+    // Capture only the commands issued by the skip itself.
+    adapter.startCalls.length = 0;
+
+    const after = await service.skipSpotifyTrack(journey.id, "next", "tesla-web-device");
+
+    // The skip must explicitly (re)start the new active track — relying on Spotify's implicit
+    // "next" leaves the displayed track and the actually-played track free to diverge.
+    expect(adapter.startCalls.length).toBeGreaterThan(0);
+    expect(after.activeTrack?.providerUri).toBeDefined();
+    // What Spotify is told to play first === what the UI now shows as active.
+    expect(adapter.startCalls.at(-1)!.uris[0]).toBe(after.activeTrack!.providerUri);
+  });
+
   it("starts the head track once the device becomes reachable (not just queues it)", async () => {
     const adapter = new RaceSpotifyAdapter();
     const { service, store } = buildService(adapter);
