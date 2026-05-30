@@ -74,6 +74,11 @@ export interface SpotifyAdapter {
     name: string;
     description: string;
   }): Promise<SpotifyPlaylist>;
+  addTracksToPlaylist?(args: {
+    accessToken: string;
+    playlistId: string;
+    uris: string[];
+  }): Promise<void>;
 }
 
 interface OfficialSpotifyAdapterOptions {
@@ -240,6 +245,17 @@ export class OfficialSpotifyAdapter implements SpotifyAdapter {
     };
   }
 
+  async addTracksToPlaylist(args: { accessToken: string; playlistId: string; uris: string[] }): Promise<void> {
+    if (args.uris.length === 0) return;
+    const url = new URL(`${this.baseUrl}/playlists/${args.playlistId}/tracks`);
+    await this.request(
+      url,
+      args.accessToken,
+      { method: "POST", body: JSON.stringify({ uris: args.uris }) },
+      { parseJson: false }
+    );
+  }
+
   private async request<T>(
     url: URL,
     accessToken: string,
@@ -328,6 +344,7 @@ export function isSpotifyRateLimitError(error: unknown): boolean {
 export class MockSpotifyAdapter implements SpotifyAdapter {
   private queued = new Map<string, string[]>();
   private active = new Map<string, string>();
+  addTracksToPlaylistCalls: { playlistId: string; uris: string[] }[] = [];
 
   async searchTracks(args: { query: string; market: string; limit: number }): Promise<SpotifyTrackSearchResult[]> {
     const [artist = "Unknown Artist", title = args.query] = args.query.split(" - ");
@@ -406,6 +423,11 @@ export class MockSpotifyAdapter implements SpotifyAdapter {
       name: args.name,
       url: `https://open.spotify.com/playlist/${id}`
     };
+  }
+
+  async addTracksToPlaylist(args: { accessToken: string; playlistId: string; uris: string[] }): Promise<void> {
+    if (args.uris.length === 0) return;
+    this.addTracksToPlaylistCalls.push({ playlistId: args.playlistId, uris: args.uris });
   }
 }
 

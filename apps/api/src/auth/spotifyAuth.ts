@@ -12,7 +12,9 @@ export const SPOTIFY_SCOPES = [
   "user-read-playback-state",
   "user-modify-playback-state",
   // Reads the listener's top artists to personalize the soundtrack (familiarity↔discovery mix).
-  "user-top-read"
+  "user-top-read",
+  // Creates + extends the saved per-journey playlist.
+  "playlist-modify-private"
 ] as const;
 
 export interface SpotifyTokenStatus {

@@ -434,4 +434,34 @@ describe("spotify playback helpers", () => {
     expect(ids).not.toContain("fresh1-dup"); // same song key as fresh1 already picked
     expect(ids).toContain("fresh2");
   });
+
+  it("adds tracks to a playlist via POST /playlists/{id}/tracks", async () => {
+    const calls: { method: string; url: string; body: unknown }[] = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      calls.push({
+        method: init?.method ?? "GET",
+        url: String(input),
+        body: init?.body ? JSON.parse(String(init.body)) : undefined
+      });
+      return new Response(JSON.stringify({ snapshot_id: "snap" }), { status: 201 });
+    };
+    const adapter = new OfficialSpotifyAdapter({ baseUrl: "https://api.spotify.test/v1", fetchImpl, wait: async () => undefined });
+
+    await adapter.addTracksToPlaylist!({ accessToken: "tok", playlistId: "pl1", uris: ["spotify:track:a", "spotify:track:b"] });
+
+    expect(calls[0].method).toBe("POST");
+    expect(calls[0].url).toBe("https://api.spotify.test/v1/playlists/pl1/tracks");
+    expect(calls[0].body).toEqual({ uris: ["spotify:track:a", "spotify:track:b"] });
+  });
+
+  it("does not call the API when there are no uris to add", async () => {
+    let called = false;
+    const fetchImpl: typeof fetch = async () => {
+      called = true;
+      return new Response("{}", { status: 200 });
+    };
+    const adapter = new OfficialSpotifyAdapter({ baseUrl: "https://api.spotify.test/v1", fetchImpl, wait: async () => undefined });
+    await adapter.addTracksToPlaylist!({ accessToken: "t", playlistId: "pl1", uris: [] });
+    expect(called).toBe(false);
+  });
 });
