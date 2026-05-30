@@ -55,6 +55,17 @@ export interface JourneyDetail {
     targetBufferSize: 5;
     lastHeartbeatAt: string;
   };
+  context?: {
+    phase?: string;
+    speedBucket?: string;
+    etaMinutes?: number;
+    temperatureBucket?: string;
+    coarseRegion?: string;
+    localTimeIso?: string;
+  };
+  taste?: {
+    topGenres: string[];
+  };
 }
 
 export interface SongScoutHealth {
