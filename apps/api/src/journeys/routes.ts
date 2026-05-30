@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import type { TidalAuthService } from "../auth/tidalAuth.js";
 import type { SpotifyAuthService } from "../auth/spotifyAuth.js";
-import type { Store } from "../db/store.js";
+import { contextFromJourney, type Store } from "../db/store.js";
 import type { JourneyService } from "./journeyService.js";
 
 const startSchema = z.object({
@@ -62,6 +62,9 @@ export async function registerJourneyRoutes(
       analysisFailed && (!latestUpdate || analysisFailed.createdAtIso > latestUpdate.createdAtIso)
     );
 
+    const ctx = contextFromJourney(journey, store.latestTelemetry(id));
+    const taste = store.getCachedTasteProfile("local");
+
     return {
       journey,
       latestUpdate,
@@ -71,7 +74,18 @@ export async function registerJourneyRoutes(
         journey.status === "active" &&
         !hasTracks &&
         (!latestUpdate || lastUpdateFailed),
-      analysisError: !hasTracks && failureIsFresh ? analysisFailed!.message : undefined
+      analysisError: !hasTracks && failureIsFresh ? analysisFailed!.message : undefined,
+      // Privacy-safe glanceable drive context (no raw GPS/VIN).
+      context: {
+        phase: ctx.phase,
+        speedBucket: ctx.speedBucket,
+        etaMinutes: ctx.etaMinutes,
+        temperatureBucket: ctx.temperatureBucket,
+        coarseRegion: ctx.coarseRegion,
+        localTimeIso: ctx.localTimeIso
+      },
+      // Personalization readout from the 24h taste cache (only top genres exposed).
+      taste: taste ? { topGenres: taste.topGenres } : undefined
     };
   });
 

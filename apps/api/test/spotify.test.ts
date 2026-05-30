@@ -100,6 +100,34 @@ describe("spotify api", () => {
     await app.close();
   });
 
+  it("exposes privacy-safe drive context and cached taste genres on the journey detail", async () => {
+    const { app } = await buildApp(testConfig());
+
+    const start = await app.inject({
+      method: "POST",
+      url: "/journeys",
+      payload: {
+        destination: "Lago di Garda",
+        userPrompt: "golden hour drive",
+        passengerMode: "couple",
+        deviceId: "tesla-webplayer"
+      }
+    });
+    const journey = start.json<{ id: string }>();
+
+    const detail = await app.inject({ method: "GET", url: `/journeys/${journey.id}` });
+    const body = detail.json<{
+      context?: { phase?: string; coarseRegion?: string };
+      taste?: { topGenres: string[] };
+    }>();
+
+    expect(body.context?.phase).toBe("departure");
+    // Mock Spotify adapter supplies top artists, so analysis caches a taste profile.
+    expect(body.taste?.topGenres?.length ?? 0).toBeGreaterThan(0);
+
+    await app.close();
+  });
+
   it("manually steers the drive phase and re-curates the queue", async () => {
     const { app } = await buildApp(testConfig());
 
