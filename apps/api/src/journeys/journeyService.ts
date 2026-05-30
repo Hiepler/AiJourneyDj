@@ -730,6 +730,8 @@ export class JourneyService {
       queuedTrackIds: queuedTracks.map((track) => track.providerTrackId),
       resolvedIds
     });
+    // Mirror the curated set into the saved journey playlist (best-effort; never blocks the journey).
+    await this.syncJourneyPlaylist(journey, accessToken);
     return update;
   }
 
@@ -992,6 +994,60 @@ export class JourneyService {
       if (ageMs > this.config.journeyRefreshMs || unresolvedBuffer < 5) {
         await this.analyzeJourney(journey.id, ageMs > this.config.journeyRefreshMs ? "time-window" : "low-buffer");
       }
+    }
+  }
+
+  /** Lazily creates the private per-journey Spotify playlist; returns its id (or existing/undefined). */
+  private async ensureJourneySpotifyPlaylist(journey: JourneyRecord, accessToken: string): Promise<string | undefined> {
+    if (journey.provider !== "spotify" || !this.spotifyAdapter.createPlaylist) {
+      return journey.spotifyPlaylistId;
+    }
+    if (journey.spotifyPlaylistId) {
+      return journey.spotifyPlaylistId;
+    }
+    const date = journey.createdAtIso.slice(0, 10);
+    const playlist = await this.spotifyAdapter.createPlaylist({
+      accessToken,
+      name: `AI Journey DJ — ${journey.destination} · ${date}`,
+      description: `Telemetry-aware soundtrack generated for ${journey.destination}.`
+    });
+    this.store.updateJourneySpotifyPlaylist(journey.id, playlist.id, playlist.url);
+    this.store.audit(journey.id, "spotify.playlist_created", "Journey playlist created.", { playlistId: playlist.id });
+    return playlist.id;
+  }
+
+  /** Mirrors newly-curated tracks into the journey playlist. Best-effort: never throws. */
+  private async syncJourneyPlaylist(journey: JourneyRecord, accessToken: string): Promise<void> {
+    if (journey.provider !== "spotify" || !this.spotifyAdapter.addTracksToPlaylist) {
+      return;
+    }
+    try {
+      const pending = this.store
+        .listResolvedTracks(journey.id)
+        .filter(
+          (track) => track.provider === "spotify" && track.addedToPlaylist && !track.savedToPlaylist && track.providerUri
+        );
+      if (pending.length === 0) {
+        return;
+      }
+      const playlistId = await this.ensureJourneySpotifyPlaylist(journey, accessToken);
+      if (!playlistId) {
+        return;
+      }
+      const uris = pending.map((track) => track.providerUri as string);
+      for (let i = 0; i < uris.length; i += 100) {
+        await this.spotifyAdapter.addTracksToPlaylist({ accessToken, playlistId, uris: uris.slice(i, i + 100) });
+      }
+      this.store.markTracksSavedToPlaylist(pending.map((track) => track.id));
+      this.store.audit(journey.id, "spotify.playlist_extended", `Added ${pending.length} tracks to the journey playlist.`, {
+        count: pending.length
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn({ journeyId: journey.id, err: message }, "spotify.playlist.degraded");
+      this.store.audit(journey.id, "spotify.playlist_error", "Could not update the journey playlist; will retry next analysis.", {
+        error: message
+      });
     }
   }
 
