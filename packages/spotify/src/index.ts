@@ -1,5 +1,5 @@
 import type { ResolvedTrack, SongCandidate } from "@ai-journey-dj/core";
-import { normalizeText } from "@ai-journey-dj/core";
+import { normalizeText, songKey } from "@ai-journey-dj/core";
 
 export interface SpotifyTrackSearchResult {
   id: string;
@@ -553,21 +553,32 @@ export function queueTracksForBuffer<T extends ResolvedTrack>(
     activeProviderTrackId?: string;
     alreadyQueuedProviderIds: Set<string>;
     targetBufferSize?: number;
+    /** Provider track ids already consumed this journey (played/queued/surfaced). */
+    excludeProviderTrackIds?: Set<string>;
+    /** Song keys already consumed this journey — blocks other versions of the same song. */
+    excludeSongKeys?: Set<string>;
   }
 ): T[] {
   const target = args.targetBufferSize ?? 5;
-  const seen = new Set(args.alreadyQueuedProviderIds);
+  const seenIds = new Set(args.alreadyQueuedProviderIds);
   if (args.activeProviderTrackId) {
-    seen.add(args.activeProviderTrackId);
+    seenIds.add(args.activeProviderTrackId);
   }
+  for (const id of args.excludeProviderTrackIds ?? []) {
+    seenIds.add(id);
+  }
+  const seenKeys = new Set(args.excludeSongKeys ?? []);
 
   const selected: T[] = [];
   for (const track of resolvedTracks) {
     if (track.provider !== "spotify") continue;
     if (track.isPlayable === false) continue;
     if (!track.providerUri) continue;
-    if (seen.has(track.providerTrackId)) continue;
-    seen.add(track.providerTrackId);
+    if (seenIds.has(track.providerTrackId)) continue;
+    const key = songKey(track.artist, track.title);
+    if (seenKeys.has(key)) continue;
+    seenIds.add(track.providerTrackId);
+    seenKeys.add(key);
     selected.push(track);
     if (selected.length === target) break;
   }

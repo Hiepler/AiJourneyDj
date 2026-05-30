@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { ResolvedTrack, SongCandidate } from "@ai-journey-dj/core";
+import { songKey } from "@ai-journey-dj/core";
 
 import {
   MockSpotifyAdapter,
@@ -408,5 +409,29 @@ describe("spotify playback helpers", () => {
     expect(artists.length).toBeGreaterThan(0);
     expect(artists.every((artist) => typeof artist.name === "string" && Array.isArray(artist.genres))).toBe(true);
     expect(artists.some((artist) => artist.genres.length > 0)).toBe(true);
+  });
+
+  it("excludes consumed provider ids and song keys, and de-dupes by song key within the buffer", () => {
+    const tracks: ResolvedTrack[] = [
+      { provider: "spotify", providerTrackId: "played", providerUri: "spotify:track:played", artist: "A", title: "Played Song", matchConfidence: 0.9, matchReason: "x" },
+      { provider: "spotify", providerTrackId: "live", providerUri: "spotify:track:live", artist: "A", title: "Played Song - Live", matchConfidence: 0.9, matchReason: "x" },
+      { provider: "spotify", providerTrackId: "fresh1", providerUri: "spotify:track:fresh1", artist: "B", title: "Fresh One", matchConfidence: 0.9, matchReason: "x" },
+      { provider: "spotify", providerTrackId: "fresh1-dup", providerUri: "spotify:track:fresh1dup", artist: "B", title: "Fresh One (Radio Edit)", matchConfidence: 0.9, matchReason: "x" },
+      { provider: "spotify", providerTrackId: "fresh2", providerUri: "spotify:track:fresh2", artist: "C", title: "Fresh Two", matchConfidence: 0.9, matchReason: "x" }
+    ];
+
+    const selected = queueTracksForBuffer(tracks, {
+      alreadyQueuedProviderIds: new Set<string>(),
+      excludeProviderTrackIds: new Set(["played"]),
+      excludeSongKeys: new Set([songKey("A", "Played Song")]),
+      targetBufferSize: 5
+    });
+
+    const ids = selected.map((track) => track.providerTrackId);
+    expect(ids).not.toContain("played"); // excluded by provider id
+    expect(ids).not.toContain("live"); // excluded by song key (version of a consumed song)
+    expect(ids).toContain("fresh1");
+    expect(ids).not.toContain("fresh1-dup"); // same song key as fresh1 already picked
+    expect(ids).toContain("fresh2");
   });
 });
