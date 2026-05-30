@@ -55,13 +55,23 @@ export async function registerJourneyRoutes(
     const journey = service.getJourneyOrThrow(id);
     const latestUpdate = store.latestPlaylistUpdate(id);
     const tracks = store.listResolvedTracks(id);
+    const hasTracks = tracks.length > 0;
+    const analysisFailed = store.latestAuditEvent(id, "analysis.failed");
+    const lastUpdateFailed = latestUpdate?.status === "failed";
+    const failureIsFresh = Boolean(
+      analysisFailed && (!latestUpdate || analysisFailed.createdAtIso > latestUpdate.createdAtIso)
+    );
+
     return {
       journey,
       latestUpdate,
       tracks,
       playbackSession: store.getPlaybackSession(id),
-      needsAnalysis: journey.status === "active" && !latestUpdate,
-      analysisError: store.latestAuditMessage(id, "analysis.failed")
+      needsAnalysis:
+        journey.status === "active" &&
+        !hasTracks &&
+        (!latestUpdate || lastUpdateFailed),
+      analysisError: !hasTracks && failureIsFresh ? analysisFailed!.message : undefined
     };
   });
 
@@ -73,6 +83,27 @@ export async function registerJourneyRoutes(
   app.post("/journeys/:id/analyze", async (request) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     return service.analyzeJourney(id, "manual");
+  });
+
+  app.post("/journeys/:id/phase", async (request) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const { phase } = z
+      .object({
+        phase: z.enum(["departure", "cruise", "golden_hour", "focus", "arrival", "rest"])
+      })
+      .parse(request.body);
+    return service.setPhase(id, phase);
+  });
+
+  app.post("/journeys/:id/playback/skip", async (request) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const payload = z
+      .object({
+        direction: z.enum(["next", "previous"]),
+        deviceId: z.string().min(1).optional()
+      })
+      .parse(request.body);
+    return service.skipSpotifyTrack(id, payload.direction, payload.deviceId);
   });
 
   app.post("/journeys/:id/playback/device", async (request) => {

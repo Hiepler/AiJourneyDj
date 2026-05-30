@@ -1,7 +1,12 @@
 import { mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { z } from "zod";
+
+// Anchor relative paths to the API package root (apps/api), not the process CWD, so the
+// database location is deterministic regardless of where the server is launched from.
+const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 function envBoolean(defaultValue: boolean) {
   return z.preprocess((value) => {
@@ -53,7 +58,15 @@ const schema = z.object({
   XAI_API_KEY: z.string().optional(),
   XAI_BASE_URL: z.string().url().default("https://api.x.ai/v1"),
   XAI_MODEL: z.string().default("grok-4.3"),
+  // XAI_MOCK is the shared "mock all AI providers" switch (also gates open-music enrichment).
   XAI_MOCK: envBoolean(true),
+  // Song scout provider: gemini (default) uses Gemini Flash + Google Search grounding; xai uses Grok web_search.
+  SONG_SCOUT: z.enum(["gemini", "xai"]).default("gemini"),
+  GEMINI_API_KEY: z.string().optional(),
+  GEMINI_BASE_URL: z.string().url().default("https://generativelanguage.googleapis.com/v1beta"),
+  GEMINI_MODEL: z.string().default("gemini-3.5-flash"),
+  // Hard cap on the LLM song-scout request so a hung provider can never block a journey.
+  SONG_SCOUT_TIMEOUT_MS: z.coerce.number().int().min(1000).default(30_000),
   MUSICBRAINZ_BASE_URL: z.string().url().default("https://musicbrainz.org/ws/2"),
   LISTENBRAINZ_BASE_URL: z.string().url().default("https://api.listenbrainz.org/1"),
   TESLA_TELEMETRY_ENABLED: envBoolean(false),
@@ -66,7 +79,9 @@ export type AppConfig = ReturnType<typeof loadConfig>;
 
 export function loadConfig(env = process.env) {
   const config = schema.parse(env);
-  const databasePath = resolve(config.DATABASE_PATH);
+  const databasePath = isAbsolute(config.DATABASE_PATH)
+    ? config.DATABASE_PATH
+    : resolve(packageRoot, config.DATABASE_PATH);
   mkdirSync(dirname(databasePath), { recursive: true });
 
   return {

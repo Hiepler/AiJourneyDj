@@ -69,6 +69,50 @@ describe("spotify resolver", () => {
     });
   });
 
+  it("fills a five-track buffer from mock resolver output", async () => {
+    const resolver = new SpotifyResolver(new MockSpotifyAdapter(), {
+      accessToken: "token",
+      market: "DE",
+      searchTimeoutMs: 8_000,
+      targetResolveCount: 5
+    });
+    const candidates: SongCandidate[] = [
+      { artist: "Khruangbin", title: "A Calf Born in Winter", reason: "warm", source: "fallback", confidence: 0.72 },
+      { artist: "The War on Drugs", title: "Red Eyes", reason: "momentum", source: "fallback", confidence: 0.78 },
+      { artist: "M83", title: "Wait", reason: "cinematic", source: "fallback", confidence: 0.7 },
+      { artist: "Tycho", title: "A Walk", reason: "steady", source: "fallback", confidence: 0.74 },
+      { artist: "Roosevelt", title: "Moving On", reason: "bright", source: "fallback", confidence: 0.73 }
+    ];
+    const resolved = await resolver.resolveCandidates(candidates);
+    const selected = queueTracksForBuffer(resolved, {
+      alreadyQueuedProviderIds: new Set(),
+      targetBufferSize: 5
+    });
+    expect(resolved).toHaveLength(5);
+    expect(selected).toHaveLength(5);
+  });
+
+  it("resolves mock adapter candidates with search timeouts enabled", async () => {
+    const resolver = new SpotifyResolver(new MockSpotifyAdapter(), {
+      accessToken: "token",
+      market: "DE",
+      searchTimeoutMs: 8_000,
+      targetResolveCount: 5
+    });
+
+    const resolved = await resolver.resolveCandidates([
+      {
+        artist: "Khruangbin",
+        title: "A Calf Born in Winter",
+        reason: "warm",
+        source: "fallback",
+        confidence: 0.72
+      }
+    ]);
+
+    expect(resolved.length).toBeGreaterThan(0);
+  });
+
   it("uses fuzzy artist and title matching when ISRC is unavailable", () => {
     const match = bestSpotifyMatch(
       {
@@ -194,6 +238,24 @@ describe("spotify resolver", () => {
       isPlayable: true,
       market: "DE"
     });
+  });
+
+  it("aborts a 429 rate-limit backoff instead of retrying when the request is aborted", async () => {
+    let calls = 0;
+    const fetchImpl: typeof fetch = async () => {
+      calls += 1;
+      // A heavily rate-limited Spotify with a long Retry-After — must NOT be waited out.
+      return new Response("rate limited", { status: 429, headers: { "Retry-After": "60" } });
+    };
+    const adapter = new OfficialSpotifyAdapter({ baseUrl: "https://api.spotify.test/v1", fetchImpl });
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      adapter.searchTracks({ accessToken: "t", query: "M83 - Wait", market: "DE", limit: 5, signal: controller.signal })
+    ).rejects.toThrow();
+    // No retry storm: the aborted signal short-circuits the backoff after the first response.
+    expect(calls).toBe(1);
   });
 });
 

@@ -1,4 +1,5 @@
 import type {
+  JourneyPhase,
   JourneyRecord,
   NormalizedTelemetryEvent,
   PlaybackSession,
@@ -18,7 +19,7 @@ import {
 } from "@ai-journey-dj/spotify";
 import type { OpenMusicClient, NoopOpenMusicClient } from "@ai-journey-dj/open-music";
 import type { SongScout } from "@ai-journey-dj/recommendation";
-import { selectRollingBatch } from "@ai-journey-dj/recommendation";
+import { fallbackCandidates, selectRollingBatch } from "@ai-journey-dj/recommendation";
 
 import type { AppConfig } from "../config/env.js";
 import { contextFromJourney, type Store } from "../db/store.js";
@@ -33,7 +34,24 @@ export interface StartJourneyInput {
   deviceId?: string;
 }
 
+/** Minimal structured logger (satisfied by the Fastify/pino logger). */
+export interface JourneyLogger {
+  info(obj: Record<string, unknown>, msg?: string): void;
+  warn(obj: Record<string, unknown>, msg?: string): void;
+  error(obj: Record<string, unknown>, msg?: string): void;
+}
+
+const noopLogger: JourneyLogger = {
+  info() {},
+  warn() {},
+  error() {}
+};
+
 export class JourneyService {
+  /** One in-flight analyze per journey; global chain avoids Spotify 429 dogpiles. */
+  private readonly analyzeByJourney = new Map<string, Promise<PlaylistUpdate>>();
+  private analyzeGlobalChain: Promise<void> = Promise.resolve();
+
   constructor(
     private readonly config: AppConfig,
     private readonly store: Store,
@@ -42,7 +60,8 @@ export class JourneyService {
     private readonly spotifyAuth: SpotifyAuthService,
     private readonly spotifyAdapter: SpotifyAdapter,
     private readonly songScout: SongScout,
-    private readonly openMusic: OpenMusicClient | NoopOpenMusicClient
+    private readonly openMusic: OpenMusicClient | NoopOpenMusicClient,
+    private readonly logger: JourneyLogger = noopLogger
   ) {}
 
   async startJourney(input: StartJourneyInput): Promise<JourneyRecord> {
@@ -115,21 +134,68 @@ export class JourneyService {
   }
 
   async analyzeJourney(journeyId: string, reason = "manual"): Promise<PlaylistUpdate> {
+    const inFlight = this.analyzeByJourney.get(journeyId);
+    if (inFlight) {
+      return inFlight;
+    }
+
+    const run = this.analyzeGlobalChain
+      .catch(() => undefined)
+      .then(() => this.analyzeJourneyBody(journeyId, reason));
+    this.analyzeGlobalChain = run.then(
+      () => undefined,
+      () => undefined
+    );
+
+    const tracked = run.finally(() => {
+      if (this.analyzeByJourney.get(journeyId) === tracked) {
+        this.analyzeByJourney.delete(journeyId);
+      }
+    });
+    this.analyzeByJourney.set(journeyId, tracked);
+    return tracked;
+  }
+
+  private async analyzeJourneyBody(journeyId: string, reason: string): Promise<PlaylistUpdate> {
     const journey = this.getJourneyOrThrow(journeyId);
     if (journey.status !== "active") {
       throw new Error("Cannot analyze a stopped journey.");
     }
 
+    const startedAt = Date.now();
+    this.logger.info({ journeyId, reason, provider: journey.provider }, "journey.analyze.start");
+    this.store.clearAuditEvents(journeyId, "analysis.failed");
     try {
-      if (journey.provider === "tidal") {
-        return await this.analyzeTidalJourney(journey, reason);
+      const update =
+        journey.provider === "tidal"
+          ? await this.analyzeTidalJourney(journey, reason)
+          : await this.analyzeSpotifyJourney(journey, reason);
+      const trackCount = this.store.listResolvedTracks(journeyId).length;
+      if (trackCount > 0) {
+        this.store.clearAuditEvents(journeyId, "analysis.failed");
       }
-      return await this.analyzeSpotifyJourney(journey, reason);
+      this.logger.info(
+        { journeyId, reason, status: update.status, batchSize: update.batchSize, trackCount, ms: Date.now() - startedAt },
+        "journey.analyze.done"
+      );
+      return update;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      this.logger.error({ journeyId, reason, ms: Date.now() - startedAt, err: message }, "journey.analyze.failed");
       this.store.audit(journeyId, "analysis.failed", message, { reason });
       throw error;
     }
+  }
+
+  async setPhase(journeyId: string, phase: JourneyPhase): Promise<JourneyRecord> {
+    const journey = this.getJourneyOrThrow(journeyId);
+    if (journey.status !== "active") {
+      throw new Error("Cannot change the phase of a stopped journey.");
+    }
+    this.store.updateJourneyPhase(journeyId, phase);
+    this.store.audit(journeyId, "phase.manual_override", `Drive phase manually set to ${phase}.`, { phase });
+    await this.analyzeJourney(journeyId, "phase-override");
+    return this.getJourneyOrThrow(journeyId);
   }
 
   async registerSpotifyDevice(
@@ -195,6 +261,7 @@ export class JourneyService {
       status,
       activeTrack: playedActiveTrack,
       queuedTrackIds,
+      playedTrackIds: session?.playedTrackIds ?? [],
       targetBufferSize: 5,
       lastHeartbeatAt: new Date().toISOString()
     });
@@ -208,6 +275,145 @@ export class JourneyService {
       );
     }
 
+    return this.store.getPlaybackSession(journeyId) as PlaybackSession;
+  }
+
+  async skipSpotifyTrack(
+    journeyId: string,
+    direction: "next" | "previous",
+    deviceId?: string
+  ): Promise<PlaybackSession> {
+    const journey = this.getJourneyOrThrow(journeyId);
+    if (journey.provider !== "spotify") {
+      throw new Error("Track skip is only supported for Spotify journeys.");
+    }
+    if (journey.status !== "active") {
+      throw new Error("Cannot skip tracks on a stopped journey.");
+    }
+
+    const session = this.store.getPlaybackSession(journeyId);
+    const stored = this.store.listResolvedTracks(journeyId).filter((track) => track.provider === "spotify");
+    const playedIds = session?.playedTrackIds ?? [];
+    const { activeTrack, queueTracks } = this.pickSpotifyPlaybackTracks(stored, session);
+    const effectiveDeviceId = deviceId ?? journey.spotifyDeviceId ?? session?.deviceId;
+    const accessToken = await this.spotifyAuth.getAccessToken();
+
+    if (direction === "next") {
+      if (queueTracks.length === 0) {
+        await this.analyzeJourney(journeyId, "skip-next");
+        const refreshed = this.store.getPlaybackSession(journeyId);
+        const refreshedStored = this.store.listResolvedTracks(journeyId).filter((track) => track.provider === "spotify");
+        const picked = this.pickSpotifyPlaybackTracks(refreshedStored, refreshed);
+        if (effectiveDeviceId && picked.activeTrack) {
+          const resolvedDeviceId = await this.spotifyAdapter.resolvePlaybackDeviceId({
+            accessToken,
+            preferredDeviceId: effectiveDeviceId
+          });
+          await this.syncSpotifyPlayback({
+            journeyId,
+            accessToken,
+            deviceId: resolvedDeviceId,
+            activeTrack: picked.activeTrack,
+            queueTracks: picked.queueTracks,
+            shouldStart: true
+          });
+        }
+        return this.store.getPlaybackSession(journeyId) as PlaybackSession;
+      }
+
+      const newActive = queueTracks[0];
+      const newQueue = queueTracks.slice(1);
+      const newPlayed = activeTrack?.id ? [...playedIds, activeTrack.id] : playedIds;
+
+      if (effectiveDeviceId && newActive) {
+        const resolvedDeviceId = await this.spotifyAdapter.resolvePlaybackDeviceId({
+          accessToken,
+          preferredDeviceId: effectiveDeviceId
+        });
+        const applied = await this.applySpotifySkip({
+          journeyId,
+          accessToken,
+          deviceId: resolvedDeviceId,
+          direction: "next",
+          fallback: {
+            activeTrack: newActive,
+            queueTracks: newQueue,
+            shouldStart: true
+          }
+        });
+        if (!applied) {
+          throw new Error("Could not skip to the next track on Spotify.");
+        }
+      }
+
+      this.saveSession({
+        journeyId,
+        provider: "spotify",
+        deviceId: effectiveDeviceId,
+        status: effectiveDeviceId ? "playing" : "degraded",
+        activeTrack: newActive,
+        queuedTrackIds: newQueue.map((track) => track.id),
+        playedTrackIds: newPlayed,
+        targetBufferSize: 5,
+        lastHeartbeatAt: new Date().toISOString()
+      });
+
+      if (newQueue.length < 4) {
+        void this.analyzeJourney(journeyId, "low-buffer").catch(() => undefined);
+      }
+    } else {
+      if (playedIds.length === 0) {
+        throw new Error("No previous track in this journey yet.");
+      }
+
+      const previousId = playedIds[playedIds.length - 1];
+      const newActive = stored.find((track) => track.id === previousId);
+      if (!newActive) {
+        throw new Error("Previous track is no longer available.");
+      }
+
+      const newPlayed = playedIds.slice(0, -1);
+      const newQueueIds = [activeTrack?.id, ...queueTracks.map((track) => track.id)].filter(
+        (id): id is string => Boolean(id)
+      );
+
+      if (effectiveDeviceId) {
+        const resolvedDeviceId = await this.spotifyAdapter.resolvePlaybackDeviceId({
+          accessToken,
+          preferredDeviceId: effectiveDeviceId
+        });
+        const applied = await this.applySpotifySkip({
+          journeyId,
+          accessToken,
+          deviceId: resolvedDeviceId,
+          direction: "previous",
+          fallback: {
+            activeTrack: newActive,
+            queueTracks: newQueueIds
+              .map((id) => stored.find((track) => track.id === id))
+              .filter((track): track is ResolvedTrack & { id: string; addedToPlaylist: boolean } => Boolean(track)),
+            shouldStart: true
+          }
+        });
+        if (!applied) {
+          throw new Error("Could not skip to the previous track on Spotify.");
+        }
+      }
+
+      this.saveSession({
+        journeyId,
+        provider: "spotify",
+        deviceId: effectiveDeviceId,
+        status: effectiveDeviceId ? "playing" : "degraded",
+        activeTrack: newActive,
+        queuedTrackIds: newQueueIds.slice(0, 5),
+        playedTrackIds: newPlayed,
+        targetBufferSize: 5,
+        lastHeartbeatAt: new Date().toISOString()
+      });
+    }
+
+    this.store.audit(journeyId, "spotify.skip", `Skipped ${direction} track.`, { direction });
     return this.store.getPlaybackSession(journeyId) as PlaybackSession;
   }
 
@@ -289,20 +495,30 @@ export class JourneyService {
     const journeyId = journey.id;
     const telemetry = this.store.latestTelemetry(journeyId);
     const context = contextFromJourney(journey, telemetry);
-    const candidates = await this.generateAndStoreCandidates(journeyId, context, 12);
+    const candidates = await this.generateAndStoreCandidates(journeyId, context, 8);
+    const tokenStartedAt = Date.now();
     const accessToken = await this.spotifyAuth.getAccessToken();
+    this.logger.info({ journeyId, ms: Date.now() - tokenStartedAt }, "spotify.token.done");
     const resolver = new SpotifyResolver(this.spotifyAdapter, {
       accessToken,
-      market: this.config.SPOTIFY_MARKET
+      market: this.config.SPOTIFY_MARKET,
+      searchTimeoutMs: 8_000,
+      targetResolveCount: 5
     });
+    const resolveStartedAt = Date.now();
     const resolved = await resolver.resolveCandidates(candidates);
+    this.logger.info(
+      { journeyId, candidates: candidates.length, resolved: resolved.length, ms: Date.now() - resolveStartedAt },
+      "spotify.resolve.done"
+    );
     const resolvedIds = this.storeResolved(journeyId, candidates, resolved);
 
     let stored = this.store.listResolvedTracks(journeyId).filter((track) => track.provider === "spotify");
     let session = this.store.getPlaybackSession(journeyId);
-    let activeTrack = session?.activeTrack && session.activeTrack.provider === "spotify"
-      ? stored.find((track) => track.id === session?.activeTrack?.id)
-      : undefined;
+    let activeTrack =
+      session?.activeTrack && session.activeTrack.provider === "spotify"
+        ? stored.find((track) => track.id === session?.activeTrack?.id)
+        : undefined;
 
     if (!activeTrack) {
       activeTrack = stored.find((track) => track.providerUri && track.isPlayable !== false);
@@ -324,12 +540,23 @@ export class JourneyService {
       const fallbackResolved = await resolver.resolveCandidates(fallbackCandidates);
       this.storeResolved(journeyId, fallbackCandidates, fallbackResolved);
       stored = this.store.listResolvedTracks(journeyId).filter((track) => track.provider === "spotify");
-      activeTrack = activeTrack ?? stored.find((track) => track.providerUri && track.isPlayable !== false);
-      selected = queueTracksForBuffer(stored, {
+      const alreadyQueued = new Set([
+        ...currentQueued.map((track) => track.providerTrackId),
+        ...selected.map((track) => track.providerTrackId)
+      ]);
+      const additional = queueTracksForBuffer(stored, {
         activeProviderTrackId: activeTrack?.providerTrackId,
-        alreadyQueuedProviderIds: new Set([...currentQueued.map((track) => track.providerTrackId), ...selected.map((track) => track.providerTrackId)]),
+        alreadyQueuedProviderIds: alreadyQueued,
         targetBufferSize: Math.max(0, 5 - currentQueued.length - selected.length)
       });
+      for (const track of additional) {
+        if (!selected.some((item) => item.providerTrackId === track.providerTrackId)) {
+          selected.push(track);
+        }
+        if (currentQueued.length + selected.length >= 5) {
+          break;
+        }
+      }
     }
 
     session = this.store.getPlaybackSession(journeyId);
@@ -429,6 +656,40 @@ export class JourneyService {
     };
   }
 
+  private async applySpotifySkip(args: {
+    journeyId: string;
+    accessToken: string;
+    deviceId: string;
+    direction: "next" | "previous";
+    fallback: {
+      activeTrack?: ResolvedTrack;
+      queueTracks: ResolvedTrack[];
+      shouldStart: boolean;
+    };
+  }): Promise<boolean> {
+    try {
+      if (args.direction === "next") {
+        await this.spotifyAdapter.skipToNext({ accessToken: args.accessToken, deviceId: args.deviceId });
+      } else {
+        await this.spotifyAdapter.skipToPrevious({ accessToken: args.accessToken, deviceId: args.deviceId });
+      }
+      return true;
+    } catch (error) {
+      if (isSpotifyDeviceNotFoundError(error) || isSpotifyRateLimitError(error)) {
+        const playback = await this.syncSpotifyPlayback({
+          journeyId: args.journeyId,
+          accessToken: args.accessToken,
+          deviceId: args.deviceId,
+          activeTrack: args.fallback.activeTrack,
+          queueTracks: args.fallback.queueTracks,
+          shouldStart: args.fallback.shouldStart
+        });
+        return playback.deviceReachable;
+      }
+      throw error;
+    }
+  }
+
   private async syncSpotifyPlayback(args: {
     journeyId: string;
     accessToken: string;
@@ -458,7 +719,15 @@ export class JourneyService {
       } else if (isSpotifyRateLimitError(error)) {
         return { deviceReachable: true, rateLimited: true };
       } else {
-        throw error;
+        // Playback is best-effort: a transient Spotify error (e.g. 500) must not fail the
+        // journey. The queue is already saved; degrade and let the user retry playback.
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn({ journeyId: args.journeyId, deviceId, err: message }, "spotify.transfer.degraded");
+        this.store.audit(args.journeyId, "spotify.playback_error", "Spotify transfer failed; queue saved, playback degraded.", {
+          deviceId,
+          error: message
+        });
+        return { deviceReachable: false };
       }
     }
 
@@ -496,7 +765,13 @@ export class JourneyService {
         if (isSpotifyRateLimitError(error)) {
           return { deviceReachable: true, rateLimited: true };
         }
-        throw error;
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn({ journeyId: args.journeyId, deviceId, err: message }, "spotify.start.degraded");
+        this.store.audit(args.journeyId, "spotify.playback_error", "Spotify start playback failed; queue saved, playback degraded.", {
+          deviceId,
+          error: message
+        });
+        return { deviceReachable: false };
       }
     }
 
@@ -529,7 +804,13 @@ export class JourneyService {
           rateLimited = true;
           break;
         }
-        throw error;
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn({ journeyId: args.journeyId, deviceId, err: message }, "spotify.queue.degraded");
+        this.store.audit(args.journeyId, "spotify.playback_error", "Spotify queue add failed; remaining tracks saved, playback degraded.", {
+          deviceId,
+          error: message
+        });
+        return { deviceReachable: false };
       }
     }
 
@@ -540,6 +821,10 @@ export class JourneyService {
   }
 
   async maybeRefreshActiveJourneys(): Promise<void> {
+    if (this.analyzeByJourney.size > 0) {
+      return;
+    }
+
     for (const journey of this.store.listActiveJourneys()) {
       const latest = this.store.latestPlaylistUpdate(journey.id);
       if (!latest) {
@@ -563,8 +848,36 @@ export class JourneyService {
     context: Parameters<SongScout["generateCandidates"]>[0],
     targetCount: number
   ): Promise<SongCandidate[]> {
-    const generated = await this.songScout.generateCandidates(context, targetCount);
+    let generated: SongCandidate[];
+    const scoutStartedAt = Date.now();
+    this.logger.info({ journeyId, targetCount }, "scout.generate.start");
+    try {
+      generated = await this.songScout.generateCandidates(context, targetCount);
+    } catch (error) {
+      if (!isRecoverableScoutError(error)) {
+        throw error;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        { journeyId, ms: Date.now() - scoutStartedAt, err: message },
+        "scout.generate.fallback"
+      );
+      this.store.audit(
+        journeyId,
+        "recommendation.scout_failed",
+        "Song scout returned unusable output; using deterministic fallback candidates.",
+        { error: message }
+      );
+      generated = fallbackCandidates(context, targetCount);
+    }
+    this.logger.info(
+      { journeyId, count: generated.length, source: generated[0]?.source, ms: Date.now() - scoutStartedAt },
+      "scout.generate.done"
+    );
+
+    const enrichStartedAt = Date.now();
     const enriched = await Promise.all(generated.map((candidate) => this.openMusic.enrichCandidate(candidate)));
+    this.logger.info({ journeyId, count: enriched.length, ms: Date.now() - enrichStartedAt }, "scout.enrich.done");
     return enriched.map((candidate) => {
       const id = this.store.saveCandidate(journeyId, candidate);
       return { ...candidate, id };
@@ -603,4 +916,16 @@ export class JourneyService {
       targetBufferSize: 5
     });
   }
+}
+
+function isRecoverableScoutError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return true;
+  }
+
+  if (error.message.startsWith("Prompt contains forbidden data hints")) {
+    return false;
+  }
+
+  return true;
 }

@@ -50,9 +50,17 @@ export interface JourneyDetail {
     status: string;
     activeTrack?: Track;
     queuedTrackIds: string[];
+    playedTrackIds?: string[];
     targetBufferSize: 5;
     lastHeartbeatAt: string;
   };
+}
+
+export interface SongScoutHealth {
+  provider: "gemini" | "xai";
+  model: string;
+  webSearch: boolean;
+  mock: boolean;
 }
 
 export interface Health {
@@ -63,6 +71,7 @@ export interface Health {
   spotifyMock: boolean;
   spotifyPremium: boolean;
   xaiMock: boolean;
+  songScout: SongScoutHealth;
   telemetryEnabled: boolean;
   journeyRefreshMinutes: number;
 }
@@ -128,8 +137,18 @@ export const api = {
     request<Journey>(`/journeys/${id}/stop`, {
       method: "POST"
     }),
+  setPhase: (id: string, phase: string) =>
+    request<Journey>(`/journeys/${id}/phase`, {
+      method: "POST",
+      body: JSON.stringify({ phase })
+    }),
   registerSpotifyDevice: (id: string, payload: { deviceId: string; status?: string; syncOnly?: boolean }) =>
     request<JourneyDetail["playbackSession"]>(`/journeys/${id}/playback/device`, {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  skipTrack: (id: string, payload: { direction: "next" | "previous"; deviceId?: string }) =>
+    request<NonNullable<JourneyDetail["playbackSession"]>>(`/journeys/${id}/playback/skip`, {
       method: "POST",
       body: JSON.stringify(payload)
     }),

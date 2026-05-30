@@ -49,7 +49,7 @@ export interface SongCandidate {
   year?: number;
   isrc?: string;
   reason: string;
-  source: "grok" | "fallback" | "musicbrainz" | "listenbrainz";
+  source: "grok" | "gemini" | "fallback" | "musicbrainz" | "listenbrainz";
   confidence: number;
 }
 
@@ -115,6 +115,7 @@ export interface PlaybackSession {
   status: PlaybackSessionStatus;
   activeTrack?: ResolvedTrack & { id?: string };
   queuedTrackIds: string[];
+  playedTrackIds?: string[];
   targetBufferSize: 5;
   lastHeartbeatAt: string;
 }
@@ -125,7 +126,7 @@ export interface QueueOperation {
   provider: StreamingProvider;
   providerTrackId: string;
   providerUri?: string;
-  operation: "start" | "queue" | "fallback";
+  operation: "start" | "queue" | "fallback" | "skip";
   status: PlaylistUpdateStatus;
   deviceId?: string;
   createdAtIso: string;

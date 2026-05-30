@@ -283,14 +283,15 @@ export class Store {
   savePlaybackSession(session: PlaybackSession): void {
     this.db.run(
       `INSERT INTO playback_sessions
-       (journey_id, provider, device_id, status, active_track_id, queued_track_ids, target_buffer_size, last_heartbeat_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       (journey_id, provider, device_id, status, active_track_id, queued_track_ids, played_track_ids, target_buffer_size, last_heartbeat_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(journey_id) DO UPDATE SET
          provider = excluded.provider,
          device_id = excluded.device_id,
          status = excluded.status,
          active_track_id = excluded.active_track_id,
          queued_track_ids = excluded.queued_track_ids,
+         played_track_ids = excluded.played_track_ids,
          target_buffer_size = excluded.target_buffer_size,
          last_heartbeat_at = excluded.last_heartbeat_at`,
       [
@@ -300,6 +301,7 @@ export class Store {
         session.status,
         session.activeTrack?.id,
         JSON.stringify(session.queuedTrackIds),
+        JSON.stringify(session.playedTrackIds ?? []),
         session.targetBufferSize,
         session.lastHeartbeatAt
       ]
@@ -319,6 +321,7 @@ export class Store {
       status: row.status,
       activeTrack,
       queuedTrackIds: JSON.parse(row.queued_track_ids),
+      playedTrackIds: JSON.parse(row.played_track_ids ?? "[]"),
       targetBufferSize: 5,
       lastHeartbeatAt: row.last_heartbeat_at
     };
@@ -366,11 +369,16 @@ export class Store {
     );
   }
 
-  latestAuditMessage(journeyId: string, type: string): string | undefined {
-    return this.db.get<{ message: string }>(
-      "SELECT message FROM audit_events WHERE journey_id = ? AND type = ? ORDER BY id DESC LIMIT 1",
+  latestAuditEvent(journeyId: string, type: string): { message: string; createdAtIso: string } | undefined {
+    const row = this.db.get<{ message: string; created_at: string }>(
+      "SELECT message, created_at FROM audit_events WHERE journey_id = ? AND type = ? ORDER BY id DESC LIMIT 1",
       [journeyId, type]
-    )?.message;
+    );
+    return row ? { message: row.message, createdAtIso: row.created_at } : undefined;
+  }
+
+  clearAuditEvents(journeyId: string, type: string): void {
+    this.db.run("DELETE FROM audit_events WHERE journey_id = ? AND type = ?", [journeyId, type]);
   }
 
   auditEvents(journeyId: string, sinceId = 0): Array<{ id: number; type: string; message: string; createdAtIso: string }> {

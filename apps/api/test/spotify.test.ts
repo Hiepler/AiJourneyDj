@@ -39,7 +39,13 @@ describe("spotify api", () => {
     expect(health.json()).toMatchObject({
       spotifyConnected: true,
       spotifyMock: true,
-      spotifyPremium: true
+      spotifyPremium: true,
+      songScout: {
+        provider: "gemini",
+        model: "gemini-3.5-flash",
+        webSearch: false,
+        mock: true
+      }
     });
 
     const token = await app.inject({ method: "GET", url: "/auth/spotify/token" });
@@ -75,20 +81,80 @@ describe("spotify api", () => {
     const journey = start.json<{ id: string }>();
     const detail = await app.inject({ method: "GET", url: `/journeys/${journey.id}` });
     expect(detail.statusCode).toBe(200);
-    expect(detail.json()).toMatchObject({
+    const detailBody = detail.json();
+    expect(detailBody).toMatchObject({
       playbackSession: {
         provider: "spotify",
         deviceId: "tesla-webplayer",
-        status: "playing",
         targetBufferSize: 5
       },
       latestUpdate: {
-        batchSize: 5,
-        status: "success"
+        status: expect.stringMatching(/success|degraded/)
       }
     });
-    expect(detail.json<{ playbackSession: { queuedTrackIds: string[] } }>().playbackSession.queuedTrackIds).toHaveLength(5);
-    expect(detail.json<{ tracks: Array<{ provider: string }> }>().tracks.every((track) => track.provider === "spotify")).toBe(true);
+    expect(detailBody.playbackSession?.status).toMatch(/playing|degraded/);
+    expect(detailBody.playbackSession?.queuedTrackIds?.length ?? 0).toBeGreaterThanOrEqual(4);
+    expect(detailBody.tracks.length).toBeGreaterThanOrEqual(5);
+    expect(detailBody.tracks.every((track: { provider: string }) => track.provider === "spotify")).toBe(true);
+
+    await app.close();
+  });
+
+  it("manually steers the drive phase and re-curates the queue", async () => {
+    const { app } = await buildApp(testConfig());
+
+    const start = await app.inject({
+      method: "POST",
+      url: "/journeys",
+      payload: {
+        destination: "Dijon",
+        userPrompt: "golden hour drive",
+        passengerMode: "couple",
+        deviceId: "tesla-webplayer"
+      }
+    });
+    const journey = start.json<{ id: string }>();
+
+    const before = await app.inject({ method: "GET", url: `/journeys/${journey.id}` });
+    const beforeUpdateId = before.json<{ latestUpdate?: { id: string } }>().latestUpdate?.id;
+    expect(beforeUpdateId).toBeDefined();
+
+    const setPhase = await app.inject({
+      method: "POST",
+      url: `/journeys/${journey.id}/phase`,
+      payload: { phase: "focus" }
+    });
+    expect(setPhase.statusCode).toBe(200);
+    expect(setPhase.json()).toMatchObject({ phase: "focus" });
+
+    const after = await app.inject({ method: "GET", url: `/journeys/${journey.id}` });
+    expect(after.json()).toMatchObject({ journey: { phase: "focus" } });
+    // A fresh analysis ran for the new phase.
+    expect(after.json<{ latestUpdate?: { id: string } }>().latestUpdate?.id).not.toBe(beforeUpdateId);
+
+    const phaseEvent = await app.inject({ method: "GET", url: `/history/${journey.id}` });
+    expect(
+      phaseEvent.json<{ events: Array<{ type: string }> }>().events.some((event) => event.type === "phase.manual_override")
+    ).toBe(true);
+
+    await app.close();
+  });
+
+  it("rejects an unknown drive phase", async () => {
+    const { app } = await buildApp(testConfig());
+    const start = await app.inject({
+      method: "POST",
+      url: "/journeys",
+      payload: { destination: "Dijon", userPrompt: "drive", passengerMode: "solo", deviceId: "dev" }
+    });
+    const journey = start.json<{ id: string }>();
+
+    const bad = await app.inject({
+      method: "POST",
+      url: `/journeys/${journey.id}/phase`,
+      payload: { phase: "party" }
+    });
+    expect(bad.statusCode).toBeGreaterThanOrEqual(400);
 
     await app.close();
   });

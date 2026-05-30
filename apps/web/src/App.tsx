@@ -12,6 +12,8 @@ import {
   Power,
   RefreshCw,
   Route,
+  SkipBack,
+  SkipForward,
   Sparkles,
   Sunset,
   Wifi
@@ -20,6 +22,7 @@ import {
 import { api, type Health, type Journey, type JourneyDetail } from "./lib/api.js";
 import {
   connectSpotifyWebPlayer,
+  skipSpotifyBrowserTrack,
   spotifySdkStatusLabel,
   startSpotifyBrowserPlayback,
   type SpotifyPlayerInstance,
@@ -41,6 +44,13 @@ function phaseMeta(phase?: string) {
   return PHASES.find((entry) => entry.key === phase) ?? PHASES[0];
 }
 
+function humanizeAnalysisError(message: string): string {
+  if (/json|syntaxerror|unexpected token/i.test(message)) {
+    return "Song suggestions could not be loaded. Tap Retry below — the server will try again.";
+  }
+  return message;
+}
+
 export function App() {
   const [health, setHealth] = useState<Health>();
   const [history, setHistory] = useState<Journey[]>([]);
@@ -52,6 +62,7 @@ export function App() {
   const [spotifyStatus, setSpotifyStatus] = useState<SpotifySdkStatus>("idle");
   const [spotifyDeviceId, setSpotifyDeviceId] = useState<string>();
   const [isPaused, setIsPaused] = useState<boolean | undefined>();
+  const [retuningPhase, setRetuningPhase] = useState<string>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -242,6 +253,10 @@ export function App() {
     await loadTracks(true);
   }
 
+  async function retryAnalysis() {
+    await loadTracks(false);
+  }
+
   async function playAudio() {
     if (!activeJourneyId || health?.spotifyMock || !isSpotifyJourney) return;
     setLoading(true);
@@ -264,6 +279,25 @@ export function App() {
     }
   }
 
+  async function skipTrack(direction: "next" | "previous") {
+    if (!activeJourneyId || !isSpotifyJourney || health?.spotifyMock) return;
+    setLoading(true);
+    setError(undefined);
+    try {
+      if (playerRef.current && spotifyStatus === "ready") {
+        await skipSpotifyBrowserTrack(playerRef.current, direction);
+      }
+      const deviceId = spotifyDeviceId ?? (await ensureSpotifyDevice().catch(() => undefined));
+      await api.skipTrack(activeJourneyId, { direction, deviceId });
+      setDetail(await api.journey(activeJourneyId));
+      setIsPaused(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function togglePlayPause() {
     const player = playerRef.current;
     if (!player?.togglePlay) {
@@ -278,13 +312,36 @@ export function App() {
     }
   }
 
+  async function selectPhase(key: string) {
+    if (!activeJourneyId || retuningPhase) return;
+    if (key === detail?.journey.phase) return;
+    setRetuningPhase(key);
+    setError(undefined);
+    try {
+      await api.setPhase(activeJourneyId, key);
+      setDetail(await api.journey(activeJourneyId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRetuningPhase(undefined);
+    }
+  }
+
+  useEffect(() => {
+    if (!detail?.analysisError) {
+      recoveryAttemptedFor.current = undefined;
+    }
+  }, [detail?.analysisError]);
+
   useEffect(() => {
     if (!activeJourneyId || !detail || loading) return;
-    if (!detail.needsAnalysis) return;
+    const shouldRecover =
+      detail.needsAnalysis || (Boolean(detail.analysisError) && detail.tracks.length === 0);
+    if (!shouldRecover) return;
     if (recoveryAttemptedFor.current === activeJourneyId) return;
     recoveryAttemptedFor.current = activeJourneyId;
     void loadTracks(false);
-  }, [activeJourneyId, detail?.needsAnalysis, loading]);
+  }, [activeJourneyId, detail?.needsAnalysis, detail?.analysisError, detail?.tracks.length, loading]);
 
   async function startTidalJourney() {
     if (!health?.tidalConnected && !health?.tidalMock) {
@@ -341,6 +398,8 @@ export function App() {
   const demo = Boolean(health?.spotifyMock);
   const playing = isPaused === undefined ? isPlayingInBrowser : !isPaused;
   const nowLabel = activeTrack ? (playing ? "Now playing" : "Paused") : "Up next";
+  const canSkipBack = (detail?.playbackSession?.playedTrackIds?.length ?? 0) > 0;
+  const canSkipForward = upcoming.length > 0 || displayTracks.length > 1;
 
   return (
     <div className="app">
@@ -369,6 +428,13 @@ export function App() {
           {activeJourneyId && isSpotifyJourney ? (
             <span className="chip">
               <Sparkles size={15} /> Queue {bufferCount}/5
+            </span>
+          ) : null}
+          {health?.songScout && !health.songScout.mock ? (
+            <span className="chip" title={health.songScout.webSearch ? "Web-grounded song picks" : "AI song picks"}>
+              <Sparkles size={15} />{" "}
+              {health.songScout.provider === "gemini" ? "Gemini" : "Grok"}
+              {health.songScout.webSearch ? " · Search" : ""}
             </span>
           ) : null}
           {demo ? (
@@ -485,9 +551,17 @@ export function App() {
                   </div>
                 </div>
               ) : tracksFailed ? (
-                <p className="muted big">
-                  {detail?.analysisError ?? "Could not load tracks. Check xAI and Spotify settings, then refresh."}
-                </p>
+                <div className="analyze-failed">
+                  <p className="muted big">
+                    {detail?.analysisError
+                      ? humanizeAnalysisError(detail.analysisError)
+                      : "Could not load tracks. Check Gemini and Spotify settings, then retry."}
+                  </p>
+                  <button className="ctrl primary" disabled={loading} onClick={retryAnalysis} type="button">
+                    {loading ? <Loader2 className="spin" size={20} /> : <RefreshCw size={20} />}
+                    <span>Retry song picks</span>
+                  </button>
+                </div>
               ) : (
                 <p className="muted big">{loading || tracksPending ? "Finding songs for your journey…" : "No tracks yet."}</p>
               )}
@@ -510,10 +584,32 @@ export function App() {
                     <span>Play audio</span>
                   </button>
                 ) : (
-                  <button className="ctrl primary big" disabled={loading} onClick={togglePlayPause} type="button">
-                    {playing ? <Pause size={22} /> : <Play size={22} />}
-                    <span>{playing ? "Pause" : "Play"}</span>
-                  </button>
+                  <>
+                    <button
+                      className="ctrl"
+                      disabled={loading || !canSkipBack}
+                      onClick={() => skipTrack("previous")}
+                      title="Previous track"
+                      type="button"
+                    >
+                      <SkipBack size={22} />
+                      <span className="sr-only">Previous</span>
+                    </button>
+                    <button className="ctrl primary big" disabled={loading} onClick={togglePlayPause} type="button">
+                      {playing ? <Pause size={22} /> : <Play size={22} />}
+                      <span>{playing ? "Pause" : "Play"}</span>
+                    </button>
+                    <button
+                      className="ctrl"
+                      disabled={loading || !canSkipForward}
+                      onClick={() => skipTrack("next")}
+                      title="Next track"
+                      type="button"
+                    >
+                      <SkipForward size={22} />
+                      <span className="sr-only">Next</span>
+                    </button>
+                  </>
                 )}
                 <button className="ctrl" disabled={loading} onClick={refreshQueue} title="Refresh queue" type="button">
                   <RefreshCw className={loading ? "spin" : undefined} size={20} />
@@ -536,7 +632,11 @@ export function App() {
               <ol className="queue">
                 {upcoming.length > 0 ? (
                   upcoming.map((track, index) => (
-                    <li className="q-row" key={track.id}>
+                    <li
+                      className="q-row"
+                      key={`${detail?.journey.phase}-${track.id}`}
+                      style={{ animationDelay: `${index * 60}ms` }}
+                    >
                       <span className="q-num">{index + 1}</span>
                       <span className="q-art">
                         {track.albumArtUrl ? <img alt="" src={track.albumArtUrl} /> : <Music2 size={18} />}
@@ -547,24 +647,45 @@ export function App() {
                       </span>
                     </li>
                   ))
+                ) : tracksFailed ? (
+                  <li className="muted">No queue yet — retry song picks above.</li>
                 ) : (
                   <li className="muted">Buffering upcoming tracks…</li>
                 )}
               </ol>
 
-              <div className="phase-rail" aria-label="Drive phase">
+              <div className="phase-rail" aria-label="Steer the drive vibe">
                 {PHASES.map((entry) => {
                   const Icon = entry.Icon;
                   const isActive = entry.key === detail?.journey.phase;
+                  const isPending = entry.key === retuningPhase;
                   return (
-                    <span className={isActive ? "phase on" : "phase"} key={entry.key} title={entry.label}>
-                      <Icon size={15} />
-                      {isActive ? <em>{entry.label}</em> : null}
-                    </span>
+                    <button
+                      aria-pressed={isActive}
+                      className={`phase${isActive ? " on" : ""}${isPending ? " pending" : ""}`}
+                      disabled={Boolean(retuningPhase)}
+                      key={entry.key}
+                      onClick={() => selectPhase(entry.key)}
+                      title={`Steer the soundtrack toward "${entry.label}"`}
+                      type="button"
+                    >
+                      {isPending ? <Loader2 className="spin" size={15} /> : <Icon size={15} />}
+                      {isActive || isPending ? <em>{entry.label}</em> : null}
+                    </button>
                   );
                 })}
               </div>
             </aside>
+
+            {retuningPhase ? (
+              <div className="retuning" role="status">
+                <div className="retuning-card">
+                  <span className="retuning-orb" aria-hidden="true" />
+                  <span className="retuning-label">Re-tuning the vibe</span>
+                  <strong className="retuning-phase">{phaseMeta(retuningPhase).label}</strong>
+                </div>
+              </div>
+            ) : null}
           </section>
         )}
       </main>

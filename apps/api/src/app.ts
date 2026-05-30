@@ -3,7 +3,7 @@ import sensible from "@fastify/sensible";
 import Fastify from "fastify";
 
 import { NoopOpenMusicClient, OpenMusicClient } from "@ai-journey-dj/open-music";
-import { XaiSongScout } from "@ai-journey-dj/recommendation";
+import { createSongScout } from "@ai-journey-dj/recommendation";
 import { MockSpotifyAdapter, OfficialSpotifyAdapter } from "@ai-journey-dj/spotify";
 import { MockTidalAdapter, OfficialTidalAdapter } from "@ai-journey-dj/tidal";
 
@@ -29,11 +29,23 @@ export async function buildApp(config: AppConfig) {
   const spotifyAdapter = config.SPOTIFY_MOCK
     ? new MockSpotifyAdapter()
     : new OfficialSpotifyAdapter({ baseUrl: config.SPOTIFY_API_BASE_URL });
-  const songScout = new XaiSongScout({
-    apiKey: config.XAI_API_KEY,
-    baseUrl: config.XAI_BASE_URL,
-    model: config.XAI_MODEL,
-    mock: config.XAI_MOCK
+  const { scout: songScout, info: songScoutInfo } = createSongScout({
+    provider: config.SONG_SCOUT,
+    mock: config.XAI_MOCK,
+    gemini: {
+      apiKey: config.GEMINI_API_KEY,
+      baseUrl: config.GEMINI_BASE_URL,
+      model: config.GEMINI_MODEL,
+      mock: config.XAI_MOCK,
+      requestTimeoutMs: config.SONG_SCOUT_TIMEOUT_MS
+    },
+    xai: {
+      apiKey: config.XAI_API_KEY,
+      baseUrl: config.XAI_BASE_URL,
+      model: config.XAI_MODEL,
+      mock: config.XAI_MOCK,
+      requestTimeoutMs: config.SONG_SCOUT_TIMEOUT_MS
+    }
   });
   const openMusic = config.XAI_MOCK
     ? new NoopOpenMusicClient()
@@ -42,6 +54,12 @@ export async function buildApp(config: AppConfig) {
         listenBrainzBaseUrl: config.LISTENBRAINZ_BASE_URL,
         userAgent: "AIJourneyDJ/0.1.0 (https://github.com/ai-journey-dj/ai-journey-dj)"
       });
+  const app = Fastify({
+    logger: {
+      level: config.NODE_ENV === "test" ? "silent" : "info"
+    }
+  });
+
   const journeyService = new JourneyService(
     config,
     store,
@@ -50,14 +68,9 @@ export async function buildApp(config: AppConfig) {
     spotifyAuth,
     spotifyAdapter,
     songScout,
-    openMusic
+    openMusic,
+    app.log
   );
-
-  const app = Fastify({
-    logger: {
-      level: config.NODE_ENV === "test" ? "silent" : "info"
-    }
-  });
 
   await app.register(cors, {
     origin: (origin, callback) => {
@@ -89,6 +102,7 @@ export async function buildApp(config: AppConfig) {
       spotifyMock: config.SPOTIFY_MOCK,
       spotifyPremium,
       xaiMock: config.XAI_MOCK,
+      songScout: songScoutInfo,
       telemetryEnabled: config.TESLA_TELEMETRY_ENABLED,
       journeyRefreshMinutes: config.JOURNEY_REFRESH_MINUTES
     };

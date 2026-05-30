@@ -62,6 +62,10 @@ class RaceSpotifyAdapter implements SpotifyAdapter {
     return args.preferredDeviceId;
   }
 
+  async skipToNext(): Promise<void> {}
+
+  async skipToPrevious(): Promise<void> {}
+
   async startPlayback(args: { deviceId: string; uris: string[] }): Promise<void> {
     this.startCalls.push({ deviceId: args.deviceId, uris: args.uris });
   }
@@ -103,7 +107,32 @@ function buildService(adapter: SpotifyAdapter) {
   return { service, store };
 }
 
+/** Search resolves fine, but Spotify returns a transient 500 on the transfer-playback command. */
+class TransferErrorAdapter extends RaceSpotifyAdapter {
+  override async transferPlayback(): Promise<void> {
+    throw new Error('Spotify request failed with 500: { "error": { "status": 500, "message": "Server error." } }');
+  }
+}
+
 describe("spotify playback initiation", () => {
+  it("degrades gracefully (does not crash the journey) on a transient Spotify playback error", async () => {
+    const adapter = new TransferErrorAdapter();
+    const { service, store } = buildService(adapter);
+
+    // A 500 on transferPlayback must NOT fail journey creation — the queue is saved, playback degrades.
+    const journey = await service.startJourney({
+      destination: "Dijon",
+      userPrompt: "cinematic golden-hour drive",
+      passengerMode: "solo",
+      provider: "spotify",
+      deviceId: "tesla-web-device"
+    });
+
+    expect(journey.status).toBe("active");
+    expect(store.listResolvedTracks(journey.id).length).toBeGreaterThan(0);
+  });
+
+
   it("starts the head track once the device becomes reachable (not just queues it)", async () => {
     const adapter = new RaceSpotifyAdapter();
     const { service, store } = buildService(adapter);

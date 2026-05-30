@@ -1,10 +1,11 @@
 # AI Journey DJ
 
 AI Journey DJ is a self-hostable, open-source road-trip DJ for Tesla journeys.
-Version 1.1 is Spotify-first and Grok-first: the app uses trip context to
-suggest song candidates, resolves those candidates in Spotify, and maintains a
-rolling 5-track Spotify Web Playback queue in the Tesla browser. TIDAL remains a
-full playlist and deep-link fallback.
+Version 1.1 is Spotify-first: the app uses trip context (destination, phase,
+weather feel, pace buckets, ETA, and optional vehicle telemetry) to suggest song
+candidates, resolves those candidates in Spotify, and maintains a rolling
+5-track Spotify Web Playback queue in the Tesla browser. TIDAL remains a full
+playlist and deep-link fallback.
 
 ## What v1 Includes
 
@@ -14,7 +15,8 @@ full playlist and deep-link fallback.
   queue updates.
 - TIDAL OAuth, playlist creation, track resolving, 5-track updates, and share
   links as fallback.
-- xAI/Grok song scouting with optional web search parameters.
+- Gemini 3.5 Flash song scouting with Google Search grounding (default), plus
+  xAI/Grok web search as an optional fallback scout.
 - MusicBrainz and ListenBrainz lookups for open music enrichment.
 - Tesla Fleet Telemetry local stack with Redpanda plus a simulator.
 - Privacy guardrails: no TIDAL content, raw GPS traces, VINs, or user library data
@@ -74,18 +76,36 @@ redistribute Spotify audio or expose Spotify streaming as a service.
 The API uses Authorization Code with PKCE and stores encrypted credentials in
 SQLite. Use a strong `APP_SECRET`; changing it invalidates stored credentials.
 
-## xAI / Grok Setup
+## Gemini song scout (default)
 
 Set:
 
 ```bash
+SONG_SCOUT=gemini
+GEMINI_API_KEY=...
+GEMINI_MODEL=gemini-3.5-flash
+XAI_MOCK=false
+```
+
+Gemini uses Google's native `generateContent` API with the `google_search` tool so
+picks can include current charting tracks as well as classics. The model receives
+only sanitized journey context (no TIDAL/Spotify catalogs, library data, VINs, or
+raw GPS). Confirm the active scout with `curl http://localhost:3000/health` — look
+for `songScout.provider`, `songScout.model`, and `songScout.webSearch`.
+
+## xAI / Grok fallback
+
+To use Grok instead of Gemini:
+
+```bash
+SONG_SCOUT=xai
 XAI_API_KEY=...
 XAI_MOCK=false
 XAI_MODEL=grok-4.3
 ```
 
-Grok receives only sanitized journey context. It does not receive TIDAL search
-results, TIDAL playlists, user library data, VINs, or raw GPS points.
+If `SONG_SCOUT=gemini` but no `GEMINI_API_KEY` is set, the API falls back to Grok
+when an `XAI_API_KEY` is present.
 
 ## Tesla Fleet Telemetry
 

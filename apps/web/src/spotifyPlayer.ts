@@ -66,6 +66,8 @@ export interface SpotifyPlayerInstance {
   activateElement?: () => Promise<void>;
   resume?: () => Promise<void>;
   togglePlay?: () => Promise<void>;
+  nextTrack?: () => Promise<void>;
+  previousTrack?: () => Promise<void>;
   getCurrentState?: () => Promise<{ paused: boolean; track_window: { current_track?: { name: string } } } | null>;
 }
 
@@ -168,6 +170,17 @@ export async function connectSpotifyWebPlayer(
   });
 
   return { deviceId, player };
+}
+
+export async function skipSpotifyBrowserTrack(
+  player: SpotifyPlayerInstance,
+  direction: "next" | "previous"
+): Promise<void> {
+  if (direction === "next") {
+    await player.nextTrack?.();
+    return;
+  }
+  await player.previousTrack?.();
 }
 
 export async function startSpotifyBrowserPlayback(player: SpotifyPlayerInstance): Promise<void> {

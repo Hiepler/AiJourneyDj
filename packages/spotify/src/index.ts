@@ -33,9 +33,12 @@ export interface SpotifyAdapter {
     query: string;
     market: string;
     limit: number;
+    signal?: AbortSignal;
   }): Promise<SpotifyTrackSearchResult[]>;
   transferPlayback(args: { accessToken: string; deviceId: string }): Promise<void>;
   resolvePlaybackDeviceId(args: { accessToken: string; preferredDeviceId: string }): Promise<string>;
+  skipToNext(args: { accessToken: string; deviceId: string }): Promise<void>;
+  skipToPrevious(args: { accessToken: string; deviceId: string }): Promise<void>;
   startPlayback(args: {
     accessToken: string;
     deviceId: string;
@@ -81,6 +84,7 @@ export class OfficialSpotifyAdapter implements SpotifyAdapter {
     query: string;
     market: string;
     limit: number;
+    signal?: AbortSignal;
   }): Promise<SpotifyTrackSearchResult[]> {
     const url = new URL(`${this.baseUrl}/search`);
     url.searchParams.set("q", args.query);
@@ -88,7 +92,7 @@ export class OfficialSpotifyAdapter implements SpotifyAdapter {
     url.searchParams.set("market", args.market);
     url.searchParams.set("limit", String(args.limit));
 
-    const payload = await this.request<any>(url, args.accessToken);
+    const payload = await this.request<any>(url, args.accessToken, { signal: args.signal });
     const items = Array.isArray(payload?.tracks?.items) ? payload.tracks.items : [];
     return items.map((item: any) => mapSpotifyTrack(item, args.market));
   }
@@ -130,6 +134,18 @@ export class OfficialSpotifyAdapter implements SpotifyAdapter {
       return active.id;
     }
     return args.preferredDeviceId;
+  }
+
+  async skipToNext(args: { accessToken: string; deviceId: string }): Promise<void> {
+    const url = new URL(`${this.baseUrl}/me/player/next`);
+    url.searchParams.set("device_id", args.deviceId);
+    await this.request(url, args.accessToken, { method: "POST" }, { parseJson: false });
+  }
+
+  async skipToPrevious(args: { accessToken: string; deviceId: string }): Promise<void> {
+    const url = new URL(`${this.baseUrl}/me/player/previous`);
+    url.searchParams.set("device_id", args.deviceId);
+    await this.request(url, args.accessToken, { method: "POST" }, { parseJson: false });
   }
 
   async startPlayback(args: { accessToken: string; deviceId: string; uris: string[] }): Promise<void> {
@@ -199,6 +215,7 @@ export class OfficialSpotifyAdapter implements SpotifyAdapter {
     const parseJson = options.parseJson ?? true;
     const response = await this.fetchImpl(url, {
       ...init,
+      signal: init.signal,
       headers: {
         Authorization: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
@@ -207,8 +224,11 @@ export class OfficialSpotifyAdapter implements SpotifyAdapter {
     });
 
     if (response.status === 429 && attempt < 4) {
-      const retryAfter = Number(response.headers.get("Retry-After") ?? String(attempt + 1));
-      await this.wait(Math.max(1, retryAfter) * 1000);
+      const header = Number(response.headers.get("Retry-After") ?? String(attempt + 1));
+      // Cap the backoff so a large Retry-After can't stall a search far past its timeout budget,
+      // and make the wait abortable so the per-search AbortSignal actually bounds total time.
+      const retryAfterMs = Math.min(Math.max(1, Number.isFinite(header) ? header : 1), 5) * 1000;
+      await this.waitUnlessAborted(retryAfterMs, init.signal);
       return this.request(url, accessToken, init, options, attempt + 1);
     }
 
@@ -234,6 +254,25 @@ export class OfficialSpotifyAdapter implements SpotifyAdapter {
         `Spotify request to ${url.pathname} returned ${response.status} with a non-JSON body: ${JSON.stringify(raw.slice(0, 80))}`
       );
     }
+  }
+
+  /** Waits `ms`, but rejects immediately if the request's abort signal fires (or is already aborted). */
+  private async waitUnlessAborted(ms: number, signal?: AbortSignal | null): Promise<void> {
+    if (signal?.aborted) {
+      throw new Error("Spotify request aborted before rate-limit retry.");
+    }
+    if (!signal) {
+      await this.wait(ms);
+      return;
+    }
+    await Promise.race([
+      this.wait(ms),
+      new Promise<never>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new Error("Spotify request aborted during rate-limit backoff.")), {
+          once: true
+        });
+      })
+    ]);
   }
 }
 
@@ -280,6 +319,10 @@ export class MockSpotifyAdapter implements SpotifyAdapter {
     return args.preferredDeviceId;
   }
 
+  async skipToNext(): Promise<void> {}
+
+  async skipToPrevious(): Promise<void> {}
+
   async startPlayback(args: { deviceId: string; uris: string[] }): Promise<void> {
     if (args.uris[0]) {
       this.active.set(args.deviceId, args.uris[0]);
@@ -315,38 +358,80 @@ export class MockSpotifyAdapter implements SpotifyAdapter {
   }
 }
 
+export interface SpotifyResolverOptions {
+  accessToken: string;
+  market: string;
+  searchTimeoutMs?: number;
+  targetResolveCount?: number;
+  onSearch?: (event: {
+    index: number;
+    artist: string;
+    title: string;
+    ms: number;
+    ok: boolean;
+    error?: string;
+  }) => void;
+}
+
 export class SpotifyResolver {
   constructor(
     private readonly adapter: SpotifyAdapter,
-    private readonly options: { accessToken: string; market: string }
+    private readonly options: SpotifyResolverOptions
   ) {}
 
   async resolveCandidates(candidates: SongCandidate[]): Promise<ResolvedTrack[]> {
     const resolved: ResolvedTrack[] = [];
+    const target = this.options.targetResolveCount ?? 5;
+    const timeoutMs = this.options.searchTimeoutMs ?? 8_000;
 
-    for (const candidate of candidates) {
+    for (let index = 0; index < candidates.length; index += 1) {
+      if (resolved.length >= target) {
+        break;
+      }
+
+      const candidate = candidates[index];
       const query = candidate.isrc ? `isrc:${candidate.isrc}` : `${candidate.artist} - ${candidate.title}`;
-      const results = await this.adapter.searchTracks({
-        accessToken: this.options.accessToken,
-        query,
-        market: this.options.market,
-        limit: 10
-      });
-      const best = bestSpotifyMatch(candidate, results);
-      if (best && best.confidence >= 0.7) {
-        resolved.push({
-          provider: "spotify",
-          providerTrackId: best.track.id,
-          providerUri: best.track.uri,
-          externalUrl: best.track.externalUrl,
-          isPlayable: best.track.isPlayable ?? true,
-          market: best.track.market ?? this.options.market,
-          albumArtUrl: best.track.albumArtUrl,
-          artist: best.track.artist,
-          title: best.track.title,
-          isrc: best.track.isrc,
-          matchConfidence: best.confidence,
-          matchReason: best.reason
+      const startedAt = Date.now();
+      try {
+        const results = await this.adapter.searchTracks({
+          accessToken: this.options.accessToken,
+          query,
+          market: this.options.market,
+          limit: 10,
+          signal: AbortSignal.timeout(timeoutMs)
+        });
+        const best = bestSpotifyMatch(candidate, results);
+        if (best && best.confidence >= 0.7) {
+          resolved.push({
+            provider: "spotify",
+            providerTrackId: best.track.id,
+            providerUri: best.track.uri,
+            externalUrl: best.track.externalUrl,
+            isPlayable: best.track.isPlayable ?? true,
+            market: best.track.market ?? this.options.market,
+            albumArtUrl: best.track.albumArtUrl,
+            artist: best.track.artist,
+            title: best.track.title,
+            isrc: best.track.isrc,
+            matchConfidence: best.confidence,
+            matchReason: best.reason
+          });
+        }
+        this.options.onSearch?.({
+          index,
+          artist: candidate.artist,
+          title: candidate.title,
+          ms: Date.now() - startedAt,
+          ok: true
+        });
+      } catch (error) {
+        this.options.onSearch?.({
+          index,
+          artist: candidate.artist,
+          title: candidate.title,
+          ms: Date.now() - startedAt,
+          ok: false,
+          error: error instanceof Error ? error.message : String(error)
         });
       }
     }

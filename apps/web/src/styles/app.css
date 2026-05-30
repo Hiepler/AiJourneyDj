@@ -233,6 +233,14 @@ ul {
   padding: 28px 4px;
 }
 
+.analyze-failed {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 8px 4px 20px;
+}
+
 /* ---------- Setup card ---------- */
 
 .setup {
@@ -385,6 +393,7 @@ button:disabled,
 /* ---------- Cockpit ---------- */
 
 .cockpit {
+  position: relative;
   width: min(1320px, 100%);
   min-height: min(720px, calc(100dvh - 150px));
   display: grid;
@@ -478,10 +487,23 @@ button:disabled,
 
 /* ---------- Transport controls ---------- */
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .transport {
   display: flex;
   gap: 12px;
   flex-wrap: wrap;
+  align-items: center;
   margin-top: auto;
 }
 
@@ -643,16 +665,53 @@ button:disabled,
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  height: 38px;
-  padding: 0 10px;
+  height: 40px;
+  padding: 0 12px;
+  border: 0;
   border-radius: 999px;
+  background: transparent;
   color: var(--text-faint);
-  transition: all 0.2s var(--ease);
+  cursor: pointer;
+  transition: background 0.28s var(--ease), color 0.28s var(--ease), transform 0.18s var(--ease), box-shadow 0.28s var(--ease);
+}
+
+.phase:hover:not(.on):not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+  transform: translateY(-1px);
+}
+
+.phase:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.phase:disabled {
+  cursor: default;
 }
 
 .phase.on {
-  background: var(--accent);
+  background: linear-gradient(135deg, var(--accent), #19b294);
   color: var(--accent-ink);
+  box-shadow: 0 10px 26px -12px rgba(47, 227, 192, 0.8);
+  animation: phasePop 0.42s var(--ease);
+}
+
+/* The pill currently being re-tuned: pulsing accent ring. */
+.phase.pending {
+  color: var(--accent);
+}
+
+.phase.pending::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  border: 1.5px solid var(--accent);
+  animation: phasePulse 1s var(--ease) infinite;
+}
+
+.phase {
+  position: relative;
 }
 
 .phase em {
@@ -660,6 +719,122 @@ button:disabled,
   font-weight: 700;
   font-size: 0.86rem;
   white-space: nowrap;
+  animation: phaseLabelIn 0.3s var(--ease);
+}
+
+@keyframes phasePop {
+  0% {
+    transform: scale(0.8);
+  }
+  55% {
+    transform: scale(1.08);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes phasePulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+}
+
+@keyframes phaseLabelIn {
+  from {
+    opacity: 0;
+    max-width: 0;
+  }
+  to {
+    opacity: 1;
+    max-width: 140px;
+  }
+}
+
+/* Queue items cascade in (replays when the phase changes -> "morph"). */
+.q-row {
+  animation: qIn 0.5s var(--ease) both;
+}
+
+@keyframes qIn {
+  from {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* Re-tuning overlay — the "wow" moment while the soundtrack re-curates. */
+.retuning {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-xl);
+  background: rgba(7, 9, 11, 0.55);
+  backdrop-filter: blur(10px);
+  animation: fadeIn 0.25s var(--ease);
+}
+
+.retuning-card {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  text-align: center;
+}
+
+.retuning-orb {
+  width: 78px;
+  height: 78px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #5ff0d6, var(--accent) 45%, #0d8f77 100%);
+  box-shadow: 0 0 60px -6px rgba(47, 227, 192, 0.9);
+  animation: orbPulse 1.4s var(--ease) infinite;
+}
+
+.retuning-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.retuning-phase {
+  font-size: clamp(1.6rem, 3vw, 2.4rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
+@keyframes orbPulse {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 60px -6px rgba(47, 227, 192, 0.9);
+  }
+  50% {
+    transform: scale(1.12);
+    box-shadow: 0 0 90px 0 rgba(47, 227, 192, 1);
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 /* ---------- Misc ---------- */

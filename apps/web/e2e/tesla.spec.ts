@@ -15,6 +15,12 @@ async function mockApi(page: Page) {
           spotifyMock: true,
           spotifyPremium: true,
           xaiMock: true,
+          songScout: {
+            provider: "gemini",
+            model: "gemini-3.5-flash",
+            webSearch: false,
+            mock: true
+          },
           telemetryEnabled: false,
           journeyRefreshMinutes: 12
         }
