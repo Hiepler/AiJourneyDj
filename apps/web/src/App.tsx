@@ -25,7 +25,6 @@ import {
 import { api, type Health, type Journey, type JourneyDetail } from "./lib/api.js";
 import {
   connectSpotifyWebPlayer,
-  skipSpotifyBrowserTrack,
   spotifySdkStatusLabel,
   startSpotifyBrowserPlayback,
   type SpotifyPlayerInstance,
@@ -319,21 +318,12 @@ export function App() {
     setLoading(true);
     setError(undefined);
     try {
-      // The Web Playback SDK player is the browser's audio engine, so it must own transport: the
-      // SDK can only skip *relatively* (nextTrack/previousTrack) and reliably advances the audio.
-      // Tell the backend it already advanced (clientControlled) so the server only updates its
-      // bookkeeping instead of issuing a second, competing skip that would desync the two.
-      let clientControlled = false;
-      if (playerRef.current && spotifyStatus === "ready") {
-        try {
-          await skipSpotifyBrowserTrack(playerRef.current, direction);
-          clientControlled = true;
-        } catch {
-          clientControlled = false;
-        }
-      }
+      // The backend is the single playback authority: it issues an absolute startPlayback of the
+      // exact selected track (+ our queue) on the device. We must NOT skip via the Web Playback SDK
+      // here — the SDK only skips *relatively*, walking Spotify's own (drifting) queue, which is
+      // what made the played track differ from the one shown.
       const deviceId = spotifyDeviceId ?? (await ensureSpotifyDevice().catch(() => undefined));
-      await api.skipTrack(activeJourneyId, { direction, deviceId, clientControlled });
+      await api.skipTrack(activeJourneyId, { direction, deviceId });
       setDetail(await api.journey(activeJourneyId));
       setIsPaused(false);
     } catch (err) {

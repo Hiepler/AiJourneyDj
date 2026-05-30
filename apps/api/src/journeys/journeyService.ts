@@ -337,14 +337,8 @@ export class JourneyService {
   async skipSpotifyTrack(
     journeyId: string,
     direction: "next" | "previous",
-    deviceId?: string,
-    options: { clientControlled?: boolean } = {}
+    deviceId?: string
   ): Promise<PlaybackSession> {
-    // When the browser Web Playback SDK already advanced the track client-side, the backend must
-    // NOT also command Spotify — a second (relative) skip double-advances the player and desyncs
-    // what plays from what the queue shows. The backend then only mirrors the move in bookkeeping.
-    // Without a client SDK player (clientControlled false), the backend stays authoritative.
-    const clientControlled = options.clientControlled === true;
     const journey = this.getJourneyOrThrow(journeyId);
     if (journey.provider !== "spotify") {
       throw new Error("Track skip is only supported for Spotify journeys.");
@@ -387,17 +381,16 @@ export class JourneyService {
       const newQueue = queueTracks.slice(1);
       const newPlayed = activeTrack?.id ? [...playedIds, activeTrack.id] : playedIds;
 
-      if (effectiveDeviceId && newActive && !clientControlled) {
-        // Authoritative skip: tell Spotify to play THIS exact track (+ the rest as context),
-        // instead of a relative skipToNext that trusts Spotify's own queue position. This keeps
-        // the actually-played track identical to what the web app shows.
-        const applied = await this.syncSpotifyPlayback({
+      if (effectiveDeviceId && newActive) {
+        // Single source of truth: command Spotify to play THIS exact track and reset its context to
+        // our queue, so the SDK can't drift onto its own stale queue. (The SDK only skips relatively,
+        // which walks Spotify's own queue — that is what made played ≠ shown.)
+        const applied = await this.playExact({
           journeyId,
           accessToken,
           deviceId: effectiveDeviceId,
           activeTrack: newActive,
-          queueTracks: newQueue,
-          shouldStart: true
+          queueTracks: newQueue
         });
         if (!applied.deviceReachable) {
           throw new Error("Could not skip to the next track on Spotify.");
@@ -438,16 +431,15 @@ export class JourneyService {
         .map((id) => stored.find((track) => track.id === id))
         .filter((track): track is ResolvedTrack & { id: string; addedToPlaylist: boolean } => Boolean(track));
 
-      if (effectiveDeviceId && !clientControlled) {
-        // Authoritative skip-back: play the exact previous track (+ rest as context) rather than
-        // a relative skipToPrevious, so the played track matches what the web app shows.
-        const applied = await this.syncSpotifyPlayback({
+      if (effectiveDeviceId) {
+        // Single source of truth: play the exact previous track and reset Spotify's context to our
+        // queue, so playback matches the web app instead of Spotify's own drifting queue.
+        const applied = await this.playExact({
           journeyId,
           accessToken,
           deviceId: effectiveDeviceId,
           activeTrack: newActive,
-          queueTracks: newQueueTracks,
-          shouldStart: true
+          queueTracks: newQueueTracks
         });
         if (!applied.deviceReachable) {
           throw new Error("Could not skip to the previous track on Spotify.");
@@ -782,6 +774,73 @@ export class JourneyService {
     };
   }
 
+
+  /**
+   * Plays an EXACT track list on the already-active device via a single absolute `startPlayback`
+   * (no transfer/pause dance), so Spotify's playback and "next" become identical to our model.
+   * Falls back to the full transfer+start sync only if the device isn't active yet.
+   */
+  private async playExact(args: {
+    journeyId: string;
+    accessToken: string;
+    deviceId: string;
+    activeTrack?: ResolvedTrack;
+    queueTracks: ResolvedTrack[];
+  }): Promise<{ deviceReachable: boolean; rateLimited?: boolean }> {
+    const uris = [
+      ...(args.activeTrack?.providerUri ? [args.activeTrack.providerUri] : []),
+      ...args.queueTracks.map((track) => track.providerUri).filter((uri): uri is string => Boolean(uri))
+    ];
+    const uniqueUris = [...new Set(uris)];
+    if (uniqueUris.length === 0) {
+      return { deviceReachable: false };
+    }
+
+    const deviceId = await this.spotifyAdapter.resolvePlaybackDeviceId({
+      accessToken: args.accessToken,
+      preferredDeviceId: args.deviceId
+    });
+
+    try {
+      await this.spotifyAdapter.startPlayback({ accessToken: args.accessToken, deviceId, uris: uniqueUris });
+      if (args.activeTrack?.providerUri) {
+        this.store.saveQueueOperation({
+          id: crypto.randomUUID(),
+          journeyId: args.journeyId,
+          provider: "spotify",
+          providerTrackId: args.activeTrack.providerTrackId,
+          providerUri: args.activeTrack.providerUri,
+          operation: "start",
+          status: "success",
+          deviceId,
+          createdAtIso: new Date().toISOString()
+        });
+      }
+      return { deviceReachable: true };
+    } catch (error) {
+      // Device not active yet (e.g. Webplayer just (re)connected): fall back to transfer + start.
+      if (isSpotifyDeviceNotFoundError(error)) {
+        return this.syncSpotifyPlayback({
+          journeyId: args.journeyId,
+          accessToken: args.accessToken,
+          deviceId,
+          activeTrack: args.activeTrack,
+          queueTracks: args.queueTracks,
+          shouldStart: true
+        });
+      }
+      if (isSpotifyRateLimitError(error)) {
+        return { deviceReachable: true, rateLimited: true };
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn({ journeyId: args.journeyId, deviceId, err: message }, "spotify.play.degraded");
+      this.store.audit(args.journeyId, "spotify.playback_error", "Spotify play failed; queue saved, playback degraded.", {
+        deviceId,
+        error: message
+      });
+      return { deviceReachable: false };
+    }
+  }
 
   private async syncSpotifyPlayback(args: {
     journeyId: string;

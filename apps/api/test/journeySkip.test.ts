@@ -108,37 +108,13 @@ describe("spotify track skip", () => {
 
     adapter.startCalls.length = 0;
     const after = await service.skipSpotifyTrack(journey.id, "next", "web-device");
-    // Authoritative skip: Spotify is told to play the exact track now shown as active.
+    // Authoritative skip: Spotify is told to play the exact track now shown as active, and the
+    // whole queue is re-sent as context (>1 uri) so Spotify can't drift onto its own queue.
     expect(adapter.startCalls.at(-1)?.uris[0]).toBe(after.activeTrack?.providerUri);
+    expect(adapter.startCalls.at(-1)?.uris.length ?? 0).toBeGreaterThan(1);
     expect(after.activeTrack?.id).toBe(nextId);
     expect(after.playedTrackIds).toContain(activeId);
     expect(after.queuedTrackIds[0]).not.toBe(nextId);
-  });
-
-  it("does not issue a competing transport command when the client SDK already advanced", async () => {
-    const adapter = new SkipSpotifyAdapter();
-    const { service, store } = buildService(adapter);
-
-    const journey = await service.startJourney({
-      destination: "Dijon",
-      userPrompt: "road trip",
-      passengerMode: "solo",
-      provider: "spotify",
-      deviceId: "web-device"
-    });
-
-    const before = store.getPlaybackSession(journey.id);
-    const activeId = before?.activeTrack?.id;
-    const nextId = before?.queuedTrackIds[0];
-
-    adapter.startCalls.length = 0;
-    // clientControlled => the browser SDK player already advanced; the backend must only update
-    // bookkeeping and NOT re-command Spotify (a second skip is what desyncs play vs. preview).
-    const after = await service.skipSpotifyTrack(journey.id, "next", "web-device", { clientControlled: true });
-
-    expect(adapter.startCalls.length).toBe(0);
-    expect(after.activeTrack?.id).toBe(nextId);
-    expect(after.playedTrackIds).toContain(activeId);
   });
 
   it("never re-surfaces an already-played song when advancing", async () => {
@@ -160,7 +136,7 @@ describe("spotify track skip", () => {
 
     // Advance well past the initial buffer so the engine must refill at least once.
     for (let i = 0; i < 7; i += 1) {
-      const session = await service.skipSpotifyTrack(journey.id, "next", undefined, { clientControlled: true });
+      const session = await service.skipSpotifyTrack(journey.id, "next", undefined);
       // Force a deterministic refill before the next skip (fire-and-forget low-buffer otherwise).
       await service.analyzeJourney(journey.id, "manual");
       if (session.activeTrack?.id) actives.push(session.activeTrack.id);
