@@ -464,4 +464,45 @@ describe("spotify playback helpers", () => {
     await adapter.addTracksToPlaylist!({ accessToken: "t", playlistId: "pl1", uris: [] });
     expect(called).toBe(false);
   });
+
+  it("lists devices and drops entries without an id", async () => {
+    const fetchImpl: typeof fetch = async () =>
+      new Response(
+        JSON.stringify({
+          devices: [
+            { id: "d1", name: "Phone", type: "Smartphone", is_active: true, is_restricted: false, volume_percent: 70 },
+            { id: "d2", name: "Tesla Model Y", type: "Automobile", is_active: false, is_restricted: false },
+            { name: "Ghost", type: "Unknown" }
+          ]
+        }),
+        { status: 200 }
+      );
+    const adapter = new OfficialSpotifyAdapter({ baseUrl: "https://api.spotify.test/v1", fetchImpl });
+    const devices = await adapter.listDevices!({ accessToken: "t" });
+    expect(devices).toEqual([
+      { id: "d1", name: "Phone", type: "Smartphone", isActive: true, isRestricted: false, volumePercent: 70 },
+      { id: "d2", name: "Tesla Model Y", type: "Automobile", isActive: false, isRestricted: false, volumePercent: undefined }
+    ]);
+  });
+
+  it("pauses and resumes a specific device via the Web API", async () => {
+    const calls: { method: string; url: string }[] = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      calls.push({ method: init?.method ?? "GET", url: String(input) });
+      return new Response("", { status: 204 });
+    };
+    const adapter = new OfficialSpotifyAdapter({ baseUrl: "https://api.spotify.test/v1", fetchImpl, wait: async () => undefined });
+
+    await adapter.pausePlayback!({ accessToken: "t", deviceId: "d2" });
+    await adapter.resumePlayback!({ accessToken: "t", deviceId: "d2" });
+
+    expect(calls[0]).toEqual({ method: "PUT", url: "https://api.spotify.test/v1/me/player/pause?device_id=d2" });
+    expect(calls[1]).toEqual({ method: "PUT", url: "https://api.spotify.test/v1/me/player/play?device_id=d2" });
+  });
+
+  it("MockSpotifyAdapter lists deterministic devices", async () => {
+    const devices = await new MockSpotifyAdapter().listDevices!({ accessToken: "t" });
+    expect(devices.length).toBeGreaterThanOrEqual(2);
+    expect(devices.every((device) => typeof device.id === "string" && typeof device.name === "string")).toBe(true);
+  });
 });

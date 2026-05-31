@@ -27,6 +27,15 @@ export interface SpotifyPlaylist {
   url?: string;
 }
 
+export interface SpotifyDevice {
+  id: string;
+  name: string;
+  type: string;
+  isActive: boolean;
+  isRestricted: boolean;
+  volumePercent?: number;
+}
+
 export interface SpotifyArtist {
   id: string;
   name: string;
@@ -79,6 +88,9 @@ export interface SpotifyAdapter {
     playlistId: string;
     uris: string[];
   }): Promise<void>;
+  listDevices?(args: { accessToken: string }): Promise<SpotifyDevice[]>;
+  pausePlayback?(args: { accessToken: string; deviceId: string }): Promise<void>;
+  resumePlayback?(args: { accessToken: string; deviceId: string }): Promise<void>;
 }
 
 interface OfficialSpotifyAdapterOptions {
@@ -256,6 +268,34 @@ export class OfficialSpotifyAdapter implements SpotifyAdapter {
     );
   }
 
+  async listDevices(args: { accessToken: string }): Promise<SpotifyDevice[]> {
+    const url = new URL(`${this.baseUrl}/me/player/devices`);
+    const payload = await this.request<{ devices?: any[] }>(url, args.accessToken);
+    const devices = Array.isArray(payload?.devices) ? payload.devices : [];
+    return devices
+      .filter((device) => typeof device?.id === "string")
+      .map((device) => ({
+        id: device.id,
+        name: typeof device.name === "string" ? device.name : "Unknown device",
+        type: typeof device.type === "string" ? device.type : "Unknown",
+        isActive: device.is_active === true,
+        isRestricted: device.is_restricted === true,
+        volumePercent: typeof device.volume_percent === "number" ? device.volume_percent : undefined
+      }));
+  }
+
+  async pausePlayback(args: { accessToken: string; deviceId: string }): Promise<void> {
+    const url = new URL(`${this.baseUrl}/me/player/pause`);
+    url.searchParams.set("device_id", args.deviceId);
+    await this.request(url, args.accessToken, { method: "PUT" }, { parseJson: false });
+  }
+
+  async resumePlayback(args: { accessToken: string; deviceId: string }): Promise<void> {
+    const url = new URL(`${this.baseUrl}/me/player/play`);
+    url.searchParams.set("device_id", args.deviceId);
+    await this.request(url, args.accessToken, { method: "PUT" }, { parseJson: false });
+  }
+
   private async request<T>(
     url: URL,
     accessToken: string,
@@ -429,6 +469,17 @@ export class MockSpotifyAdapter implements SpotifyAdapter {
     if (args.uris.length === 0) return;
     this.addTracksToPlaylistCalls.push({ playlistId: args.playlistId, uris: args.uris });
   }
+
+  async listDevices(): Promise<SpotifyDevice[]> {
+    return [
+      { id: "mock-webplayer", name: "AI Journey DJ (Browser)", type: "Computer", isActive: true, isRestricted: false, volumePercent: 85 },
+      { id: "mock-tesla", name: "Tesla Model Y", type: "Automobile", isActive: false, isRestricted: false }
+    ];
+  }
+
+  async pausePlayback(): Promise<void> {}
+
+  async resumePlayback(): Promise<void> {}
 }
 
 /**
