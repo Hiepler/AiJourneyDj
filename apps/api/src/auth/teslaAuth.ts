@@ -1,0 +1,148 @@
+import { createHash, randomBytes } from "node:crypto";
+
+import { decryptJson, encryptJson } from "@ai-journey-dj/crypto";
+
+import type { AppConfig } from "../config/env.js";
+import type { StoredCredentials, Store } from "../db/store.js";
+
+export const TESLA_SCOPES = ["openid", "offline_access", "vehicle_device_data", "vehicle_location"] as const;
+
+export class TeslaAuthService {
+  private fetchImpl: typeof fetch = fetch;
+
+  constructor(
+    private readonly config: AppConfig,
+    private readonly store: Store
+  ) {}
+
+  /** Test seam. */
+  setFetchForTest(fetchImpl: typeof fetch): void {
+    this.fetchImpl = fetchImpl;
+  }
+
+  /** Test seam: seed credentials directly. */
+  persistForTest(credentials: StoredCredentials): void {
+    this.store.saveCredentials("tesla", encryptJson(credentials, this.config.APP_SECRET));
+  }
+
+  createLoginUrl(): string {
+    if (!this.config.TESLA_CLIENT_ID) {
+      throw new Error("TESLA_CLIENT_ID is required for Tesla auth.");
+    }
+    const state = randomBytes(18).toString("base64url");
+    const codeVerifier = randomBytes(48).toString("base64url");
+    const challenge = createHash("sha256").update(codeVerifier).digest("base64url");
+    this.store.saveOauthState(`tesla:${state}`, codeVerifier);
+
+    const url = new URL(this.config.TESLA_OAUTH_AUTH_URL);
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("client_id", this.config.TESLA_CLIENT_ID);
+    url.searchParams.set("redirect_uri", this.config.TESLA_REDIRECT_URI);
+    url.searchParams.set("scope", TESLA_SCOPES.join(" "));
+    url.searchParams.set("state", state);
+    url.searchParams.set("code_challenge", challenge);
+    url.searchParams.set("code_challenge_method", "S256");
+    return url.toString();
+  }
+
+  async completeCallback(query: { code?: string; state?: string }): Promise<void> {
+    if (!query.code || !query.state) {
+      throw new Error("Tesla callback is missing code or state.");
+    }
+    const codeVerifier = this.store.consumeOauthState(`tesla:${query.state}`);
+    if (!codeVerifier) {
+      throw new Error("Invalid or expired Tesla OAuth state.");
+    }
+    const form = new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: this.config.TESLA_CLIENT_ID ?? "",
+      code: query.code,
+      redirect_uri: this.config.TESLA_REDIRECT_URI,
+      code_verifier: codeVerifier
+    });
+    if (this.config.TESLA_CLIENT_SECRET) {
+      form.set("client_secret", this.config.TESLA_CLIENT_SECRET);
+    }
+    const token = await this.exchange(form);
+    this.save(token);
+  }
+
+  isConnected(): boolean {
+    return Boolean(this.getCredentials());
+  }
+
+  disconnect(): void {
+    this.store.deleteCredentials("tesla");
+  }
+
+  async getAccessToken(): Promise<string> {
+    const credentials = this.getCredentials();
+    if (!credentials) {
+      throw new Error("Tesla is not connected.");
+    }
+    const expiresSoon =
+      credentials.expiresAtIso && new Date(credentials.expiresAtIso).getTime() - Date.now() < 120_000;
+    if (expiresSoon) {
+      if (!credentials.refreshToken) {
+        throw new Error("Tesla token expired and no refresh token is available.");
+      }
+      const form = new URLSearchParams({
+        grant_type: "refresh_token",
+        client_id: this.config.TESLA_CLIENT_ID ?? "",
+        refresh_token: credentials.refreshToken
+      });
+      if (this.config.TESLA_CLIENT_SECRET) {
+        form.set("client_secret", this.config.TESLA_CLIENT_SECRET);
+      }
+      const token = await this.exchange(form);
+      return this.save(token, credentials.refreshToken).accessToken;
+    }
+    return credentials.accessToken;
+  }
+
+  /** Partner (client-credentials) token for one-time partner-account registration. */
+  async getPartnerToken(): Promise<string> {
+    const form = new URLSearchParams({
+      grant_type: "client_credentials",
+      client_id: this.config.TESLA_CLIENT_ID ?? "",
+      client_secret: this.config.TESLA_CLIENT_SECRET ?? "",
+      scope: "openid vehicle_device_data vehicle_location",
+      audience: this.config.TESLA_API_BASE_URL
+    });
+    const token = await this.exchange(form);
+    return token.access_token;
+  }
+
+  private getCredentials(): StoredCredentials | undefined {
+    const encrypted = this.store.getEncryptedCredentials("tesla");
+    return encrypted ? decryptJson<StoredCredentials>(encrypted, this.config.APP_SECRET) : undefined;
+  }
+
+  private save(
+    token: { access_token: string; refresh_token?: string; expires_in?: number },
+    fallbackRefresh?: string
+  ): StoredCredentials {
+    const credentials: StoredCredentials = {
+      accessToken: token.access_token,
+      refreshToken: token.refresh_token ?? fallbackRefresh,
+      expiresAtIso: token.expires_in ? new Date(Date.now() + token.expires_in * 1000).toISOString() : undefined
+    };
+    this.store.saveCredentials("tesla", encryptJson(credentials, this.config.APP_SECRET));
+    return credentials;
+  }
+
+  private async exchange(
+    form: URLSearchParams
+  ): Promise<{ access_token: string; refresh_token?: string; expires_in?: number }> {
+    const response = await this.fetchImpl(this.config.TESLA_OAUTH_TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: form
+    });
+    if (!response.ok) {
+      const details = await response.text();
+      throw new Error(`Tesla token request failed with ${response.status}: ${details}`);
+    }
+    return (await response.json()) as { access_token: string; refresh_token?: string; expires_in?: number };
+  }
+}
