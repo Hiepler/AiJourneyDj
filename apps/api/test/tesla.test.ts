@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { buildApp } from "../src/app.js";
 import { loadConfig } from "../src/config/env.js";
 import { migrate, openDatabase } from "../src/db/database.js";
 import { Store } from "../src/db/store.js";
@@ -55,5 +56,29 @@ describe("TeslaAuthService", () => {
     service.setFetchForTest(fetchImpl);
 
     expect(await service.getAccessToken()).toBe("fresh");
+  });
+});
+
+describe("tesla routes", () => {
+  it("redirects /auth/tesla/login to Tesla with the right scopes", async () => {
+    const { app } = await buildApp(
+      build({ TESLA_CLIENT_ID: "tesla-client", TESLA_REDIRECT_URI: "https://dj.example.com/auth/tesla/callback" }).config
+    );
+    const res = await app.inject({ method: "GET", url: "/auth/tesla/login" });
+    expect(res.statusCode).toBe(302);
+    const url = new URL(res.headers.location as string);
+    expect(url.origin).toBe("https://auth.tesla.com");
+    expect(url.searchParams.get("scope")).toBe("openid offline_access vehicle_device_data vehicle_location");
+    await app.close();
+  });
+
+  it("serves the Tesla public key at the well-known path", async () => {
+    const { app } = await buildApp(
+      build({ TESLA_PUBLIC_KEY_PEM: "-----BEGIN PUBLIC KEY-----\nabc\n-----END PUBLIC KEY-----" }).config
+    );
+    const res = await app.inject({ method: "GET", url: "/.well-known/appspecific/com.tesla.3p.public-key.pem" });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("BEGIN PUBLIC KEY");
+    await app.close();
   });
 });

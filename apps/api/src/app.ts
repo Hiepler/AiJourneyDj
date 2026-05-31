@@ -12,6 +12,7 @@ import { appBaseUrl } from "./http/appBaseUrl.js";
 import { migrate, openDatabase } from "./db/database.js";
 import { Store } from "./db/store.js";
 import { SpotifyAuthService } from "./auth/spotifyAuth.js";
+import { TeslaAuthService } from "./auth/teslaAuth.js";
 import { TidalAuthService } from "./auth/tidalAuth.js";
 import { JourneyService } from "./journeys/journeyService.js";
 import { registerJourneyRoutes } from "./journeys/routes.js";
@@ -23,6 +24,7 @@ export async function buildApp(config: AppConfig) {
   const store = new Store(db);
   const tidalAuth = new TidalAuthService(config, store);
   const spotifyAuth = new SpotifyAuthService(config, store);
+  const teslaAuth = new TeslaAuthService(config, store);
   const tidalAdapter = config.TIDAL_MOCK
     ? new MockTidalAdapter()
     : new OfficialTidalAdapter({ baseUrl: config.TIDAL_API_BASE_URL });
@@ -154,6 +156,62 @@ export async function buildApp(config: AppConfig) {
     return { ok: true };
   });
 
+  app.get("/.well-known/appspecific/com.tesla.3p.public-key.pem", async (_request, reply) => {
+    if (!config.TESLA_PUBLIC_KEY_PEM) {
+      return reply.code(404).send("Tesla public key not configured.");
+    }
+    return reply.type("application/x-pem-file").send(config.TESLA_PUBLIC_KEY_PEM);
+  });
+
+  app.get("/auth/tesla/login", async (request, reply) => {
+    const returnBase = appBaseUrl(request, config);
+    try {
+      return reply.redirect(teslaAuth.createLoginUrl());
+    } catch (error) {
+      const message = encodeURIComponent(error instanceof Error ? error.message : String(error));
+      return reply.redirect(`${returnBase}/?tesla=error&message=${message}`);
+    }
+  });
+
+  app.get("/auth/tesla/callback", async (request, reply) => {
+    const returnBase = appBaseUrl(request, config);
+    const query = request.query as { code?: string; state?: string; error?: string; error_description?: string };
+    if (query.error) {
+      const message = encodeURIComponent(query.error_description ?? query.error);
+      return reply.redirect(`${returnBase}/?tesla=error&message=${message}`);
+    }
+    try {
+      await teslaAuth.completeCallback(query);
+    } catch (error) {
+      const message = encodeURIComponent(error instanceof Error ? error.message : String(error));
+      return reply.redirect(`${returnBase}/?tesla=error&message=${message}`);
+    }
+    return reply.type("text/html").send(`<!doctype html>
+      <html><head><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=${returnBase}/?tesla=connected"></head>
+      <body><a href="${returnBase}/?tesla=connected">Return to AI Journey DJ</a></body></html>`);
+  });
+
+  app.post("/auth/tesla/disconnect", async () => {
+    teslaAuth.disconnect();
+    return { ok: true };
+  });
+
+  app.post("/auth/tesla/register-partner", async (_request, reply) => {
+    try {
+      const token = await teslaAuth.getPartnerToken();
+      const domain = new URL(config.API_BASE_URL).host;
+      const response = await fetch(`${config.TESLA_API_BASE_URL.replace(/\/$/, "")}/api/1/partner_accounts`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ domain })
+      });
+      const body = await response.text();
+      return reply.code(response.ok ? 200 : 502).send({ ok: response.ok, status: response.status, body });
+    } catch (error) {
+      return reply.code(500).send({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.get("/auth/tidal/login", async (request, reply) => {
     const returnBase = appBaseUrl(request, config);
     try {
@@ -197,5 +255,5 @@ export async function buildApp(config: AppConfig) {
   await registerJourneyRoutes(app, journeyService, store, tidalAuth, spotifyAuth);
   await registerTelemetryRoutes(app, config, journeyService);
 
-  return { app, store, journeyService };
+  return { app, store, journeyService, teslaAuth };
 }
