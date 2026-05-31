@@ -501,7 +501,8 @@ describe("spotify playback helpers", () => {
   });
 
   it("MockSpotifyAdapter lists deterministic devices", async () => {
-    const devices = await new MockSpotifyAdapter().listDevices!({ accessToken: "t" });
+    const mock: SpotifyAdapter = new MockSpotifyAdapter();
+    const devices = await mock.listDevices!({ accessToken: "t" });
     expect(devices.length).toBeGreaterThanOrEqual(2);
     expect(devices.every((device) => typeof device.id === "string" && typeof device.name === "string")).toBe(true);
   });
