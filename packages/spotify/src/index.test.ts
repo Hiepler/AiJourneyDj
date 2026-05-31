@@ -489,7 +489,7 @@ describe("spotify playback helpers", () => {
     const calls: { method: string; url: string }[] = [];
     const fetchImpl: typeof fetch = async (input, init) => {
       calls.push({ method: init?.method ?? "GET", url: String(input) });
-      return new Response("", { status: 204 });
+      return new Response(null, { status: 204 });
     };
     const adapter = new OfficialSpotifyAdapter({ baseUrl: "https://api.spotify.test/v1", fetchImpl, wait: async () => undefined });
 
