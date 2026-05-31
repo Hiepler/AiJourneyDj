@@ -35,8 +35,8 @@ describe("tesla telemetry mapping", () => {
     expect(event.batteryPercent).toBe(64);
     expect(event.vehicleIdHash).toBeDefined();
     // Raw GPS must never appear on the normalized event.
-    expect((event as Record<string, unknown>).latitude).toBeUndefined();
-    expect((event as Record<string, unknown>).longitude).toBeUndefined();
+    expect((event as unknown as Record<string, unknown>).latitude).toBeUndefined();
+    expect((event as unknown as Record<string, unknown>).longitude).toBeUndefined();
   });
 
   it("omits navigation + speed fields when parked / not navigating", () => {
