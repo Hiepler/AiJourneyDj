@@ -18,7 +18,8 @@ import {
   isSpotifyDeviceNotFoundError,
   isSpotifyRateLimitError,
   queueTracksForBuffer,
-  type SpotifyAdapter
+  type SpotifyAdapter,
+  type SpotifyDevice
 } from "@ai-journey-dj/spotify";
 import type { OpenMusicClient, NoopOpenMusicClient } from "@ai-journey-dj/open-music";
 import type { SongScout } from "@ai-journey-dj/recommendation";
@@ -460,6 +461,49 @@ export class JourneyService {
     }
 
     this.store.audit(journeyId, "spotify.skip", `Skipped ${direction} track.`, { direction });
+    return this.store.getPlaybackSession(journeyId) as PlaybackSession;
+  }
+
+  async listSpotifyDevices(): Promise<SpotifyDevice[]> {
+    if (!this.spotifyAdapter.listDevices) return [];
+    try {
+      const accessToken = await this.spotifyAuth.getAccessToken();
+      return await this.spotifyAdapter.listDevices({ accessToken });
+    } catch (error) {
+      this.logger.warn({ err: error instanceof Error ? error.message : String(error) }, "spotify.devices.failed");
+      return [];
+    }
+  }
+
+  async setSpotifyTransport(
+    journeyId: string,
+    action: "pause" | "resume",
+    deviceId?: string
+  ): Promise<PlaybackSession> {
+    const journey = this.getJourneyOrThrow(journeyId);
+    if (journey.provider !== "spotify") {
+      throw new Error("Transport control is only supported for Spotify journeys.");
+    }
+    const session = this.store.getPlaybackSession(journeyId);
+    const effectiveDeviceId = deviceId ?? journey.spotifyDeviceId ?? session?.deviceId;
+    if (effectiveDeviceId) {
+      try {
+        const accessToken = await this.spotifyAuth.getAccessToken();
+        const resolved = await this.spotifyAdapter.resolvePlaybackDeviceId({
+          accessToken,
+          preferredDeviceId: effectiveDeviceId
+        });
+        if (action === "pause") {
+          await this.spotifyAdapter.pausePlayback?.({ accessToken, deviceId: resolved });
+        } else {
+          await this.spotifyAdapter.resumePlayback?.({ accessToken, deviceId: resolved });
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn({ journeyId, action, err: message }, "spotify.transport.degraded");
+        this.store.audit(journeyId, "spotify.playback_error", `Spotify ${action} command failed.`, { error: message });
+      }
+    }
     return this.store.getPlaybackSession(journeyId) as PlaybackSession;
   }
 

@@ -134,6 +134,19 @@ export async function registerJourneyRoutes(
     });
   });
 
+  app.get("/spotify/devices", async () => {
+    const devices = await service.listSpotifyDevices();
+    return { devices };
+  });
+
+  app.post("/journeys/:id/playback/transport", async (request) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const payload = z
+      .object({ action: z.enum(["pause", "resume"]), deviceId: z.string().min(1).optional() })
+      .parse(request.body);
+    return service.setSpotifyTransport(id, payload.action, payload.deviceId);
+  });
+
   app.post("/journeys/:id/fallback/tidal", async (request) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     return service.switchToTidalFallback(id);

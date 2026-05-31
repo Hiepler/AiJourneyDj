@@ -311,4 +311,39 @@ describe("spotify api", () => {
 
     await app.close();
   });
+
+  it("lists Spotify Connect devices", async () => {
+    const { app } = await buildApp(testConfig());
+    const res = await app.inject({ method: "GET", url: "/spotify/devices" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json<{ devices: Array<{ id: string; name: string }> }>();
+    expect(Array.isArray(body.devices)).toBe(true);
+    expect(body.devices.length).toBeGreaterThanOrEqual(2);
+    await app.close();
+  });
+
+  it("accepts a transport pause/resume command for a journey", async () => {
+    const { app } = await buildApp(testConfig());
+    const start = await app.inject({
+      method: "POST",
+      url: "/journeys",
+      payload: { destination: "Dijon", userPrompt: "drive", passengerMode: "solo", deviceId: "tesla-webplayer" }
+    });
+    const journey = start.json<{ id: string }>();
+
+    const paused = await app.inject({
+      method: "POST",
+      url: `/journeys/${journey.id}/playback/transport`,
+      payload: { action: "pause" }
+    });
+    expect(paused.statusCode).toBe(200);
+
+    const resumed = await app.inject({
+      method: "POST",
+      url: `/journeys/${journey.id}/playback/transport`,
+      payload: { action: "resume" }
+    });
+    expect(resumed.statusCode).toBe(200);
+    await app.close();
+  });
 });
