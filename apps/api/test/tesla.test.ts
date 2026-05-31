@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
+import { pollTeslaOnce } from "../src/telemetry/teslaFleetPoller.js";
 import { loadConfig } from "../src/config/env.js";
 import { migrate, openDatabase } from "../src/db/database.js";
 import { Store } from "../src/db/store.js";
@@ -80,5 +81,86 @@ describe("tesla routes", () => {
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain("BEGIN PUBLIC KEY");
     await app.close();
+  });
+});
+
+describe("tesla fleet poller (single tick)", () => {
+  function fakeDeps(vehicleState: string) {
+    const calls: string[] = [];
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.includes("/vehicles/") && url.includes("vehicle_data")) {
+        return new Response(
+          JSON.stringify({
+            response: {
+              vin: "VIN1",
+              drive_state: { speed: 60, latitude: 48.137, longitude: 11.575 },
+              charge_state: { usable_battery_level: 50 },
+              climate_state: { outside_temp: 20 }
+            }
+          }),
+          { status: 200 }
+        );
+      }
+      if (url.includes("/vehicles")) {
+        return new Response(JSON.stringify({ response: [{ id: 1, id_s: "1", state: vehicleState }] }), { status: 200 });
+      }
+      return new Response("{}", { status: 200 });
+    };
+    return { calls, fetchImpl };
+  }
+
+  it("does not call vehicle_data when there is no active journey", async () => {
+    const ingested: unknown[] = [];
+    const { calls, fetchImpl } = fakeDeps("online");
+    await pollTeslaOnce({
+      apiBaseUrl: "https://fleet.test",
+      accessToken: "t",
+      vehicleId: undefined,
+      hasActiveJourney: () => false,
+      ingest: async (event) => void ingested.push(event),
+      geocode: async () => undefined,
+      appSecret: "s",
+      fetchImpl
+    });
+    expect(calls.some((u) => u.includes("vehicle_data"))).toBe(false);
+    expect(ingested).toHaveLength(0);
+  });
+
+  it("does not call vehicle_data when the vehicle is asleep", async () => {
+    const ingested: unknown[] = [];
+    const { calls, fetchImpl } = fakeDeps("asleep");
+    await pollTeslaOnce({
+      apiBaseUrl: "https://fleet.test",
+      accessToken: "t",
+      vehicleId: undefined,
+      hasActiveJourney: () => true,
+      ingest: async (event) => void ingested.push(event),
+      geocode: async () => undefined,
+      appSecret: "s",
+      fetchImpl
+    });
+    expect(calls.some((u) => u.includes("vehicle_data"))).toBe(false);
+    expect(ingested).toHaveLength(0);
+  });
+
+  it("ingests normalized telemetry when online with an active journey", async () => {
+    const ingested: unknown[] = [];
+    const { fetchImpl } = fakeDeps("online");
+    await pollTeslaOnce({
+      apiBaseUrl: "https://fleet.test",
+      accessToken: "t",
+      vehicleId: undefined,
+      hasActiveJourney: () => true,
+      ingest: async (event) => void ingested.push(event),
+      geocode: async () => "Bavaria, Germany",
+      appSecret: "s",
+      fetchImpl
+    });
+    expect(ingested).toHaveLength(1);
+    expect((ingested[0] as { speedKph?: number }).speedKph).toBe(97);
+    expect((ingested[0] as { coarseRegion?: string }).coarseRegion).toBe("Bavaria, Germany");
+    expect((ingested[0] as Record<string, unknown>).coordinates).toBeUndefined();
   });
 });
