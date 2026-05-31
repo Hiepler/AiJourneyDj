@@ -13,6 +13,7 @@ export default defineConfig({
       "/journeys": "http://localhost:3000",
       "/history": "http://localhost:3000",
       "/internal": "http://localhost:3000",
+      "/spotify": "http://localhost:3000",
       // Tesla fetches the partner public key from this path during registration.
       "/.well-known": "http://localhost:3000"
     }

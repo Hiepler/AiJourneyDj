@@ -70,6 +70,15 @@ export interface JourneyDetail {
   };
 }
 
+export interface SpotifyDevice {
+  id: string;
+  name: string;
+  type: string;
+  isActive: boolean;
+  isRestricted: boolean;
+  volumePercent?: number;
+}
+
 export interface SongScoutHealth {
   provider: "multilens" | "gemini" | "xai";
   model: string;
@@ -174,6 +183,12 @@ export const api = {
     request<NonNullable<JourneyDetail["playbackSession"]>>(`/journeys/${id}/playback/skip`, {
       method: "POST",
       body: JSON.stringify(payload)
+    }),
+  spotifyDevices: () => request<{ devices: SpotifyDevice[] }>("/spotify/devices"),
+  setTransport: (id: string, action: "pause" | "resume") =>
+    request<NonNullable<JourneyDetail["playbackSession"]>>(`/journeys/${id}/playback/transport`, {
+      method: "POST",
+      body: JSON.stringify({ action })
     }),
   fallbackToTidal: (id: string) =>
     request<Journey>(`/journeys/${id}/fallback/tidal`, {

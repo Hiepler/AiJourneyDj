@@ -1160,3 +1160,61 @@ button:disabled,
   color: var(--text-faint);
   margin-bottom: 2px;
 }
+
+/* ---------- Connect device picker ---------- */
+
+.connect-wrap {
+  position: relative;
+}
+
+.device-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  min-width: 240px;
+  padding: 8px;
+  display: grid;
+  gap: 4px;
+  border-radius: var(--r-md);
+  background: rgba(12, 16, 18, 0.96);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow);
+  z-index: 6;
+}
+
+.device-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.device-row:hover {
+  background: var(--surface-2);
+}
+
+.device-row.on {
+  color: var(--accent);
+}
+
+.device-name {
+  flex: 1;
+  font-weight: 700;
+}
+
+.device-type {
+  font-size: 0.75rem;
+  color: var(--text-faint);
+}
+
+.device-empty {
+  padding: 10px 12px;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+}

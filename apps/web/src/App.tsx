@@ -7,6 +7,7 @@ import {
   Heart,
   ListMusic,
   Loader2,
+  MonitorSpeaker,
   MapPin,
   Music2,
   Navigation,
@@ -23,7 +24,7 @@ import {
   Wifi
 } from "lucide-react";
 
-import { api, type Health, type Journey, type JourneyDetail } from "./lib/api.js";
+import { api, type Health, type Journey, type JourneyDetail, type SpotifyDevice } from "./lib/api.js";
 import {
   connectSpotifyWebPlayer,
   spotifySdkStatusLabel,
@@ -34,6 +35,7 @@ import {
 import { MOOD_PRESETS, moodPromptFor } from "./lib/moods.js";
 import { buildContextPills } from "./lib/driveContext.js";
 import { applyMediaSession, buildMediaMetadata, createSilentKeepAlive, type SilentKeepAlive } from "./backgroundAudio.js";
+import { activeDeviceLabel } from "./lib/devices.js";
 
 const passengerModes = ["solo", "couple", "family", "friends"];
 
@@ -87,6 +89,8 @@ export function App() {
   const [isPaused, setIsPaused] = useState<boolean | undefined>();
   const [retuningPhase, setRetuningPhase] = useState<string>();
   const [vibeTuning, setVibeTuning] = useState<string>();
+  const [devices, setDevices] = useState<SpotifyDevice[]>([]);
+  const [showDevices, setShowDevices] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -141,6 +145,24 @@ export function App() {
     }, 6000);
     return () => clearInterval(timer);
   }, [activeJourneyId]);
+
+  useEffect(() => {
+    if (!showDevices) return;
+    let cancelled = false;
+    const load = () =>
+      api
+        .spotifyDevices()
+        .then((res) => {
+          if (!cancelled) setDevices(res.devices);
+        })
+        .catch(() => undefined);
+    load();
+    const timer = setInterval(load, 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [showDevices]);
 
   const queuedIds = detail?.playbackSession?.queuedTrackIds ?? [];
   const bufferTracks = useMemo(() => {
@@ -342,7 +364,8 @@ export function App() {
       // exact selected track (+ our queue) on the device. We must NOT skip via the Web Playback SDK
       // here — the SDK only skips *relatively*, walking Spotify's own (drifting) queue, which is
       // what made the played track differ from the one shown.
-      const deviceId = spotifyDeviceId ?? (await ensureSpotifyDevice().catch(() => undefined));
+      const deviceId =
+        detail?.journey.spotifyDeviceId ?? spotifyDeviceId ?? (await ensureSpotifyDevice().catch(() => undefined));
       await api.skipTrack(activeJourneyId, { direction, deviceId });
       setDetail(await api.journey(activeJourneyId));
       setIsPaused(false);
@@ -354,6 +377,19 @@ export function App() {
   }
 
   async function togglePlayPause() {
+    const activeId = detail?.journey.spotifyDeviceId;
+    const onBrowser = !activeId || activeId === spotifyDeviceId;
+    if (!onBrowser && activeJourneyId) {
+      // External device: control it through the Web API instead of the in-browser SDK.
+      const willPause = playing;
+      setIsPaused(willPause);
+      try {
+        await api.setTransport(activeJourneyId, willPause ? "pause" : "resume");
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+      return;
+    }
     const player = playerRef.current;
     if (!player?.togglePlay) {
       await playAudio();
@@ -363,6 +399,18 @@ export function App() {
     armKeepAlive();
     try {
       await player.togglePlay();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function selectDevice(device: SpotifyDevice) {
+    if (!activeJourneyId) return;
+    setShowDevices(false);
+    setError(undefined);
+    try {
+      await api.registerSpotifyDevice(activeJourneyId, { deviceId: device.id, status: "ready", syncOnly: true });
+      setDetail(await api.journey(activeJourneyId));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -793,6 +841,37 @@ export function App() {
                     <span>Playlist</span>
                   </a>
                 ) : null}
+                <div className="connect-wrap">
+                  <button
+                    className="ctrl"
+                    onClick={() => setShowDevices((open) => !open)}
+                    title="Choose playback device"
+                    type="button"
+                  >
+                    <MonitorSpeaker size={20} />
+                    <span>{activeDeviceLabel(devices, detail?.journey.spotifyDeviceId)}</span>
+                  </button>
+                  {showDevices ? (
+                    <div className="device-menu" role="menu">
+                      {devices.length === 0 ? (
+                        <p className="device-empty">No Spotify devices found. Open Spotify on a device, then retry.</p>
+                      ) : (
+                        devices.map((device) => (
+                          <button
+                            className={`device-row${device.id === detail?.journey.spotifyDeviceId ? " on" : ""}`}
+                            key={device.id}
+                            onClick={() => selectDevice(device)}
+                            type="button"
+                          >
+                            <MonitorSpeaker size={16} />
+                            <span className="device-name">{device.name}</span>
+                            <span className="device-type">{device.type}</span>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  ) : null}
+                </div>
                 <button className="ctrl danger" disabled={loading} onClick={stop} title="Stop journey" type="button">
                   <Power size={20} />
                   <span>Stop</span>
