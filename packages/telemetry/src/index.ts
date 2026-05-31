@@ -39,8 +39,9 @@ export function derivePhase(event: NormalizedTelemetryEvent, previous?: JourneyP
 
 export function normalizeTeslaPayload(payload: Record<string, unknown>, appSecret: string): NormalizedTelemetryEvent {
   const vehicleId = String(payload.vin ?? payload.vehicle_id ?? payload.VehicleId ?? "unknown");
-  const speedMps = Number(payload.VehicleSpeed ?? payload.speed ?? payload.speed_mps ?? Number.NaN);
-  const speedKph = Number.isFinite(speedMps) ? Math.round(speedMps * 3.6) : undefined;
+  // Tesla reports VehicleSpeed/drive_state.speed in MPH (per the Fleet field spec), not m/s.
+  const speedMph = Number(payload.VehicleSpeed ?? payload.speed ?? Number.NaN);
+  const speedKph = Number.isFinite(speedMph) ? Math.round(speedMph * 1.609) : undefined;
   const timestamp = String(payload.createdAt ?? payload.timestamp ?? new Date().toISOString());
 
   return {
@@ -58,6 +59,43 @@ export function normalizeTeslaPayload(payload: Record<string, unknown>, appSecre
           ? "available"
           : "unknown",
     batteryPercent: typeof payload.Soc === "number" ? payload.Soc : undefined
+  };
+}
+
+export interface FleetTelemetryResult extends NormalizedTelemetryEvent {
+  /** Transient raw coordinates for server-side reverse-geocoding ONLY. Never stored or prompted. */
+  coordinates?: { lat: number; lon: number };
+}
+
+/** Maps a Fleet API `vehicle_data` payload (drive/charge/climate state) into a normalized event. */
+export function normalizeFleetVehicleData(payload: Record<string, any>, appSecret: string): FleetTelemetryResult {
+  const drive = (payload?.drive_state ?? {}) as Record<string, any>;
+  const charge = (payload?.charge_state ?? {}) as Record<string, any>;
+  const climate = (payload?.climate_state ?? {}) as Record<string, any>;
+
+  const speedMph = typeof drive.speed === "number" ? drive.speed : undefined;
+  const speedKph = typeof speedMph === "number" ? Math.round(speedMph * 1.609) : undefined;
+
+  const vin = typeof payload?.vin === "string" ? payload.vin : undefined;
+  const ts = typeof drive.timestamp === "number" ? new Date(drive.timestamp).toISOString() : new Date().toISOString();
+
+  const lat = typeof drive.latitude === "number" ? drive.latitude : undefined;
+  const lon = typeof drive.longitude === "number" ? drive.longitude : undefined;
+
+  return {
+    vehicleIdHash: vin ? hashVehicleId(vin, appSecret) : undefined,
+    timestampIso: ts,
+    coarseRegion: undefined, // filled in by the poller via reverse-geocoding
+    destination: typeof drive.active_route_destination === "string" ? drive.active_route_destination : undefined,
+    etaMinutes:
+      typeof drive.active_route_minutes_to_arrival === "number"
+        ? Math.round(drive.active_route_minutes_to_arrival)
+        : undefined,
+    speedKph,
+    outsideTempC: typeof climate.outside_temp === "number" ? climate.outside_temp : undefined,
+    autopilotState: "unknown",
+    batteryPercent: typeof charge.usable_battery_level === "number" ? charge.usable_battery_level : undefined,
+    coordinates: typeof lat === "number" && typeof lon === "number" ? { lat, lon } : undefined
   };
 }
 
