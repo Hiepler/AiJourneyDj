@@ -22,7 +22,7 @@ describe("buildMediaMetadata", () => {
 describe("applyMediaSession", () => {
   it("sets metadata, playbackState and skip handlers", () => {
     const setActionHandler = vi.fn();
-    const session: Record<string, unknown> & { setActionHandler: typeof setActionHandler } = {
+    const session: { metadata: unknown; playbackState: string; setActionHandler: typeof setActionHandler } = {
       metadata: null,
       playbackState: "none",
       setActionHandler

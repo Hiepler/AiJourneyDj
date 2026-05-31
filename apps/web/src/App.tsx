@@ -33,6 +33,7 @@ import {
 } from "./spotifyPlayer.js";
 import { MOOD_PRESETS, moodPromptFor } from "./lib/moods.js";
 import { buildContextPills } from "./lib/driveContext.js";
+import { applyMediaSession, buildMediaMetadata, createSilentKeepAlive, type SilentKeepAlive } from "./backgroundAudio.js";
 
 const passengerModes = ["solo", "couple", "family", "friends"];
 
@@ -91,6 +92,22 @@ export function App() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const playerRef = useRef<SpotifyPlayerInstance | null>(null);
   const recoveryAttemptedFor = useRef<string | undefined>(undefined);
+  const keepAliveRef = useRef<SilentKeepAlive | null>(null);
+  // Holds the latest playback actions so MediaSession / visibility handlers never call stale closures.
+  const playbackActionsRef = useRef({
+    next: () => {},
+    prev: () => {},
+    toggle: () => {},
+    resume: () => {}
+  });
+
+  function armKeepAlive() {
+    // Must be created inside a user gesture (button click) so autoplay permits the silent element.
+    if (!keepAliveRef.current) {
+      keepAliveRef.current = createSilentKeepAlive();
+    }
+    keepAliveRef.current.play();
+  }
 
   useEffect(() => {
     refreshShell().catch((err) =>
@@ -243,6 +260,7 @@ export function App() {
       setDetail(await api.journey(journey.id));
       if (playerRef.current) {
         await startSpotifyBrowserPlayback(playerRef.current);
+        armKeepAlive();
       }
       await refreshShell();
     } catch (err) {
@@ -305,6 +323,7 @@ export function App() {
       setDetail(await api.journey(activeJourneyId));
       if (playerRef.current) {
         await startSpotifyBrowserPlayback(playerRef.current);
+        armKeepAlive();
         setSpotifyStatus("ready");
       }
     } catch (err) {
@@ -341,6 +360,7 @@ export function App() {
       return;
     }
     setIsPaused((previous) => (previous === undefined ? false : !previous));
+    armKeepAlive();
     try {
       await player.togglePlay();
     } catch (err) {
@@ -424,6 +444,8 @@ export function App() {
     try {
       playerRef.current?.disconnect();
       playerRef.current = null;
+      keepAliveRef.current?.dispose();
+      keepAliveRef.current = null;
       setSpotifyDeviceId(undefined);
       setSpotifyStatus("idle");
       setIsPaused(undefined);
@@ -453,6 +475,54 @@ export function App() {
   const nowLabel = activeTrack ? (playing ? "Now playing" : "Paused") : "Up next";
   const canSkipBack = (detail?.playbackSession?.playedTrackIds?.length ?? 0) > 0;
   const canSkipForward = upcoming.length > 0 || displayTracks.length > 1;
+
+  // Mirror the silent keepalive element to the player's play/pause state.
+  useEffect(() => {
+    const keepAlive = keepAliveRef.current;
+    if (!keepAlive) return;
+    if (playing) keepAlive.play();
+    else keepAlive.pause();
+  }, [playing]);
+
+  // Keep the latest playback actions in a ref so background/OS handlers never call stale closures.
+  useEffect(() => {
+    playbackActionsRef.current = {
+      next: () => void skipTrack("next"),
+      prev: () => void skipTrack("previous"),
+      toggle: () => void togglePlayPause(),
+      resume: () => void playAudio()
+    };
+  });
+
+  // Feed OS / Tesla Miniplayer media controls (also makes its skip buttons work via action handlers).
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !("mediaSession" in navigator)) return;
+    const metadata =
+      typeof MediaMetadata !== "undefined"
+        ? new MediaMetadata(buildMediaMetadata(heroTrack))
+        : buildMediaMetadata(heroTrack);
+    applyMediaSession(navigator as never, {
+      metadata,
+      playbackState: playing ? "playing" : "paused",
+      handlers: {
+        play: () => playbackActionsRef.current.toggle(),
+        pause: () => playbackActionsRef.current.toggle(),
+        nexttrack: () => playbackActionsRef.current.next(),
+        previoustrack: () => playbackActionsRef.current.prev()
+      }
+    });
+  }, [heroTrack?.id, heroTrack?.title, playing]);
+
+  // After the embedded browser un-freezes a backgrounded page, re-assert playback.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      if (!activeJourneyId || !isSpotifyJourney || health?.spotifyMock) return;
+      playbackActionsRef.current.resume();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [activeJourneyId, isSpotifyJourney, health?.spotifyMock]);
 
   return (
     <div className="app">
