@@ -94,6 +94,9 @@ export interface Health {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const method = (init?.method ?? "GET").toUpperCase();
   const headers = new Headers(init?.headers);
+  // Bypass the ngrok free-tier browser-warning interstitial so API responses stay JSON
+  // (harmless on a real domain).
+  headers.set("ngrok-skip-browser-warning", "true");
   let body = init?.body;
   const hasBody = body !== undefined && body !== null && body !== "";
 
