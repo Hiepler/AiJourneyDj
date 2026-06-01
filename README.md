@@ -1,7 +1,7 @@
 # AI Journey DJ
 
 **A telemetry-aware AI music director for Tesla road trips.** Tell it where you're headed and what
-mood you're in; it curates a soundtrack that keeps adapting to how the drive actually unfolds —
+mood you're in; it composes a soundtrack that keeps adapting to how the drive actually unfolds —
 pace, time of day, navigation phase, region — and plays it on Spotify, in the car.
 
 Self-hostable, open source, single-user. Spotify-first (TIDAL is a fallback).
@@ -10,26 +10,35 @@ Self-hostable, open source, single-user. Spotify-first (TIDAL is a fallback).
 
 ## Why it's different
 
-Most "smart" playlists pick a vibe once. AI Journey DJ treats the drive as a living context and
-re-curates as that context changes. Two systems do the heavy lifting:
+Most "smart" playlists pick a vibe once. AI Journey DJ reads the **trajectory** of the drive — not a
+single snapshot — and composes a **setlist with shape**: an opener that anchors the mood, tracks that
+carry momentum, a bridge, a well-placed surprise, and a graceful arrival. Two systems make that
+possible and feed each other: a recommendation engine that thinks in **roles and scores**, and live
+Tesla telemetry that tells it how the drive is *actually* unfolding — including whether you're
+speeding up, easing off, or closing in on the destination.
 
 ### 🎚 The recommendation engine
 
-A deterministic **Musical Brief** is derived from live drive signals (pace bucket, drive phase, time
-of day, weather feel, ETA, region) — energy target, intensity, eras, genres, mood words. Zero tokens,
-fully testable.
+A deterministic **Musical Brief** is derived from live drive signals — energy target, intensity,
+eras, genres, mood words. It reads not just the current state (pace, phase, time, weather, ETA,
+region) but the **trend**: accelerating nudges energy up and adds a "lifting" mood; slowing eases it
+off; an approaching ETA tips the brief into a resolving register. Zero tokens, fully testable.
 
-That brief drives a **Multi-Lens generator**: several Gemini calls run in parallel, each with a
-distinct lens —
+That brief **selects the right generators for this drive** from a lens catalog — focused/low-
+distraction, cinematic warmth, steady momentum, regional texture, a timeless anchor, a leftfield
+bridge, a resolving-arrival lens — instead of always running the same four. The chosen lenses run as
+parallel Gemini calls (the current/regional lenses web-grounded via Google Search for real, recent
+tracks).
 
-- **current** (web-grounded via Google Search — real, recently charting/viral tracks),
-- **classics** (timeless, cross-decade),
-- **cross-genre** (deliberate, fitting surprises — the discovery counterweight),
-- **regional** (artists evocative of the destination).
+Every candidate comes back with two things that make the queue a setlist rather than a list:
 
-Their candidates are merged by a **diversity balancer** that spreads picks across decades, genres and
-artists, then resolved on Spotify (with a persistent search cache so a 10-hour drive never hits rate
-limits).
+- a **role** — `anchor` · `momentum` · `bridge` · `surprise` · `resolution` — so picks have a
+  function in the journey arc, and
+- a transparent **score** across `contextFit`, `telemetryFit`, `tasteFit`, `diversityGain`,
+  `novelty` and a `fatiguePenalty`, plus the privacy-safe drive signals that influenced it.
+
+A **diversity balancer** then spreads the selection across decades, genres and artists before
+resolving on Spotify (with a persistent search cache so a 10-hour drive never hits rate limits).
 
 On top of that:
 
@@ -40,21 +49,27 @@ On top of that:
 - **Cost-aware** — AI runs only when the vibe actually changes; routine buffer top-ups reuse the
   already-generated pool. Flash "thinking" is disabled for cheaper, faster, complete responses.
 
-### 🛰 Live Tesla telemetry
+### 🛰 Live Tesla telemetry — the engine's senses
 
-Connect your car via the **Tesla Fleet API** (read-only polling, EU/US). The app maps speed,
-outside temperature, battery, navigation destination and ETA, and turns raw GPS into a **coarse
-region** server-side. Telemetry derives the **drive phase** (departure → cruise → golden hour →
-arrival → …); a phase change automatically re-curates the queue. It never wakes a sleeping car and
-never sends raw GPS, VINs, or your streaming library to the AI.
+Connect your car via the **Tesla Fleet API** (read-only polling, EU/US). The app maps speed, outside
+temperature, battery, autopilot state, navigation destination and ETA, and turns raw GPS into a
+**coarse region** server-side. Crucially, it doesn't just read the latest value — it derives **trends**
+from recent snapshots (pace `accelerating`/`slowing`/`steady`, ETA `approaching`/`steady`) and the
+**drive phase** (departure → cruise → golden hour → arrival → …).
+
+This is where the two systems meet: those telemetry trends flow straight into the Musical Brief and
+lens selection, so the soundtrack lifts when you open up the throttle and starts resolving as you
+near the destination — a phase change re-curates the queue automatically. It never wakes a sleeping
+car and never sends raw GPS, VINs, or your streaming library to the AI.
 
 ---
 
 ## Features
 
 - **Cockpit UI** built for the Tesla landscape touchscreen — large tap targets, glanceable live
-  context (phase · pace · ETA · weather · region), no typing while driving (mood **presets**, recent-
-  destination quick-picks).
+  context (phase · pace + trend · ETA + trend · weather · region) and a live-telemetry badge showing
+  when real Tesla data last arrived; no typing while driving (mood **presets**, recent-destination
+  quick-picks).
 - **Tap-to-steer** the soundtrack: change drive phase or the Vibe-Mix and the queue re-tunes with a
   visible "re-tuning" moment.
 - **Spotify Connect device picker** — play on the in-browser player, your phone, or the car's native
@@ -75,7 +90,8 @@ npm-workspaces monorepo:
 - `apps/web` — React + Vite PWA (the cockpit).
 - `apps/api` — Fastify API, SQLite (`node:sqlite`), OAuth, playback orchestration, the Tesla Fleet
   poller, and a 60-second journey worker. In production it also serves the built SPA (one origin).
-- `packages/recommendation` — the Musical Brief, Multi-Lens scout, diversity balancing, song keys.
+- `packages/recommendation` — the trend-aware Musical Brief, adaptive lens selection, role-aware and
+  scored candidate generation, diversity balancing, song keys.
 - `packages/spotify` — Spotify Web API adapter (search, playback, devices, playlists) + resolver.
 - `packages/telemetry` — Tesla payload normalization, phase derivation.
 - `packages/{core,crypto,open-music,tidal,test-fixtures}` — shared types, encrypted credential store,
