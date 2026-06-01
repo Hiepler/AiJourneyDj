@@ -1,17 +1,24 @@
-FROM node:22-slim AS base
+# Single-container deploy: API (tsx) serves the built web SPA on one origin.
+FROM node:24-bookworm-slim
+
 WORKDIR /app
-COPY package.json package-lock.json* ./
+
+# Install all workspace deps (dev deps included — needed to build the web bundle).
+COPY package.json package-lock.json tsconfig.base.json ./
 COPY apps ./apps
 COPY packages ./packages
-COPY tsconfig.base.json vitest.workspace.ts ./
-RUN npm install
+# npm install (not ci): the lockfile may omit Linux-only optional native deps (Vite/rolldown,
+# esbuild) when generated on macOS; install resolves the right platform binaries.
+RUN npm install --no-audit --no-fund
 
-FROM base AS api
-RUN npm run build -w @ai-journey-dj/api
+# Build the web SPA bundle → apps/web/dist (served by the API at runtime).
+# Use the bundle-only build (Vite); type-checking is enforced separately in dev/CI.
+RUN npm run build:bundle -w @ai-journey-dj/web
+
+ENV NODE_ENV=production
+ENV API_HOST=0.0.0.0
+ENV API_PORT=3000
 EXPOSE 3000
-CMD ["npm", "run", "start", "-w", "@ai-journey-dj/api"]
 
-FROM base AS web
-RUN npm run build -w @ai-journey-dj/web
-EXPOSE 5173
-CMD ["npm", "run", "preview", "-w", "@ai-journey-dj/web", "--", "--host", "0.0.0.0"]
+# tsx runs the TypeScript API directly (matches dev; resolves the .ts workspace exports + node:sqlite).
+CMD ["npm", "run", "start:prod"]

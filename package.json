@@ -18,6 +18,7 @@
     "dev:clean": "node scripts/free-dev-ports.mjs && npm run dev",
     "free-ports": "node scripts/free-dev-ports.mjs",
     "build": "npm run build --workspaces",
+    "start:prod": "tsx apps/api/src/index.ts",
     "typecheck": "npm run typecheck --workspaces",
     "test": "npm --workspaces --if-present run test",
     "test:e2e": "npm run test:e2e -w @ai-journey-dj/web",
