@@ -90,7 +90,9 @@ const schema = z.object({
   TESLA_REDIRECT_URI: z.string().url().default("http://localhost:3000/auth/tesla/callback"),
   TESLA_PUBLIC_KEY_PEM: z.string().default(""),
   TESLA_VEHICLE_ID: z.string().optional(),
-  TESLA_POLL_SECONDS: z.coerce.number().int().min(10).default(45),
+  // Telemetry poll cadence. Default 120s keeps Fleet API cost low (each tick = one billed
+  // vehicle_data request); drive context (phase/traffic/ETA) changes slowly enough for this.
+  TESLA_POLL_SECONDS: z.coerce.number().int().min(10).default(120),
   GEOCODER_URL: z.string().url().default("https://nominatim.openstreetmap.org/reverse"),
   TESLA_TELEMETRY_ENABLED: envBoolean(false),
   KAFKA_BROKERS: z.string().default("localhost:19092"),
