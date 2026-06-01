@@ -213,6 +213,19 @@ ul {
   }
 }
 
+/* Adaptive Drive Mode badge */
+.chip.drive-mode.calm {
+  color: #8fd6ff;
+  border-color: rgba(143, 214, 255, 0.4);
+  background: rgba(143, 214, 255, 0.1);
+}
+
+.chip.drive-mode.focus {
+  color: #c4b5fd;
+  border-color: rgba(196, 181, 253, 0.4);
+  background: rgba(196, 181, 253, 0.1);
+}
+
 /* Interactive chips (Spotify connect / reconnect) */
 .chip-btn {
   cursor: pointer;

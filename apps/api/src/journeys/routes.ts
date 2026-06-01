@@ -88,11 +88,22 @@ export async function registerJourneyRoutes(
         coarseRegion: ctx.coarseRegion,
         localTimeIso: ctx.localTimeIso,
         // Server-side ingest time of the latest telemetry → powers the "Live · vor Xs" badge.
-        lastTelemetryAt: store.latestTelemetryReceivedAt(id)
+        lastTelemetryAt: store.latestTelemetryReceivedAt(id),
+        // Adaptive Drive Mode readout for the cockpit chip (comfort feature, not a safety system).
+        driveMode: ctx.driveState?.mode ?? journey.driveMode ?? "neutral",
+        driveModeReason: ctx.driveState?.reason,
+        driveModeSignals: ctx.driveState?.signals,
+        adaptiveModeEnabled: journey.adaptiveModeEnabled !== false
       },
       // Personalization readout from the 24h taste cache (only top genres exposed).
       taste: taste ? { topGenres: taste.topGenres } : undefined
     };
+  });
+
+  app.post("/journeys/:id/adaptive-mode", async (request) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const { enabled } = z.object({ enabled: z.boolean() }).parse(request.body);
+    return service.setAdaptiveMode(id, enabled);
   });
 
   app.post("/journeys/:id/stop", async (request) => {

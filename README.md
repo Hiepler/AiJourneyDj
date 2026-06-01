@@ -62,6 +62,31 @@ lens selection, so the soundtrack lifts when you open up the throttle and starts
 near the destination — a phase change re-curates the queue automatically. It never wakes a sleeping
 car and never sends raw GPS, VINs, or your streaming library to the AI.
 
+### 🧭 Adaptive Drive Mode (calm / focus)
+
+The engine's situational awareness: a telemetry-driven layer that nudges *what gets picked* to fit
+the driving situation. **It is a comfort feature — not a safety or driver-assistance system — and it
+makes no claims about attention or cognitive load.**
+
+A deterministic, zero-token classifier reads recent telemetry and flips the brief into one of two
+modes:
+
+- **Calm** in higher-attention situations — heavy traffic (live route delay), low predicted range at
+  arrival, or wintry cold — leaning energy down toward familiar, instrumental-leaning tracks and
+  dropping the deliberate "surprise" lens.
+- **Focus** on long, monotonous night-highway stretches — lifting energy toward engaging,
+  forward-moving picks.
+
+The mode shifts the Musical Brief (energy, familiarity, mood, lens choice) and adds one plain-text
+line to the Gemini prompts, so the *selection* changes with **no extra AI calls**. Hysteresis keeps
+it from flapping on a single traffic light, and it never hard-cuts the current track. A cockpit chip
+shows the active mode and why (`Calm · heavy traffic`), with a one-tap master toggle.
+
+**Honest limits (read-only by design):** it biases song **selection** — it does not change volume,
+apply audio processing, or limit BPM. There is no rain/wiper or autopilot-engagement field in the
+Fleet API (weather is a temperature proxy), and it reacts at the telemetry poll cadence, not in real
+time.
+
 ---
 
 ## Features
@@ -72,6 +97,9 @@ car and never sends raw GPS, VINs, or your streaming library to the AI.
   quick-picks).
 - **Tap-to-steer** the soundtrack: change drive phase or the Vibe-Mix and the queue re-tunes with a
   visible "re-tuning" moment.
+- **Adaptive Drive Mode** — automatic calm/focus selection bias from live telemetry (heavy traffic,
+  low range, night monotony), surfaced as a cockpit chip with a one-tap master toggle. A comfort
+  feature, explicitly not a safety system.
 - **Spotify Connect device picker** — play on the in-browser player, your phone, or the car's native
   Spotify; full play/pause/skip control of the selected device.
 - **Background-playback survival** — silent keep-alive + MediaSession so audio keeps going when the
@@ -90,8 +118,8 @@ npm-workspaces monorepo:
 - `apps/web` — React + Vite PWA (the cockpit).
 - `apps/api` — Fastify API, SQLite (`node:sqlite`), OAuth, playback orchestration, the Tesla Fleet
   poller, and a 60-second journey worker. In production it also serves the built SPA (one origin).
-- `packages/recommendation` — the trend-aware Musical Brief, adaptive lens selection, role-aware and
-  scored candidate generation, diversity balancing, song keys.
+- `packages/recommendation` — the trend-aware Musical Brief, the Adaptive Drive Mode classifier,
+  adaptive lens selection, role-aware and scored candidate generation, diversity balancing, song keys.
 - `packages/spotify` — Spotify Web API adapter (search, playback, devices, playlists) + resolver.
 - `packages/telemetry` — Tesla payload normalization, phase derivation.
 - `packages/{core,crypto,open-music,tidal,test-fixtures}` — shared types, encrypted credential store,
@@ -150,6 +178,8 @@ Built for self-hosted, non-commercial, single-user use; it does not redistribute
 streaming as a service. Spotify Web Playback needs Premium + a DRM/EME-capable browser. Whether the
 car's *native* Spotify appears in the Connect device list depends on Tesla firmware/region. Spotify's
 Web API can't reorder/remove queued items, so the engine only appends forward (and never duplicates).
+Adaptive Drive Mode biases song *selection* only (read-only Tesla access — no volume/DSP/BPM control)
+and is **not** a safety or driver-assistance system.
 
 ## License
 

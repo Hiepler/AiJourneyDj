@@ -81,6 +81,7 @@ export function normalizeFleetVehicleData(payload: Record<string, any>, appSecre
 
   const lat = typeof drive.latitude === "number" ? drive.latitude : undefined;
   const lon = typeof drive.longitude === "number" ? drive.longitude : undefined;
+  const media = (payload?.media_info ?? {}) as Record<string, any>;
 
   return {
     vehicleIdHash: vin ? hashVehicleId(vin, appSecret) : undefined,
@@ -95,6 +96,13 @@ export function normalizeFleetVehicleData(payload: Record<string, any>, appSecre
     outsideTempC: typeof climate.outside_temp === "number" ? climate.outside_temp : undefined,
     autopilotState: "unknown",
     batteryPercent: typeof charge.usable_battery_level === "number" ? charge.usable_battery_level : undefined,
+    trafficDelayMinutes:
+      typeof drive.active_route_traffic_minutes_delay === "number"
+        ? Math.round(drive.active_route_traffic_minutes_delay)
+        : undefined,
+    energyPercentAtArrival:
+      typeof drive.active_route_energy_at_arrival === "number" ? drive.active_route_energy_at_arrival : undefined,
+    audioVolume: typeof media.audio_volume === "number" ? media.audio_volume : undefined,
     coordinates: typeof lat === "number" && typeof lon === "number" ? { lat, lon } : undefined
   };
 }

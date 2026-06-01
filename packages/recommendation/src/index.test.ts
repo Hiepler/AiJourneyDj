@@ -10,6 +10,7 @@ import {
   buildLensPrompt,
   buildMusicalBrief,
   buildJourneySet,
+  driveModePromptLine,
   createSongScout,
   DEFAULT_LENSES,
   deriveTasteProfile,
@@ -248,6 +249,39 @@ describe("recommendation", () => {
     });
     expect(calm.targetEnergy).toBeLessThan(fast.targetEnergy);
     expect(calm.intensity).toBe("winding-down");
+  });
+
+  it("Adaptive Drive Mode (calm) lowers energy, leans familiar, and drops the surprise lens", () => {
+    const neutral = buildMusicalBrief(context);
+    const calm = buildMusicalBrief({
+      ...context,
+      driveState: { mode: "calm", reason: "heavy traffic", intensity: 0.8, signals: ["12 min traffic delay"] }
+    });
+
+    expect(calm.targetEnergy).toBeLessThan(neutral.targetEnergy);
+    expect(calm.driveMode).toBe("calm");
+    expect(calm.driveReason).toBe("heavy traffic");
+    expect(calm.tasteWeight).toBeGreaterThan(neutral.tasteWeight);
+    expect(calm.moodWords).toEqual(expect.arrayContaining(["calm", "instrumental-leaning"]));
+    // The deliberate "leftfield" surprise lens is dropped in calm.
+    expect(selectJourneyLenses(calm).map((l) => l.key)).not.toContain("leftfield_bridge");
+    // The drive-state line is injected into the lens prompt for Gemini.
+    expect(buildLensPrompt(selectJourneyLenses(calm)[0], calm, 5)).toContain("heavy traffic");
+  });
+
+  it("Adaptive Drive Mode (focus) raises energy and stays engaging", () => {
+    const neutral = buildMusicalBrief(context);
+    const focus = buildMusicalBrief({
+      ...context,
+      driveState: { mode: "focus", reason: "long night drive", intensity: 0.5, signals: ["night highway"] }
+    });
+    expect(focus.targetEnergy).toBeGreaterThan(neutral.targetEnergy);
+    expect(focus.driveMode).toBe("focus");
+    expect(driveModePromptLine(focus)).toContain("engaging");
+  });
+
+  it("driveModePromptLine is empty when neutral", () => {
+    expect(driveModePromptLine(buildMusicalBrief(context))).toBe("");
   });
 
   it("selectJourneyLenses adapts the scout lenses to the cinematic drive context", () => {

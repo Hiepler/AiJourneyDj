@@ -19,11 +19,13 @@ import {
   Route,
   Satellite,
   Scale,
+  Moon,
   SkipBack,
   SkipForward,
   Sparkles,
   Sunset,
-  Wifi
+  Wifi,
+  Wind
 } from "lucide-react";
 
 import { api, type Health, type Journey, type JourneyDetail, type SpotifyDevice } from "./lib/api.js";
@@ -40,6 +42,14 @@ import { applyMediaSession, buildMediaMetadata, createSilentKeepAlive, type Sile
 import { activeDeviceLabel } from "./lib/devices.js";
 
 const passengerModes = ["solo", "couple", "family", "friends"];
+
+// German labels for the Adaptive Drive Mode reasons surfaced by the backend.
+const DRIVE_MODE_REASON_LABELS: Record<string, string> = {
+  "heavy traffic": "zäher Verkehr",
+  "low range": "wenig Reichweite",
+  "wintry conditions": "winterlich",
+  "long night drive": "Nachtfahrt"
+};
 
 const PHASES: { key: string; label: string; Icon: typeof Navigation }[] = [
   { key: "departure", label: "Departure", Icon: Navigation },
@@ -434,6 +444,18 @@ export function App() {
     }
   }
 
+  async function toggleAdaptiveMode() {
+    if (!activeJourneyId) return;
+    const next = !(detail?.context?.adaptiveModeEnabled ?? true);
+    setError(undefined);
+    try {
+      await api.setAdaptiveMode(activeJourneyId, next);
+      setDetail(await api.journey(activeJourneyId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   async function selectVibeMix(entry: { key: string; label: string; weight: number }) {
     if (!activeJourneyId || retuningPhase || vibeTuning) return;
     if (entry.key === nearestVibe(detail?.journey.tasteWeight).key) return;
@@ -522,6 +544,8 @@ export function App() {
   const activeVibe = nearestVibe(detail?.journey.tasteWeight);
   const contextPills = buildContextPills(detail?.context);
   const liveness = telemetryLiveness(detail?.context?.lastTelemetryAt, nowMs);
+  const driveMode = detail?.context?.driveMode;
+  const driveModeLabel = DRIVE_MODE_REASON_LABELS[detail?.context?.driveModeReason ?? ""] ?? detail?.context?.driveModeReason;
   const demo = Boolean(health?.spotifyMock);
   const playing = isPaused === undefined ? isPlayingInBrowser : !isPaused;
   const nowLabel = activeTrack ? (playing ? "Now playing" : "Paused") : "Up next";
@@ -627,6 +651,22 @@ export function App() {
               }
             >
               <Satellite size={15} /> {liveness.state === "none" ? "Keine Live-Daten" : liveness.label}
+            </span>
+          ) : null}
+          {activeJourneyId && detail && driveMode && driveMode !== "neutral" ? (
+            <span
+              className={`chip drive-mode ${driveMode}`}
+              title={`${
+                driveMode === "calm"
+                  ? "Ruhigere, vertraute Musik für die aktuelle Fahrsituation"
+                  : "Wachere Musik gegen Monotonie"
+              }${
+                detail.context?.driveModeSignals?.length ? ` · ${detail.context.driveModeSignals.join(", ")}` : ""
+              } — Komfortfunktion, kein Sicherheitssystem.`}
+            >
+              {driveMode === "calm" ? <Wind size={15} /> : <Moon size={15} />}{" "}
+              {driveMode === "calm" ? "Calm" : "Focus"}
+              {driveModeLabel ? ` · ${driveModeLabel}` : ""}
             </span>
           ) : null}
           {activeJourneyId && isSpotifyJourney ? (
@@ -964,6 +1004,19 @@ export function App() {
                     </button>
                   );
                 })}
+              </div>
+
+              <div className="adaptive-toggle">
+                <button
+                  aria-pressed={detail?.context?.adaptiveModeEnabled ?? true}
+                  className={`ghost adaptive-btn${(detail?.context?.adaptiveModeEnabled ?? true) ? " on" : ""}`}
+                  onClick={toggleAdaptiveMode}
+                  title="Passt die Musik automatisch an die Fahrsituation an (Stau, Reichweite, Nachtfahrt). Komfortfunktion — kein Sicherheitssystem."
+                  type="button"
+                >
+                  <Wind size={14} /> Adaptive Drive Mode: {(detail?.context?.adaptiveModeEnabled ?? true) ? "An" : "Aus"}
+                </button>
+                <small className="muted">Komfortfunktion, kein Sicherheitssystem.</small>
               </div>
 
               <div className="vibe-mix" aria-label="Familiarity versus discovery">
