@@ -24,7 +24,13 @@ import {
 } from "@ai-journey-dj/spotify";
 import type { OpenMusicClient, NoopOpenMusicClient } from "@ai-journey-dj/open-music";
 import type { SongScout } from "@ai-journey-dj/recommendation";
-import { deriveTasteProfile, fallbackCandidates, selectRollingBatch } from "@ai-journey-dj/recommendation";
+import {
+  assessDriveState,
+  deriveTasteProfile,
+  fallbackCandidates,
+  selectRollingBatch,
+  stabilizeDriveMode
+} from "@ai-journey-dj/recommendation";
 
 /** Default familiarity↔discovery mix for a new drive — between "light" and "balanced". */
 export const DEFAULT_TASTE_WEIGHT = 0.4;
@@ -140,7 +146,52 @@ export class JourneyService {
         this.store.updateJourneyPhase(journey.id, phase);
         this.store.audit(journey.id, "telemetry.phase_changed", `Journey phase changed to ${phase}.`);
         await this.analyzeJourney(journey.id, "phase-change");
+        continue; // the phase re-curation already reflects the latest telemetry
       }
+      await this.evaluateDriveMode(journey.id);
+    }
+  }
+
+  /**
+   * Adaptive Drive Mode: classify the situation from recent telemetry, apply hysteresis, and re-curate
+   * when the engaged mode actually flips. Comfort feature — biases selection only; never throws.
+   */
+  private async evaluateDriveMode(journeyId: string): Promise<void> {
+    if (!this.config.ADAPTIVE_DRIVE_MODE_ENABLED) return;
+    const journey = this.store.getJourney(journeyId);
+    if (!journey || journey.adaptiveModeEnabled === false) return;
+
+    // recentTelemetry returns newest-first; sort to oldest→newest for the classifier.
+    const recent = [...this.store.recentTelemetry(journeyId, 5)].sort(
+      (a, b) => Date.parse(a.timestampIso) - Date.parse(b.timestampIso)
+    );
+    if (recent.length === 0) return;
+
+    const now = recent[recent.length - 1].timestampIso;
+    const raw = assessDriveState(recent, now);
+    // Derive the previous poll's raw mode from history (no extra state to persist). With only one
+    // snapshot the history is unknown → treat as neutral so a fresh mode genuinely needs two polls.
+    const rawPrev =
+      recent.length >= 2
+        ? assessDriveState(recent.slice(0, -1), recent[recent.length - 2].timestampIso)
+        : { mode: "neutral" as const, reason: "", intensity: 0, signals: [] };
+    const engagedPrev = journey.driveMode ?? "neutral";
+    const engagedNew = stabilizeDriveMode(engagedPrev, [rawPrev.mode, raw.mode], 2);
+
+    if (engagedNew === engagedPrev) return;
+    this.store.updateJourneyDriveMode(journeyId, engagedNew);
+    this.store.audit(journeyId, "drive_mode.changed", `Adaptive Drive Mode → ${engagedNew}${raw.reason ? ` (${raw.reason})` : ""}.`, {
+      mode: engagedNew,
+      reason: raw.reason,
+      signals: raw.signals
+    });
+    try {
+      await this.analyzeJourney(journeyId, `drive-state:${engagedNew}`);
+    } catch (error) {
+      this.logger.warn(
+        { journeyId, err: error instanceof Error ? error.message : String(error) },
+        "drive_mode.recurate_error"
+      );
     }
   }
 
@@ -221,6 +272,19 @@ export class JourneyService {
       tasteWeight: clamped
     });
     await this.analyzeJourney(journeyId, "taste-override");
+    return this.getJourneyOrThrow(journeyId);
+  }
+
+  /** Per-journey master switch for Adaptive Drive Mode. Disabling clears any engaged mode. */
+  async setAdaptiveMode(journeyId: string, enabled: boolean): Promise<JourneyRecord> {
+    const journey = this.getJourneyOrThrow(journeyId);
+    this.store.setAdaptiveModeEnabled(journeyId, enabled);
+    if (!enabled && journey.driveMode && journey.driveMode !== "neutral") {
+      this.store.updateJourneyDriveMode(journeyId, "neutral");
+    }
+    this.store.audit(journeyId, "drive_mode.toggled", `Adaptive Drive Mode ${enabled ? "enabled" : "disabled"}.`, {
+      enabled
+    });
     return this.getJourneyOrThrow(journeyId);
   }
 
@@ -622,7 +686,8 @@ export class JourneyService {
         !consumedSongKeys.has(songKey(track.artist, track.title))
     );
     const neededNow = Math.max(0, 5 - (priorSession?.queuedTrackIds?.length ?? 0));
-    const mustGenerate = vibeChangingReasons.has(reason) || unusedPool.length < neededNow;
+    const mustGenerate =
+      vibeChangingReasons.has(reason) || reason.startsWith("drive-state:") || unusedPool.length < neededNow;
 
     const tokenStartedAt = Date.now();
     const accessToken = await this.spotifyAuth.getAccessToken();

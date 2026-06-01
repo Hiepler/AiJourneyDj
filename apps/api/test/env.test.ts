@@ -38,4 +38,9 @@ describe("env", () => {
     expect(config.SPOTIFY_PLAYBACK_POLL_ENABLED).toBe(false);
     expect(config.SPOTIFY_PLAYBACK_POLL_ACTIVE_SECONDS).toBe(10);
   });
+
+  it("enables Adaptive Drive Mode by default and can disable it", () => {
+    expect(loadConfig({}).ADAPTIVE_DRIVE_MODE_ENABLED).toBe(true);
+    expect(loadConfig({ ADAPTIVE_DRIVE_MODE_ENABLED: "false" }).ADAPTIVE_DRIVE_MODE_ENABLED).toBe(false);
+  });
 });

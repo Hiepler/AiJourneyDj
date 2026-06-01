@@ -59,6 +59,8 @@ export interface JourneyContext {
   tasteProfile?: TasteProfile;
   /** Familiarity↔discovery balance, 0 = pure discovery … 1 = lean into known taste. */
   tasteWeight?: number;
+  /** Adaptive Drive Mode assessment (comfort feature; biases selection toward calm/focus). */
+  driveState?: DriveStateAssessment;
 }
 
 export type SongCandidateRole = "anchor" | "momentum" | "bridge" | "surprise" | "resolution";
@@ -133,6 +135,29 @@ export interface NormalizedTelemetryEvent {
   outsideTempC?: number;
   autopilotState?: "off" | "available" | "active" | "unknown";
   batteryPercent?: number;
+  /** Live traffic delay on the active navigation route, in minutes (drive_state.active_route_traffic_minutes_delay). */
+  trafficDelayMinutes?: number;
+  /** Predicted battery % at the navigation destination (drive_state.active_route_energy_at_arrival). */
+  energyPercentAtArrival?: number;
+  /** In-cabin media volume 0–11 (media_info.audio_volume). Read-only — used as a calm signal, never set. */
+  audioVolume?: number;
+}
+
+/** Situational driving mode the Adaptive Drive Mode derives from telemetry. */
+export type DriveMode = "calm" | "focus" | "neutral";
+
+/**
+ * Result of the deterministic drive-state classifier. Comfort feature, NOT a safety system:
+ * it only biases music selection toward calmer/more-engaging tracks for the situation.
+ */
+export interface DriveStateAssessment {
+  mode: DriveMode;
+  /** Short human-readable cause for the cockpit chip, e.g. "heavy traffic". */
+  reason: string;
+  /** 0..1 strength used to scale the brief shift. */
+  intensity: number;
+  /** Privacy-safe signals that drove the assessment, for the chip tooltip. */
+  signals: string[];
 }
 
 export interface JourneyRecord {
@@ -150,6 +175,10 @@ export interface JourneyRecord {
   spotifyPlaylistUrl?: string;
   tidalPlaylistId?: string;
   tidalPlaylistUrl?: string;
+  /** Engaged Adaptive Drive Mode (hysteresis-stabilized). Defaults to neutral. */
+  driveMode?: DriveMode;
+  /** Per-journey master switch for Adaptive Drive Mode (default on). */
+  adaptiveModeEnabled?: boolean;
   createdAtIso: string;
   stoppedAtIso?: string;
 }

@@ -1,4 +1,5 @@
 import type {
+  DriveMode,
   JourneyContext,
   JourneyPhase,
   JourneyRecord,
@@ -13,6 +14,7 @@ import type {
   TemperatureBucket
 } from "@ai-journey-dj/core";
 import { speedBucket, temperatureBucket } from "@ai-journey-dj/telemetry";
+import { assessDriveState } from "@ai-journey-dj/recommendation";
 
 import type { Db } from "./database.js";
 
@@ -114,6 +116,14 @@ export class Store {
     this.db.run("UPDATE journeys SET taste_weight = ? WHERE id = ?", [tasteWeight, journeyId]);
   }
 
+  updateJourneyDriveMode(journeyId: string, mode: DriveMode): void {
+    this.db.run("UPDATE journeys SET drive_mode = ? WHERE id = ?", [mode, journeyId]);
+  }
+
+  setAdaptiveModeEnabled(journeyId: string, enabled: boolean): void {
+    this.db.run("UPDATE journeys SET adaptive_mode_enabled = ? WHERE id = ?", [enabled ? 1 : 0, journeyId]);
+  }
+
   updateJourneyProvider(journeyId: string, provider: "spotify" | "tidal"): void {
     this.db.run("UPDATE journeys SET provider = ? WHERE id = ?", [provider, journeyId]);
   }
@@ -156,8 +166,8 @@ export class Store {
   saveTelemetry(journeyId: string | undefined, event: NormalizedTelemetryEvent, phase: string): void {
     this.db.run(
       `INSERT INTO telemetry_snapshots
-       (journey_id, timestamp, coarse_region, destination, eta_minutes, speed_kph, outside_temp_c, speed_bucket, temperature_bucket, phase, autopilot_state, battery_percent, received_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (journey_id, timestamp, coarse_region, destination, eta_minutes, speed_kph, outside_temp_c, speed_bucket, temperature_bucket, phase, autopilot_state, battery_percent, traffic_delay_minutes, energy_percent_at_arrival, audio_volume, received_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         journeyId,
         event.timestampIso,
@@ -171,6 +181,9 @@ export class Store {
         phase,
         event.autopilotState,
         event.batteryPercent,
+        event.trafficDelayMinutes ?? null,
+        event.energyPercentAtArrival ?? null,
+        event.audioVolume ?? null,
         new Date().toISOString()
       ]
     );
@@ -520,6 +533,8 @@ function mapJourney(row: any): JourneyRecord {
     spotifyPlaylistUrl: row.spotify_playlist_url ?? undefined,
     tidalPlaylistId: row.tidal_playlist_id ?? undefined,
     tidalPlaylistUrl: row.tidal_playlist_url ?? undefined,
+    driveMode: (row.drive_mode as DriveMode | null) ?? undefined,
+    adaptiveModeEnabled: row.adaptive_mode_enabled === undefined ? undefined : row.adaptive_mode_enabled !== 0,
     createdAtIso: row.created_at,
     stoppedAtIso: row.stopped_at
   };
@@ -538,6 +553,9 @@ function mapTelemetrySnapshot(row: any): TelemetrySnapshotReadModel {
     phase: row.phase ?? undefined,
     autopilotState: row.autopilot_state ?? undefined,
     batteryPercent: row.battery_percent ?? undefined,
+    trafficDelayMinutes: row.traffic_delay_minutes ?? undefined,
+    energyPercentAtArrival: row.energy_percent_at_arrival ?? undefined,
+    audioVolume: row.audio_volume ?? undefined,
     receivedAtIso: row.received_at ?? undefined
   };
 }
@@ -587,6 +605,25 @@ export function contextFromJourney(
     batteryPercent: telemetry?.batteryPercent,
     phase: journey.phase,
     userPrompt: journey.userPrompt,
-    passengerMode: journey.passengerMode
+    passengerMode: journey.passengerMode,
+    driveState: driveStateForBrief(journey, recentTelemetry)
   };
+}
+
+/**
+ * Resolves the Adaptive Drive Mode assessment the Musical Brief should use. Uses the journey's
+ * hysteresis-stabilized engaged mode (set by the service) so the brief stays stable; pairs it with
+ * the latest raw reason/intensity for prompt grounding. Returns undefined when disabled or neutral.
+ */
+function driveStateForBrief(
+  journey: JourneyRecord,
+  recentTelemetry: TelemetrySnapshotReadModel[]
+): JourneyContext["driveState"] {
+  if (journey.adaptiveModeEnabled === false) return undefined;
+  const engaged = journey.driveMode ?? "neutral";
+  if (engaged === "neutral") return undefined;
+  const ordered = [...recentTelemetry].sort((a, b) => Date.parse(a.timestampIso) - Date.parse(b.timestampIso));
+  const raw = assessDriveState(ordered, ordered[ordered.length - 1]?.timestampIso ?? new Date().toISOString());
+  if (raw.mode === engaged) return raw;
+  return { mode: engaged, reason: engaged === "calm" ? "calmer driving" : "long drive", intensity: 0.4, signals: [] };
 }

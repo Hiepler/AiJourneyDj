@@ -1,4 +1,6 @@
 import type {
+  DriveMode,
+  DriveStateAssessment,
   JourneyContext,
   ResolvedTrack,
   SongCandidate,
@@ -7,6 +9,8 @@ import type {
   TasteProfile
 } from "@ai-journey-dj/core";
 import { clampConfidence, normalizeText, songKey } from "@ai-journey-dj/core";
+
+export { assessDriveState, stabilizeDriveMode } from "./driveState.js";
 
 const FALLBACK_CANDIDATES: SongCandidate[] = [
   {
@@ -824,6 +828,10 @@ export interface MusicalBrief {
   destination: string;
   userPrompt: string;
   passengerMode: string;
+  /** Adaptive Drive Mode applied to this brief (comfort feature; selection bias only). */
+  driveMode: DriveMode;
+  /** Human-readable cause when driveMode is not neutral (for prompts/diagnostics). */
+  driveReason?: string;
   /** Familiarity↔discovery balance, 0 = discovery … 1 = lean into known taste. */
   tasteWeight: number;
   /** Listener's favorite genres (from their Spotify top artists). */
@@ -901,7 +909,10 @@ function deriveGenres(targetEnergy: number): string[] {
 }
 
 /** Deterministic mapping from live telemetry to musical targets — the dynamic core, zero tokens. */
-export function buildMusicalBrief(context: JourneyContext): MusicalBrief {
+export function buildMusicalBrief(
+  context: JourneyContext,
+  assessment: DriveStateAssessment | undefined = context.driveState
+): MusicalBrief {
   const baseEnergy = SPEED_ENERGY[context.speedBucket ?? "unknown"] ?? 0.55;
   const profile = PHASE_PROFILE[context.phase ?? "departure"] ?? PHASE_PROFILE.departure;
   const hour = context.localTimeIso ? new Date(context.localTimeIso).getHours() : 12;
@@ -914,7 +925,7 @@ export function buildMusicalBrief(context: JourneyContext): MusicalBrief {
       : typeof context.etaMinutes === "number" && context.etaMinutes > 90
         ? 0.04
         : 0;
-  const targetEnergy = clamp01(baseEnergy + profile.delta + trendDelta + focusDelta + etaDelta + (isNight ? -0.1 : 0));
+  let targetEnergy = clamp01(baseEnergy + profile.delta + trendDelta + focusDelta + etaDelta + (isNight ? -0.1 : 0));
 
   const moodWords = [...profile.mood];
   if (context.temperatureBucket === "warm" || context.temperatureBucket === "hot") moodWords.push("sunlit");
@@ -923,6 +934,21 @@ export function buildMusicalBrief(context: JourneyContext): MusicalBrief {
   if (context.paceTrend === "accelerating") moodWords.push("lifting");
   if (context.paceTrend === "slowing") moodWords.push("easing");
   if (context.autopilotState === "active") moodWords.push("low-distraction");
+
+  // Adaptive Drive Mode override (comfort feature — biases selection only, never controls the car).
+  // Calm takes energy down and leans familiar/instrumental; focus lifts energy to fight monotony.
+  let intensityLabel = profile.intensity;
+  let tasteWeight = clamp01(context.tasteWeight ?? 0);
+  const driveMode: DriveMode = assessment?.mode ?? "neutral";
+  if (assessment?.mode === "calm") {
+    targetEnergy = clamp01(targetEnergy - 0.2 * assessment.intensity);
+    intensityLabel = "warm";
+    tasteWeight = clamp01(tasteWeight + 0.15);
+    moodWords.push("calm", "warm", "instrumental-leaning");
+  } else if (assessment?.mode === "focus") {
+    targetEnergy = clamp01(targetEnergy + 0.12);
+    moodWords.push("alert", "engaging", "forward");
+  }
 
   const focusLevel = clamp01((context.phase === "focus" ? 0.75 : 0.35) + (context.autopilotState === "active" ? 0.15 : 0));
   const socialEnergy =
@@ -953,7 +979,7 @@ export function buildMusicalBrief(context: JourneyContext): MusicalBrief {
   return {
     targetEnergy,
     energyCurve,
-    intensity: profile.intensity,
+    intensity: intensityLabel,
     focusLevel,
     socialEnergy,
     eras: "1970s through current releases",
@@ -964,7 +990,9 @@ export function buildMusicalBrief(context: JourneyContext): MusicalBrief {
     destination: context.destination,
     userPrompt: context.userPrompt,
     passengerMode: context.passengerMode,
-    tasteWeight: clamp01(context.tasteWeight ?? 0),
+    driveMode,
+    driveReason: assessment?.mode && assessment.mode !== "neutral" ? assessment.reason : undefined,
+    tasteWeight,
     favoredGenres: context.tasteProfile?.topGenres ?? [],
     representativeArtists: context.tasteProfile?.representativeArtists ?? []
   };
@@ -1029,6 +1057,10 @@ export function selectJourneyLenses(brief: MusicalBrief): SongLens[] {
     if (!picked.some((item) => item.key === lens.key)) picked.push(lens);
   };
 
+  // Adaptive Drive Mode primes the first lens toward the situation.
+  if (brief.driveMode === "calm") add("cinematic_warmth");
+  else if (brief.driveMode === "focus") add("steady_momentum");
+
   if (brief.focusLevel >= 0.7 || brief.moodWords.includes("low-distraction")) {
     add("low_distraction");
   } else if (
@@ -1045,7 +1077,8 @@ export function selectJourneyLenses(brief: MusicalBrief): SongLens[] {
   if (brief.targetEnergy >= 0.5) add("steady_momentum");
   if (brief.regionHint) add("regional_texture");
   add("timeless_anchor");
-  add("leftfield_bridge");
+  // Calm drops the deliberate "surprise" lens — calmer situations want familiar, not leftfield.
+  if (brief.driveMode !== "calm") add("leftfield_bridge");
   if (picked.length < 5) add("cinematic_warmth");
   if (picked.length < 5) add("resolving_arrival");
 
@@ -1071,6 +1104,20 @@ function tasteSteeringLine(lens: SongLens, brief: MusicalBrief): string {
   ].join(" ");
 }
 
+/**
+ * Plain-text Adaptive Drive Mode line injected into every lens prompt so Gemini *refines* the song
+ * picks for the situation. Empty when neutral. Detection stays deterministic; this adds no LLM calls.
+ */
+export function driveModePromptLine(brief: MusicalBrief): string {
+  if (brief.driveMode === "calm") {
+    return `Driving context: ${brief.driveReason ?? "higher-attention situation"}. Favor calmer, familiar, instrumental-leaning tracks that reduce busyness; avoid frantic or dense, cluttered arrangements.`;
+  }
+  if (brief.driveMode === "focus") {
+    return `Driving context: ${brief.driveReason ?? "long monotonous stretch"}. Favor engaging, forward-moving tracks that keep attention up; avoid sleepy or purely ambient picks.`;
+  }
+  return "";
+}
+
 export function buildLensPrompt(lens: SongLens, brief: MusicalBrief, count: number): string {
   return [
     `You are AI Journey DJ curating the "${lens.key}" portion of a road-trip set.`,
@@ -1078,6 +1125,7 @@ export function buildLensPrompt(lens: SongLens, brief: MusicalBrief, count: numb
     `Target energy: ${brief.targetEnergy.toFixed(2)} (0=calm, 1=high). Five-track energy curve: ${brief.energyCurve.map((value) => value.toFixed(2)).join(" -> ")}.`,
     `Intensity: ${brief.intensity}. Focus level: ${brief.focusLevel.toFixed(2)}. Social energy: ${brief.socialEnergy}. Mood: ${brief.moodWords.join(", ")}.`,
     `Drive signals: ${brief.driveSignals.join(", ")}.`,
+    driveModePromptLine(brief),
     `Span eras (${brief.eras}) and vary genres broadly (e.g. ${brief.genres.join(", ")}).`,
     brief.regionHint ? `Region/destination context: ${brief.regionHint}.` : "",
     tasteSteeringLine(lens, brief),

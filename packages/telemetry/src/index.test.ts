@@ -56,4 +56,29 @@ describe("tesla telemetry mapping", () => {
     );
     expect(coordinates).toEqual({ lat: 48.1, lon: 11.5 });
   });
+
+  it("maps adaptive-drive signals (traffic delay, energy-at-arrival, audio volume)", () => {
+    const event = normalizeFleetVehicleData(
+      {
+        drive_state: { active_route_traffic_minutes_delay: 13.6, active_route_energy_at_arrival: 8 },
+        charge_state: {},
+        climate_state: {},
+        media_info: { audio_volume: 5.5 }
+      },
+      "secret"
+    );
+    expect(event.trafficDelayMinutes).toBe(14); // rounded
+    expect(event.energyPercentAtArrival).toBe(8);
+    expect(event.audioVolume).toBe(5.5);
+  });
+
+  it("leaves adaptive-drive signals undefined when not navigating / no media", () => {
+    const event = normalizeFleetVehicleData(
+      { drive_state: { speed: 30 }, charge_state: {}, climate_state: {} },
+      "secret"
+    );
+    expect(event.trafficDelayMinutes).toBeUndefined();
+    expect(event.energyPercentAtArrival).toBeUndefined();
+    expect(event.audioVolume).toBeUndefined();
+  });
 });
