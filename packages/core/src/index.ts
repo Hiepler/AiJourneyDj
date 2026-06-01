@@ -20,6 +20,7 @@ export type PlaybackSessionStatus =
   | "idle"
   | "ready"
   | "playing"
+  | "external"
   | "degraded"
   | "fallback"
   | "not_ready"

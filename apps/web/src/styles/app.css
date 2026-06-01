@@ -176,6 +176,43 @@ ul {
   border-color: rgba(255, 207, 122, 0.35);
 }
 
+/* Tesla live-telemetry badge */
+.chip.telemetry.live {
+  color: var(--good);
+  border-color: rgba(47, 227, 192, 0.4);
+  background: rgba(47, 227, 192, 0.1);
+}
+
+.chip.telemetry.live svg {
+  animation: telemetry-pulse 1.6s var(--ease) infinite;
+}
+
+.chip.telemetry.stale {
+  color: var(--warn);
+  border-color: rgba(255, 207, 122, 0.35);
+}
+
+.chip.telemetry.none {
+  color: var(--text-dim);
+  opacity: 0.72;
+}
+
+@keyframes telemetry-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chip.telemetry.live svg {
+    animation: none;
+  }
+}
+
 /* Interactive chips (Spotify connect / reconnect) */
 .chip-btn {
   cursor: pointer;

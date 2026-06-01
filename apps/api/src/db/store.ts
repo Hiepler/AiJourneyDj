@@ -146,8 +146,8 @@ export class Store {
   saveTelemetry(journeyId: string | undefined, event: NormalizedTelemetryEvent, phase: string): void {
     this.db.run(
       `INSERT INTO telemetry_snapshots
-       (journey_id, timestamp, coarse_region, destination, eta_minutes, speed_bucket, temperature_bucket, phase, autopilot_state, battery_percent)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (journey_id, timestamp, coarse_region, destination, eta_minutes, speed_bucket, temperature_bucket, phase, autopilot_state, battery_percent, received_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         journeyId,
         event.timestampIso,
@@ -158,9 +158,19 @@ export class Store {
         temperatureBucket(event.outsideTempC),
         phase,
         event.autopilotState,
-        event.batteryPercent
+        event.batteryPercent,
+        new Date().toISOString()
       ]
     );
+  }
+
+  /** Server-side ingest time of the most recent telemetry snapshot — drives the live badge. */
+  latestTelemetryReceivedAt(journeyId: string): string | undefined {
+    const row = this.db.get<{ received_at: string | null }>(
+      "SELECT received_at FROM telemetry_snapshots WHERE journey_id = ? ORDER BY timestamp DESC LIMIT 1",
+      [journeyId]
+    );
+    return row?.received_at ?? undefined;
   }
 
   latestTelemetry(journeyId: string): NormalizedTelemetryEvent | undefined {
