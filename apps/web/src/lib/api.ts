@@ -64,6 +64,7 @@ export interface JourneyDetail {
     temperatureBucket?: string;
     coarseRegion?: string;
     localTimeIso?: string;
+    lastTelemetryAt?: string;
   };
   taste?: {
     topGenres: string[];
@@ -94,6 +95,8 @@ export interface Health {
   spotifyConnected: boolean;
   spotifyMock: boolean;
   spotifyPremium: boolean;
+  teslaConnected?: boolean;
+  teslaFleetEnabled?: boolean;
   xaiMock: boolean;
   songScout: SongScoutHealth;
   telemetryEnabled: boolean;

@@ -15,7 +15,9 @@ import {
   Play,
   Power,
   RefreshCw,
+  Radio,
   Route,
+  Satellite,
   Scale,
   SkipBack,
   SkipForward,
@@ -33,7 +35,7 @@ import {
   type SpotifySdkStatus
 } from "./spotifyPlayer.js";
 import { MOOD_PRESETS, moodPromptFor } from "./lib/moods.js";
-import { buildContextPills } from "./lib/driveContext.js";
+import { buildContextPills, telemetryLiveness } from "./lib/driveContext.js";
 import { applyMediaSession, buildMediaMetadata, createSilentKeepAlive, type SilentKeepAlive } from "./backgroundAudio.js";
 import { activeDeviceLabel } from "./lib/devices.js";
 
@@ -94,6 +96,7 @@ export function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const playerRef = useRef<SpotifyPlayerInstance | null>(null);
   const recoveryAttemptedFor = useRef<string | undefined>(undefined);
   const keepAliveRef = useRef<SilentKeepAlive | null>(null);
@@ -518,11 +521,19 @@ export function App() {
   const PhaseIcon = currentPhase.Icon;
   const activeVibe = nearestVibe(detail?.journey.tasteWeight);
   const contextPills = buildContextPills(detail?.context);
+  const liveness = telemetryLiveness(detail?.context?.lastTelemetryAt, nowMs);
   const demo = Boolean(health?.spotifyMock);
   const playing = isPaused === undefined ? isPlayingInBrowser : !isPaused;
   const nowLabel = activeTrack ? (playing ? "Now playing" : "Paused") : "Up next";
   const canSkipBack = (detail?.playbackSession?.playedTrackIds?.length ?? 0) > 0;
   const canSkipForward = upcoming.length > 0 || displayTracks.length > 1;
+
+  // Tick once a second so the "Live · vor Xs" badge counts up between the 4s detail polls.
+  useEffect(() => {
+    if (!activeJourneyId) return;
+    const timer = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [activeJourneyId]);
 
   // Mirror the silent keepalive element to the player's play/pause state.
   useEffect(() => {
@@ -594,6 +605,28 @@ export function App() {
           {activeJourneyId && detail ? (
             <span className="chip accent">
               <PhaseIcon size={15} /> {currentPhase.label}
+            </span>
+          ) : null}
+          {activeJourneyId && detail?.playbackSession?.status === "external" ? (
+            <span
+              className="chip warn"
+              title="In Spotify läuft ein Track außerhalb der Journey — der DJ pausiert die Kuratierung, bis wieder ein Journey-Song spielt."
+            >
+              <Radio size={15} /> Externe Wiedergabe
+            </span>
+          ) : null}
+          {activeJourneyId && detail && (health?.teslaConnected || detail.context?.lastTelemetryAt) ? (
+            <span
+              className={`chip telemetry ${liveness.state}`}
+              title={
+                liveness.state === "live"
+                  ? "Live-Fahrdaten von Tesla kommen gerade rein"
+                  : liveness.state === "stale"
+                    ? "Letzte Tesla-Fahrdaten – aktuell kein frischer Abruf (Auto schläft/parkt?)"
+                    : "Noch keine Live-Fahrdaten abgerufen – Journey starten und losfahren"
+              }
+            >
+              <Satellite size={15} /> {liveness.state === "none" ? "Keine Live-Daten" : liveness.label}
             </span>
           ) : null}
           {activeJourneyId && isSpotifyJourney ? (

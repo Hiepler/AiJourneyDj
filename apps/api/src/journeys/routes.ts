@@ -82,7 +82,9 @@ export async function registerJourneyRoutes(
         etaMinutes: ctx.etaMinutes,
         temperatureBucket: ctx.temperatureBucket,
         coarseRegion: ctx.coarseRegion,
-        localTimeIso: ctx.localTimeIso
+        localTimeIso: ctx.localTimeIso,
+        // Server-side ingest time of the latest telemetry → powers the "Live · vor Xs" badge.
+        lastTelemetryAt: store.latestTelemetryReceivedAt(id)
       },
       // Personalization readout from the 24h taste cache (only top genres exposed).
       taste: taste ? { topGenres: taste.topGenres } : undefined

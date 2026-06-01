@@ -181,6 +181,7 @@ export function migrate(db: Db): void {
   tryAddColumn(db, "resolved_tracks", "album_art_url", "TEXT");
   tryAddColumn(db, "playlist_updates", "provider", "TEXT");
   tryAddColumn(db, "playback_sessions", "played_track_ids", "TEXT NOT NULL DEFAULT '[]'");
+  tryAddColumn(db, "telemetry_snapshots", "received_at", "TEXT");
 
   db.run("INSERT OR IGNORE INTO users (id, created_at) VALUES (?, ?)", ["local", new Date().toISOString()]);
 }

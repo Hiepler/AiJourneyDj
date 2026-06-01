@@ -12,6 +12,7 @@ import type {
 } from "@ai-journey-dj/core";
 import { songKey } from "@ai-journey-dj/core";
 import { derivePhase } from "@ai-journey-dj/telemetry";
+import { reconcilePlaybackModel, shouldRegenerate } from "../playback/reconcile.js";
 import { TidalResolver, type TidalAdapter } from "@ai-journey-dj/tidal";
 import {
   SpotifyResolver,
@@ -765,6 +766,8 @@ export class JourneyService {
       status: status === "success" ? "playing" : deviceId ? "degraded" : "idle",
       activeTrack: playedActiveTrack,
       queuedTrackIds: queuedTracks.map((track) => track.id),
+      // Preserve skip-back history across refreshes/refills (was dropped → wiped played on every analyze).
+      playedTrackIds: session?.playedTrackIds ?? [],
       targetBufferSize: 5,
       lastHeartbeatAt: new Date().toISOString()
     });
@@ -1039,6 +1042,117 @@ export class JourneyService {
         await this.analyzeJourney(journey.id, ageMs > this.config.journeyRefreshMs ? "time-window" : "low-buffer");
       }
     }
+  }
+
+  /**
+   * Reconciles the backend playback model against the track Spotify reports as actually playing,
+   * so skips made in the native Tesla Spotify miniplayer (which the server never sees otherwise)
+   * advance our `played`/`active`/`queued` state and trigger curated refill. Best-effort: never throws.
+   *
+   * @returns the playback outcome, used by the poller to pick its next (adaptive) interval.
+   */
+  async reconcileSpotifyPlayback(journeyId: string): Promise<"playing" | "idle" | "external"> {
+    const journey = this.store.getJourney(journeyId);
+    if (!journey || journey.provider !== "spotify" || journey.status !== "active") {
+      return "idle";
+    }
+    const session = this.store.getPlaybackSession(journeyId);
+    if (!session) {
+      return "idle";
+    }
+
+    let accessToken: string;
+    let state: Awaited<ReturnType<SpotifyAdapter["getPlaybackState"]>>;
+    try {
+      accessToken = await this.spotifyAuth.getAccessToken();
+      state = await this.spotifyAdapter.getPlaybackState({ accessToken, market: this.config.SPOTIFY_MARKET });
+    } catch (error) {
+      this.logger.warn(
+        { journeyId, err: error instanceof Error ? error.message : String(error) },
+        "spotify.reconcile_error"
+      );
+      return "idle";
+    }
+
+    const now = new Date().toISOString();
+
+    // Nothing playing → leave the model untouched, just back the poller off.
+    if (!state.isPlaying || !state.activeProviderTrackId) {
+      return "idle";
+    }
+
+    const stored = this.store.listResolvedTracks(journeyId).filter((track) => track.provider === "spotify");
+    const { activeTrack, queueTracks } = this.pickSpotifyPlaybackTracks(stored, session);
+    const model = [activeTrack, ...queueTracks].filter(
+      (track): track is ResolvedTrack & { id: string; addedToPlaylist: boolean; savedToPlaylist: boolean } =>
+        Boolean(track)
+    );
+    const result = reconcilePlaybackModel(
+      model.map((track) => track.providerTrackId),
+      state.activeProviderTrackId
+    );
+
+    if (result.kind === "external") {
+      if (session.status !== "external") {
+        this.saveSession({ ...session, status: "external", lastHeartbeatAt: now });
+        this.store.audit(journeyId, "spotify.playback_external", "External track playing; DJ curation paused.", {
+          activeProviderTrackId: state.activeProviderTrackId
+        });
+      }
+      return "external";
+    }
+
+    if (result.kind === "empty" || result.kind === "same") {
+      // Same curated track still playing (or nothing to reconcile). If we were paused for an external
+      // track, this means we're back on a journey track → resume curation.
+      if (session.status !== "playing") {
+        this.saveSession({ ...session, status: "playing", lastHeartbeatAt: now });
+      }
+      return "playing";
+    }
+
+    // result.kind === "skipped": playback advanced `index` tracks into our queue.
+    const idx = result.index;
+    const newlyPlayed = model.slice(0, idx).map((track) => track.id);
+    const newActive = model[idx];
+    const newQueue = model.slice(idx + 1);
+
+    this.saveSession({
+      journeyId,
+      provider: "spotify",
+      deviceId: session.deviceId,
+      status: "playing",
+      activeTrack: newActive,
+      queuedTrackIds: newQueue.map((track) => track.id),
+      playedTrackIds: [...(session.playedTrackIds ?? []), ...newlyPlayed],
+      targetBufferSize: 5,
+      lastHeartbeatAt: now
+    });
+    this.store.audit(journeyId, "spotify.playback_reconciled", `Reconciled external skip: advanced ${idx} track(s).`, {
+      advanced: idx,
+      activeTrackId: newActive?.providerTrackId,
+      remainingQueue: newQueue.length
+    });
+
+    // Refill curated tracks when the buffer runs low — throttled to bound AI/overhead cost.
+    if (newQueue.length < this.config.SPOTIFY_REFILL_THRESHOLD) {
+      const last = this.store.latestPlaylistUpdate(journeyId);
+      const minIntervalMs = this.config.SPOTIFY_REFILL_MIN_INTERVAL_SECONDS * 1000;
+      if (shouldRegenerate(last?.createdAtIso, Date.now(), minIntervalMs)) {
+        try {
+          // "skip-refill" is not a vibe-changing reason → analyzeJourney recycles the existing
+          // candidate pool (no LLM call) and appends to Spotify's up-next without interrupting.
+          await this.analyzeJourney(journeyId, "skip-refill");
+        } catch (error) {
+          this.logger.warn(
+            { journeyId, err: error instanceof Error ? error.message : String(error) },
+            "spotify.reconcile_refill_error"
+          );
+        }
+      }
+    }
+
+    return "playing";
   }
 
   /** Lazily creates the private per-journey Spotify playlist; returns its id (or existing/undefined). */

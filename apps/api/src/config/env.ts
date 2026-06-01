@@ -55,6 +55,12 @@ const schema = z.object({
   SPOTIFY_API_BASE_URL: z.string().url().default("https://api.spotify.com/v1"),
   SPOTIFY_MARKET: z.string().default("DE"),
   SPOTIFY_MOCK: envBoolean(true),
+  // External-skip reconciliation poller (native Tesla Spotify miniplayer sync).
+  SPOTIFY_PLAYBACK_POLL_ENABLED: envBoolean(true),
+  SPOTIFY_PLAYBACK_POLL_ACTIVE_SECONDS: z.coerce.number().int().min(2).default(5),
+  SPOTIFY_PLAYBACK_POLL_IDLE_SECONDS: z.coerce.number().int().min(5).default(30),
+  SPOTIFY_REFILL_THRESHOLD: z.coerce.number().int().min(0).default(3),
+  SPOTIFY_REFILL_MIN_INTERVAL_SECONDS: z.coerce.number().int().min(0).default(60),
   XAI_API_KEY: z.string().optional(),
   XAI_BASE_URL: z.string().url().default("https://api.x.ai/v1"),
   XAI_MODEL: z.string().default("grok-4.3"),
