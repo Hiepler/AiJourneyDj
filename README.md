@@ -1,28 +1,92 @@
 # AI Journey DJ
 
-AI Journey DJ is a self-hostable, open-source road-trip DJ for Tesla journeys.
-Version 1.1 is Spotify-first: the app uses trip context (destination, phase,
-weather feel, pace buckets, ETA, and optional vehicle telemetry) to suggest song
-candidates, resolves those candidates in Spotify, and maintains a rolling
-5-track Spotify Web Playback queue in the Tesla browser. TIDAL remains a full
-playlist and deep-link fallback.
+**A telemetry-aware AI music director for Tesla road trips.** Tell it where you're headed and what
+mood you're in; it curates a soundtrack that keeps adapting to how the drive actually unfolds —
+pace, time of day, navigation phase, region — and plays it on Spotify, in the car.
 
-## What v1 Includes
+Self-hostable, open source, single-user. Spotify-first (TIDAL is a fallback).
 
-- React/Vite PWA optimized for Tesla browser and mobile.
-- Fastify API with SQLite persistence and a background journey worker.
-- Spotify OAuth, Web Playback SDK device playback, track resolving, and 5-track
-  queue updates.
-- TIDAL OAuth, playlist creation, track resolving, 5-track updates, and share
-  links as fallback.
-- Gemini 3.5 Flash song scouting with Google Search grounding (default), plus
-  xAI/Grok web search as an optional fallback scout.
-- MusicBrainz and ListenBrainz lookups for open music enrichment.
-- Tesla Fleet Telemetry local stack with Redpanda plus a simulator.
-- Privacy guardrails: no TIDAL content, raw GPS traces, VINs, or user library data
-  are sent to the AI provider.
+---
 
-## Quick Start
+## Why it's different
+
+Most "smart" playlists pick a vibe once. AI Journey DJ treats the drive as a living context and
+re-curates as that context changes. Two systems do the heavy lifting:
+
+### 🎚 The recommendation engine
+
+A deterministic **Musical Brief** is derived from live drive signals (pace bucket, drive phase, time
+of day, weather feel, ETA, region) — energy target, intensity, eras, genres, mood words. Zero tokens,
+fully testable.
+
+That brief drives a **Multi-Lens generator**: several Gemini calls run in parallel, each with a
+distinct lens —
+
+- **current** (web-grounded via Google Search — real, recently charting/viral tracks),
+- **classics** (timeless, cross-decade),
+- **cross-genre** (deliberate, fitting surprises — the discovery counterweight),
+- **regional** (artists evocative of the destination).
+
+Their candidates are merged by a **diversity balancer** that spreads picks across decades, genres and
+artists, then resolved on Spotify (with a persistent search cache so a 10-hour drive never hits rate
+limits).
+
+On top of that:
+
+- **No-repeat guarantee** — every song plays at most once per journey, by exact track *and* by
+  normalized song key (so "Song" and "Song – Live/Extended/Remaster" count as one).
+- **Personalization** — your Spotify top artists become a favored-genre signal, blended in via an
+  adjustable **Vibe-Mix** (Familiar ↔ Discover) right in the cockpit.
+- **Cost-aware** — AI runs only when the vibe actually changes; routine buffer top-ups reuse the
+  already-generated pool. Flash "thinking" is disabled for cheaper, faster, complete responses.
+
+### 🛰 Live Tesla telemetry
+
+Connect your car via the **Tesla Fleet API** (read-only polling, EU/US). The app maps speed,
+outside temperature, battery, navigation destination and ETA, and turns raw GPS into a **coarse
+region** server-side. Telemetry derives the **drive phase** (departure → cruise → golden hour →
+arrival → …); a phase change automatically re-curates the queue. It never wakes a sleeping car and
+never sends raw GPS, VINs, or your streaming library to the AI.
+
+---
+
+## Features
+
+- **Cockpit UI** built for the Tesla landscape touchscreen — large tap targets, glanceable live
+  context (phase · pace · ETA · weather · region), no typing while driving (mood **presets**, recent-
+  destination quick-picks).
+- **Tap-to-steer** the soundtrack: change drive phase or the Vibe-Mix and the queue re-tunes with a
+  visible "re-tuning" moment.
+- **Spotify Connect device picker** — play on the in-browser player, your phone, or the car's native
+  Spotify; full play/pause/skip control of the selected device.
+- **Background-playback survival** — silent keep-alive + MediaSession so audio keeps going when the
+  Tesla browser is minimized, and the car's mini-player skip buttons work.
+- **Auto journey playlist** — every curated track is mirrored into a private Spotify playlist named
+  for the trip, so you can replay the journey later.
+- **Graceful by design** — every Spotify/AI/telemetry failure degrades quietly; the drive never
+  breaks. TIDAL remains a full playlist + deep-link fallback.
+
+---
+
+## Architecture
+
+npm-workspaces monorepo:
+
+- `apps/web` — React + Vite PWA (the cockpit).
+- `apps/api` — Fastify API, SQLite (`node:sqlite`), OAuth, playback orchestration, the Tesla Fleet
+  poller, and a 60-second journey worker. In production it also serves the built SPA (one origin).
+- `packages/recommendation` — the Musical Brief, Multi-Lens scout, diversity balancing, song keys.
+- `packages/spotify` — Spotify Web API adapter (search, playback, devices, playlists) + resolver.
+- `packages/telemetry` — Tesla payload normalization, phase derivation.
+- `packages/{core,crypto,open-music,tidal,test-fixtures}` — shared types, encrypted credential store,
+  MusicBrainz/ListenBrainz enrichment, TIDAL adapter, fixtures.
+
+**Stack:** TypeScript, Fastify 5, React 19, Vite, Vitest, Spotify Web Playback SDK + Web API,
+Gemini (`generateContent` + Google Search grounding), Tesla Fleet API.
+
+---
+
+## Quick start (mock mode — no credentials)
 
 ```bash
 npm install
@@ -30,136 +94,47 @@ cp .env.example .env
 npm run dev
 ```
 
-If you see `EADDRINUSE` on port 3000 or 5173, an old dev server is still running.
-Stop it with Ctrl+C in the other terminal, or run:
+Open `http://localhost:5173`. The dev server proxies the API, so login + OAuth redirects work on the
+same origin. The defaults ship with `SPOTIFY_MOCK=true` / `TIDAL_MOCK=true` / `XAI_MOCK=true`, so you
+can start journeys and watch the queue update with no provider keys.
 
 ```bash
-npm run dev:clean
-```
-
-Open `http://localhost:5173`. The web dev server proxies API routes, so Spotify/TIDAL login
-buttons work on the same host. If you open the app via a network URL (for example on a phone),
-OAuth redirects return to that same origin automatically.
-
-The default `.env.example` runs with `SPOTIFY_MOCK=true`, `TIDAL_MOCK=true`, and
-`XAI_MOCK=true`, so you can start journeys and test queue or playlist updates
-without provider credentials.
-
-## Real Spotify Setup
-
-1. Create a Spotify developer application.
-2. Add `http://localhost:3000/auth/spotify/callback` as a redirect URI.
-3. Set `SPOTIFY_CLIENT_ID`, optional `SPOTIFY_CLIENT_SECRET`, and
-   `SPOTIFY_REDIRECT_URI`.
-4. Set `SPOTIFY_MOCK=false`.
-5. Open `/auth/spotify/login` from the web app or directly at
-   `http://localhost:3000/auth/spotify/login`.
-
-Spotify playback requires a Premium account and a browser with DRM/Encrypted
-Media Extensions support. The Tesla web app creates a Spotify Web Playback SDK
-player, reports its Spotify Connect device ID to the backend, starts playback on
-that device, and keeps five future tracks queued. If the browser pauses,
-autoplay is blocked, Premium is missing, or the SDK/device becomes unavailable,
-use the TIDAL fallback action in the journey view.
-
-This project is designed for self-hosted, non-commercial use. It does not
-redistribute Spotify audio or expose Spotify streaming as a service.
-
-## Real TIDAL Setup
-
-1. Create a TIDAL developer application.
-2. Set `TIDAL_CLIENT_ID`, `TIDAL_CLIENT_SECRET`, and `TIDAL_REDIRECT_URI`.
-3. Set `TIDAL_MOCK=false`.
-4. Open `/auth/tidal/login` from the web app or directly at
-   `http://localhost:3000/auth/tidal/login`.
-
-The API uses Authorization Code with PKCE and stores encrypted credentials in
-SQLite. Use a strong `APP_SECRET`; changing it invalidates stored credentials.
-
-## Gemini song scout (default)
-
-Set:
-
-```bash
-SONG_SCOUT=gemini
-GEMINI_API_KEY=...
-GEMINI_MODEL=gemini-3.5-flash
-XAI_MOCK=false
-```
-
-Gemini uses Google's native `generateContent` API with the `google_search` tool so
-picks can include current charting tracks as well as classics. The model receives
-only sanitized journey context (no TIDAL/Spotify catalogs, library data, VINs, or
-raw GPS). Confirm the active scout with `curl http://localhost:3000/health` — look
-for `songScout.provider`, `songScout.model`, and `songScout.webSearch`.
-
-## xAI / Grok fallback
-
-To use Grok instead of Gemini:
-
-```bash
-SONG_SCOUT=xai
-XAI_API_KEY=...
-XAI_MOCK=false
-XAI_MODEL=grok-4.3
-```
-
-If `SONG_SCOUT=gemini` but no `GEMINI_API_KEY` is set, the API falls back to Grok
-when an `XAI_API_KEY` is present.
-
-## Tesla Fleet Telemetry
-
-For local development:
-
-```bash
-docker compose up redpanda
-npm run telemetry:sim -w @ai-journey-dj/api
-```
-
-To test background queue or playlist refreshes without waiting 12 minutes, set
-in `.env`:
-
-```bash
-JOURNEY_REFRESH_MINUTES=1
-```
-
-The API worker checks active journeys every 60 seconds and re-analyzes when the
-last provider update is older than this interval or when the tracked buffer drops
-below five future tracks. Verify the value with `curl http://localhost:3000/health`.
-
-For a real vehicle, configure the official Tesla Fleet Telemetry reference
-server and point it at the Redpanda broker/topic in `docker-compose.yml`. The
-backend consumes normalized events and persists only coarse journey context.
-
-## Scripts
-
-```bash
-npm run dev
-npm run typecheck
-npm run test
+npm run typecheck   # all workspaces
+npm run test        # full Vitest suite
 npm run lint
-npm run build
+npm run build       # web bundle
 ```
 
-## Privacy Model
+## Going live
 
-AI Journey DJ is designed around data minimization:
+- **Spotify** (Premium required): create an app, add `https://<domain>/auth/spotify/callback`, set
+  `SPOTIFY_CLIENT_ID/SECRET` + `SPOTIFY_MOCK=false`. Scopes include `user-top-read` (personalization)
+  and `playlist-modify-private` (journey playlist) — reconnect once after upgrading.
+- **AI scout:** set `XAI_MOCK=false` + `GEMINI_API_KEY` (`SONG_SCOUT=multilens`, the default). Grok is
+  an optional fallback (`SONG_SCOUT=xai`, `XAI_API_KEY`).
+- **Tesla Fleet API** + **deployment (Docker / Coolify):** step-by-step in
+  [`docs/deployment.md`](docs/deployment.md). The repo ships a single-container `Dockerfile`
+  (the API serves the SPA) and an `.env.example` template.
 
-- Stores coarse journey history, not raw GPS streams.
-- Sends abstracted trip context to the AI provider.
-- Uses Spotify and TIDAL only to resolve candidate songs and update playback or
-  playlists.
-- Avoids feeding streaming-service content into AI prompts, logs, or embeddings.
+Confirm the active scout and connections at `GET /health`.
 
-## Known Limitations
+## Privacy
 
-- Spotify queue items cannot be reliably removed or reordered through the Web
-  API, so AI Journey DJ only appends forward and prevents duplicate queued
-  tracks.
-- Spotify Web Playback SDK requires Premium and browser DRM/EME support.
-- TIDAL playlist updates remain the fallback for browsers where Spotify playback
-  is blocked or unreliable.
-- Tesla Fleet Telemetry production setup requires your own Tesla developer
-  configuration, vehicle keys, and reachable telemetry endpoint.
-- TIDAL OAuth endpoints are configurable because provider deployment details can
-  change; keep `.env` aligned with the TIDAL developer dashboard.
+Data minimization is a design goal, not an afterthought:
+
+- Raw GPS is used only transiently to derive a coarse region; it is never stored or sent to the AI.
+- The AI receives only abstracted journey context — no VINs, no raw coordinates, no streaming-library
+  data, no Spotify/TIDAL catalog content.
+- Credentials are encrypted at rest in SQLite (`APP_SECRET`); the Tesla integration is read-only and
+  never wakes a sleeping vehicle.
+
+## Status & limitations
+
+Built for self-hosted, non-commercial, single-user use; it does not redistribute audio or expose
+streaming as a service. Spotify Web Playback needs Premium + a DRM/EME-capable browser. Whether the
+car's *native* Spotify appears in the Connect device list depends on Tesla firmware/region. Spotify's
+Web API can't reorder/remove queued items, so the engine only appends forward (and never duplicates).
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).

@@ -2,7 +2,7 @@
   "name": "ai-journey-dj",
   "version": "0.1.0",
   "private": true,
-  "description": "TIDAL-first AI journey DJ for Tesla road trips.",
+  "description": "Telemetry-aware AI music director for Tesla road trips — Spotify-first, self-hostable.",
   "license": "MIT",
   "type": "module",
   "engines": {
