@@ -14,3 +14,6 @@ data/
 output/
 playwright-report/
 test-results/
+
+# Local Claude Code / agent session state
+.claude/
