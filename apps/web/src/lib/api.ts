@@ -69,6 +69,10 @@ export interface JourneyDetail {
     coarseRegion?: string;
     localTimeIso?: string;
     lastTelemetryAt?: string;
+    driveMode?: "calm" | "focus" | "neutral";
+    driveModeReason?: string;
+    driveModeSignals?: string[];
+    adaptiveModeEnabled?: boolean;
   };
   taste?: {
     topGenres: string[];
@@ -180,6 +184,11 @@ export const api = {
     request<Journey>(`/journeys/${id}/taste`, {
       method: "POST",
       body: JSON.stringify({ weight })
+    }),
+  setAdaptiveMode: (id: string, enabled: boolean) =>
+    request<Journey>(`/journeys/${id}/adaptive-mode`, {
+      method: "POST",
+      body: JSON.stringify({ enabled })
     }),
   registerSpotifyDevice: (id: string, payload: { deviceId: string; status?: string; syncOnly?: boolean }) =>
     request<JourneyDetail["playbackSession"]>(`/journeys/${id}/playback/device`, {
