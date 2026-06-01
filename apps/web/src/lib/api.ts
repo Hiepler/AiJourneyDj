@@ -60,8 +60,12 @@ export interface JourneyDetail {
   context?: {
     phase?: string;
     speedBucket?: string;
+    paceTrend?: string;
     etaMinutes?: number;
+    etaTrend?: string;
     temperatureBucket?: string;
+    autopilotState?: string;
+    batteryPercent?: number;
     coarseRegion?: string;
     localTimeIso?: string;
     lastTelemetryAt?: string;

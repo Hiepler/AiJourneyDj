@@ -1,5 +1,12 @@
-import type { JourneyContext, ResolvedTrack, SongCandidate, TasteProfile } from "@ai-journey-dj/core";
-import { clampConfidence, normalizeText } from "@ai-journey-dj/core";
+import type {
+  JourneyContext,
+  ResolvedTrack,
+  SongCandidate,
+  SongCandidateRole,
+  SongCandidateScores,
+  TasteProfile
+} from "@ai-journey-dj/core";
+import { clampConfidence, normalizeText, songKey } from "@ai-journey-dj/core";
 
 const FALLBACK_CANDIDATES: SongCandidate[] = [
   {
@@ -370,7 +377,7 @@ export function createSongScout(input: {
 
   // Default/preferred path: telemetry-driven multi-lens engine (needs the Gemini path usable).
   if (input.provider === "multilens" && geminiUsable) {
-    const lenses = input.multilens?.lenses ?? DEFAULT_LENSES;
+    const lenses = input.multilens?.lenses;
     return {
       scout: new MultiLensSongScout({
         apiKey: input.gemini.apiKey,
@@ -388,7 +395,7 @@ export function createSongScout(input: {
         model: input.gemini.model,
         webSearch: !input.mock && Boolean(input.gemini.apiKey),
         mock: input.mock,
-        lenses: lenses.length
+        lenses: lenses?.length ?? 5
       }
     };
   }
@@ -565,10 +572,37 @@ function mapCandidateItems(
       year: typeof item.year === "number" ? item.year : undefined,
       isrc: typeof item.isrc === "string" ? item.isrc : undefined,
       genre: typeof item.genre === "string" ? item.genre : undefined,
+      lens: typeof item.lens === "string" ? item.lens : undefined,
+      role: parseCandidateRole(item.role),
+      scores: parseCandidateScores(item.scores),
       reason: typeof item.reason === "string" ? item.reason : "fits the current drive context",
       source,
       confidence: clampConfidence(typeof item.confidence === "number" ? item.confidence : 0.65)
     }));
+}
+
+const SET_ROLES: SongCandidateRole[] = ["anchor", "momentum", "bridge", "surprise", "resolution"];
+
+function parseCandidateRole(value: unknown): SongCandidateRole | undefined {
+  return typeof value === "string" && SET_ROLES.includes(value as SongCandidateRole)
+    ? (value as SongCandidateRole)
+    : undefined;
+}
+
+function parseCandidateScores(value: unknown): SongCandidateScores | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Partial<Record<keyof SongCandidateScores, unknown>>;
+  const score = (key: keyof SongCandidateScores, fallback = 0): number =>
+    clampConfidence(typeof record[key] === "number" ? record[key] : fallback);
+  return {
+    contextFit: score("contextFit"),
+    telemetryFit: score("telemetryFit"),
+    tasteFit: score("tasteFit"),
+    diversityGain: score("diversityGain"),
+    novelty: score("novelty"),
+    fatiguePenalty: score("fatiguePenalty"),
+    total: score("total")
+  };
 }
 
 /**
@@ -700,7 +734,7 @@ export class GeminiSongScout implements SongScout {
       });
       const grounded = tryParseCandidateJson(groundedText, targetCount, "gemini");
       if (grounded && grounded.length > 0) {
-        return grounded;
+        return buildJourneySet(grounded, buildMusicalBrief(context), targetCount);
       }
 
       const structuredText = await this.requestGeminiText(url, {
@@ -725,7 +759,7 @@ export class GeminiSongScout implements SongScout {
       });
       const structured = tryParseCandidateJson(structuredText, targetCount, "gemini");
       if (structured && structured.length > 0) {
-        return structured;
+        return buildJourneySet(structured, buildMusicalBrief(context), targetCount);
       }
 
       return fallbackCandidates(context, targetCount);
@@ -777,11 +811,16 @@ const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
 export interface MusicalBrief {
   /** 0 = calm, 1 = high-energy. Drives the per-lens prompts. */
   targetEnergy: number;
+  /** Desired energy for the next five-track set, active track excluded. */
+  energyCurve: number[];
   intensity: string;
+  focusLevel: number;
+  socialEnergy: string;
   eras: string;
   genres: string[];
   regionHint?: string;
   moodWords: string[];
+  driveSignals: string[];
   destination: string;
   userPrompt: string;
   passengerMode: string;
@@ -867,20 +906,61 @@ export function buildMusicalBrief(context: JourneyContext): MusicalBrief {
   const profile = PHASE_PROFILE[context.phase ?? "departure"] ?? PHASE_PROFILE.departure;
   const hour = context.localTimeIso ? new Date(context.localTimeIso).getHours() : 12;
   const isNight = Number.isFinite(hour) && (hour >= 22 || hour < 6);
-  const targetEnergy = clamp01(baseEnergy + profile.delta + (isNight ? -0.1 : 0));
+  const trendDelta = context.paceTrend === "accelerating" ? 0.05 : context.paceTrend === "slowing" ? -0.06 : 0;
+  const focusDelta = context.autopilotState === "active" || context.phase === "focus" ? -0.04 : 0;
+  const etaDelta =
+    typeof context.etaMinutes === "number" && context.etaMinutes <= 15
+      ? -0.12
+      : typeof context.etaMinutes === "number" && context.etaMinutes > 90
+        ? 0.04
+        : 0;
+  const targetEnergy = clamp01(baseEnergy + profile.delta + trendDelta + focusDelta + etaDelta + (isNight ? -0.1 : 0));
 
   const moodWords = [...profile.mood];
   if (context.temperatureBucket === "warm" || context.temperatureBucket === "hot") moodWords.push("sunlit");
   if (context.temperatureBucket === "cold") moodWords.push("moody");
   if (isNight) moodWords.push("nocturnal");
+  if (context.paceTrend === "accelerating") moodWords.push("lifting");
+  if (context.paceTrend === "slowing") moodWords.push("easing");
+  if (context.autopilotState === "active") moodWords.push("low-distraction");
+
+  const focusLevel = clamp01((context.phase === "focus" ? 0.75 : 0.35) + (context.autopilotState === "active" ? 0.15 : 0));
+  const socialEnergy =
+    context.passengerMode === "family"
+      ? "friendly"
+      : context.passengerMode === "couple"
+        ? "intimate"
+        : context.passengerMode === "friends"
+          ? "social"
+          : "solo";
+  const energyCurve =
+    context.phase === "arrival" || context.etaTrend === "approaching"
+      ? [targetEnergy, clamp01(targetEnergy + 0.05), targetEnergy, clamp01(targetEnergy - 0.08), clamp01(targetEnergy - 0.16)]
+      : context.phase === "departure"
+        ? [clamp01(targetEnergy - 0.08), targetEnergy, clamp01(targetEnergy + 0.06), targetEnergy, clamp01(targetEnergy + 0.02)]
+        : [targetEnergy, clamp01(targetEnergy + 0.04), clamp01(targetEnergy - 0.02), clamp01(targetEnergy + 0.08), clamp01(targetEnergy - 0.06)];
+  const driveSignals = [
+    context.phase,
+    context.speedBucket,
+    context.temperatureBucket,
+    context.paceTrend,
+    context.etaTrend,
+    context.autopilotState,
+    isNight ? "night" : undefined,
+    socialEnergy
+  ].filter((value): value is string => Boolean(value));
 
   return {
     targetEnergy,
+    energyCurve,
     intensity: profile.intensity,
+    focusLevel,
+    socialEnergy,
     eras: "1970s through current releases",
     genres: deriveGenres(targetEnergy),
     regionHint: context.coarseRegion || context.destination,
     moodWords,
+    driveSignals,
     destination: context.destination,
     userPrompt: context.userPrompt,
     passengerMode: context.passengerMode,
@@ -903,6 +983,74 @@ export const DEFAULT_LENSES: SongLens[] = [
   { key: "crossgenre", grounded: false, instruction: "Deliberately span diverse genres with surprising-but-fitting picks the listener may not expect." },
   { key: "regional", grounded: true, instruction: "Favor artists connected to, or culturally evocative of, the journey's region/destination." }
 ];
+
+const CINEMATIC_LENSES: Record<string, SongLens> = {
+  cinematic_warmth: {
+    key: "cinematic_warmth",
+    grounded: false,
+    instruction: "Find emotionally warm, cinematic songs that make the drive feel filmed without becoming sleepy."
+  },
+  steady_momentum: {
+    key: "steady_momentum",
+    grounded: false,
+    instruction: "Find songs with forward motion and clean rhythmic confidence for the current road pace."
+  },
+  regional_texture: {
+    key: "regional_texture",
+    grounded: true,
+    instruction: "Use the region or destination as cultural texture, not a gimmick; favor real local or evocative artists."
+  },
+  timeless_anchor: {
+    key: "timeless_anchor",
+    grounded: false,
+    instruction: "Find one or two durable, familiar anchors from past decades that stabilize the set."
+  },
+  leftfield_bridge: {
+    key: "leftfield_bridge",
+    grounded: false,
+    instruction: "Find surprising cross-genre bridges that still connect smoothly to the drive mood."
+  },
+  low_distraction: {
+    key: "low_distraction",
+    grounded: false,
+    instruction: "Find focused, low-distraction tracks with steady pulse and minimal lyrical clutter."
+  },
+  resolving_arrival: {
+    key: "resolving_arrival",
+    grounded: false,
+    instruction: "Find graceful resolution tracks for approaching the destination without draining energy."
+  }
+};
+
+export function selectJourneyLenses(brief: MusicalBrief): SongLens[] {
+  const picked: SongLens[] = [];
+  const add = (key: keyof typeof CINEMATIC_LENSES): void => {
+    const lens = CINEMATIC_LENSES[key];
+    if (!picked.some((item) => item.key === lens.key)) picked.push(lens);
+  };
+
+  if (brief.focusLevel >= 0.7 || brief.moodWords.includes("low-distraction")) {
+    add("low_distraction");
+  } else if (
+    brief.intensity === "cinematic" ||
+    brief.moodWords.some((word) => ["warm", "emotional", "sunlit", "expansive"].includes(word))
+  ) {
+    add("cinematic_warmth");
+  } else if (brief.intensity === "resolving" || brief.targetEnergy < 0.45) {
+    add("resolving_arrival");
+  } else {
+    add("steady_momentum");
+  }
+
+  if (brief.targetEnergy >= 0.5) add("steady_momentum");
+  if (brief.regionHint) add("regional_texture");
+  add("timeless_anchor");
+  add("leftfield_bridge");
+  if (picked.length < 5) add("cinematic_warmth");
+  if (picked.length < 5) add("resolving_arrival");
+
+  return picked.slice(0, 5);
+}
 
 /**
  * Taste steering: the "crossgenre" lens is the discovery counterweight and stays neutral so the
@@ -927,12 +1075,15 @@ export function buildLensPrompt(lens: SongLens, brief: MusicalBrief, count: numb
   return [
     `You are AI Journey DJ curating the "${lens.key}" portion of a road-trip set.`,
     lens.instruction,
-    `Target energy: ${brief.targetEnergy.toFixed(2)} (0=calm, 1=high). Intensity: ${brief.intensity}. Mood: ${brief.moodWords.join(", ")}.`,
+    `Target energy: ${brief.targetEnergy.toFixed(2)} (0=calm, 1=high). Five-track energy curve: ${brief.energyCurve.map((value) => value.toFixed(2)).join(" -> ")}.`,
+    `Intensity: ${brief.intensity}. Focus level: ${brief.focusLevel.toFixed(2)}. Social energy: ${brief.socialEnergy}. Mood: ${brief.moodWords.join(", ")}.`,
+    `Drive signals: ${brief.driveSignals.join(", ")}.`,
     `Span eras (${brief.eras}) and vary genres broadly (e.g. ${brief.genres.join(", ")}).`,
     brief.regionHint ? `Region/destination context: ${brief.regionHint}.` : "",
     tasteSteeringLine(lens, brief),
     `Listener mode: ${brief.passengerMode}. Direction: "${brief.userPrompt}".`,
-    `Return ONLY JSON {"songs":[{"artist","title","year","genre","reason"}]} with exactly ${count} real, released songs.`,
+    `Return ONLY JSON {"songs":[{"artist","title","year","genre","reason","role"}]} with exactly ${count} real, released songs.`,
+    `If you include role, use one of: ${SET_ROLES.join(", ")}.`,
     "Vary artists; no duplicates. Keep 'reason' to one short clause tying the pick to the drive.",
     "Never include streaming-service data, raw GPS coordinates, VINs, or user-library references."
   ]
@@ -942,6 +1093,145 @@ export function buildLensPrompt(lens: SongLens, brief: MusicalBrief, count: numb
 
 function decadeOf(year?: number): string {
   return typeof year === "number" && year > 1900 ? `${Math.floor(year / 10) * 10}s` : "unknown";
+}
+
+const GENRE_ENERGY_HINTS: Array<[RegExp, number]> = [
+  [/\b(ambient|cinematic|downtempo|classical|folk|acoustic)\b/i, 0.3],
+  [/\b(soul|jazz|r&b|funk)\b/i, 0.5],
+  [/\b(indie|pop|disco|new wave)\b/i, 0.6],
+  [/\b(electronic|house|techno|rock|hip-hop|hip hop)\b/i, 0.78]
+];
+
+function inferredCandidateEnergy(candidate: SongCandidate): number {
+  const text = [candidate.genre, candidate.lens, candidate.reason].filter(Boolean).join(" ");
+  const match = GENRE_ENERGY_HINTS.find(([pattern]) => pattern.test(text));
+  return match?.[1] ?? 0.55;
+}
+
+function genreKey(candidate: SongCandidate): string {
+  return normalizeText(candidate.genre ?? "unknown");
+}
+
+function candidateNovelty(candidate: SongCandidate, role: SongCandidateRole): number {
+  const year = candidate.year ?? 0;
+  const currentBoost = year >= new Date().getFullYear() - 2 ? 0.18 : 0;
+  const oldAnchorBoost = role === "anchor" && year > 1900 && year < 2000 ? 0.1 : 0;
+  const surpriseBoost = role === "surprise" || candidate.lens === "leftfield_bridge" ? 0.18 : 0;
+  return clamp01(0.45 + currentBoost + oldAnchorBoost + surpriseBoost);
+}
+
+function scoreForRole(
+  candidate: SongCandidate,
+  brief: MusicalBrief,
+  role: SongCandidateRole,
+  index: number,
+  usedArtists: Map<string, number>,
+  usedGenres: Map<string, number>,
+  usedDecades: Map<string, number>
+): SongCandidateScores {
+  const genre = genreKey(candidate);
+  const artist = normalizeText(candidate.artist);
+  const decade = decadeOf(candidate.year);
+  const roleEnergy = brief.energyCurve[index % brief.energyCurve.length] ?? brief.targetEnergy;
+  const energyFit = 1 - Math.abs(inferredCandidateEnergy(candidate) - roleEnergy);
+  const contextFit = brief.genres.some((item) => genre.includes(normalizeText(item)) || normalizeText(item).includes(genre))
+    ? 0.88
+    : brief.moodWords.some((word) => normalizeText(candidate.reason).includes(normalizeText(word)))
+      ? 0.72
+      : 0.58;
+  const tasteFit =
+    brief.favoredGenres.length === 0
+      ? 0.5
+      : brief.favoredGenres.some((item) => genre.includes(normalizeText(item)))
+        ? 0.85
+        : 0.42;
+  const diversityGain = clamp01(
+    0.42 +
+      (usedArtists.has(artist) ? -0.45 : 0.25) +
+      (usedGenres.has(genre) ? -0.25 : 0.2) +
+      (usedDecades.has(decade) ? -0.08 : 0.08)
+  );
+  const novelty = candidateNovelty(candidate, role);
+  const fatiguePenalty = clamp01(
+    (usedArtists.get(artist) ?? 0) * 0.55 + (usedGenres.get(genre) ?? 0) * 0.18 + (usedDecades.get(decade) ?? 0) * 0.05
+  );
+  const telemetryFit = clamp01(energyFit + (brief.focusLevel >= 0.7 && inferredCandidateEnergy(candidate) <= 0.65 ? 0.08 : 0));
+  const total = clamp01(
+    candidate.confidence * 0.22 +
+      contextFit * 0.22 +
+      telemetryFit * 0.22 +
+      tasteFit * 0.1 +
+      diversityGain * 0.16 +
+      novelty * 0.08 -
+      fatiguePenalty * 0.18
+  );
+  return { contextFit, telemetryFit, tasteFit, diversityGain, novelty, fatiguePenalty, total };
+}
+
+export function buildJourneySet(candidates: SongCandidate[], brief: MusicalBrief, count: number): SongCandidate[] {
+  const seenSongs = new Set<string>();
+  const pool: SongCandidate[] = [];
+  for (const candidate of candidates) {
+    const key = candidate.isrc ? `isrc:${candidate.isrc}` : songKey(candidate.artist, candidate.title);
+    if (seenSongs.has(key)) continue;
+    seenSongs.add(key);
+    pool.push(candidate);
+  }
+
+  const selected: SongCandidate[] = [];
+  const usedArtists = new Map<string, number>();
+  const usedGenres = new Map<string, number>();
+  const usedDecades = new Map<string, number>();
+
+  while (selected.length < count && pool.length > 0) {
+    const role = SET_ROLES[selected.length % SET_ROLES.length];
+    const enforceArtistDiversity = selected.length < Math.min(count, 5);
+    const enforceGenreDiversity = selected.length < Math.min(count, 5);
+    let bestIndex = -1;
+    let bestScores: SongCandidateScores | undefined;
+    let bestScore = -Infinity;
+
+    for (let index = 0; index < pool.length; index += 1) {
+      const candidate = pool[index];
+      const artist = normalizeText(candidate.artist);
+      const genre = genreKey(candidate);
+      if (enforceArtistDiversity && usedArtists.has(artist) && pool.some((item) => !usedArtists.has(normalizeText(item.artist)))) {
+        continue;
+      }
+      if (enforceGenreDiversity && usedGenres.has(genre) && pool.some((item) => !usedGenres.has(genreKey(item)))) {
+        continue;
+      }
+      const scores = scoreForRole(candidate, brief, role, selected.length, usedArtists, usedGenres, usedDecades);
+      if (scores.total > bestScore) {
+        bestIndex = index;
+        bestScore = scores.total;
+        bestScores = scores;
+      }
+    }
+
+    if (bestIndex === -1) {
+      bestIndex = 0;
+      bestScores = scoreForRole(pool[0], brief, role, selected.length, usedArtists, usedGenres, usedDecades);
+    }
+
+    const [picked] = pool.splice(bestIndex, 1);
+    const decorated: SongCandidate = {
+      ...picked,
+      role,
+      scores: bestScores,
+      telemetrySignals: brief.driveSignals,
+      reason: picked.reason || `${role} for ${brief.intensity} ${brief.destination}`
+    };
+    selected.push(decorated);
+    const artist = normalizeText(decorated.artist);
+    const genre = genreKey(decorated);
+    const decade = decadeOf(decorated.year);
+    usedArtists.set(artist, (usedArtists.get(artist) ?? 0) + 1);
+    usedGenres.set(genre, (usedGenres.get(genre) ?? 0) + 1);
+    usedDecades.set(decade, (usedDecades.get(decade) ?? 0) + 1);
+  }
+
+  return selected;
 }
 
 /**
@@ -1046,14 +1336,12 @@ export class MultiLensSongScout implements SongScout {
   private readonly requestTimeoutMs: number;
   private readonly perLensCount: number;
   private readonly maxOutputTokens: number;
-  private readonly lenses: SongLens[];
 
   constructor(private readonly options: MultiLensSongScoutOptions) {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_SCOUT_TIMEOUT_MS;
     this.perLensCount = options.perLensCount ?? 5;
     this.maxOutputTokens = options.maxOutputTokens ?? 2048;
-    this.lenses = options.lenses ?? DEFAULT_LENSES;
   }
 
   async generateCandidates(context: JourneyContext, targetCount: number): Promise<SongCandidate[]> {
@@ -1065,14 +1353,15 @@ export class MultiLensSongScout implements SongScout {
       assertJourneyContextIsPrivacySafe(context);
       const brief = buildMusicalBrief(context);
       const runner = this.options.lensRunner ?? ((lens, b, count) => this.runLens(lens, b, count));
+      const lenses = this.options.lenses ?? selectJourneyLenses(brief);
       const settled = await Promise.all(
-        this.lenses.map((lens) => runner(lens, brief, this.perLensCount).catch(() => [] as SongCandidate[]))
+        lenses.map((lens) => runner(lens, brief, this.perLensCount).catch(() => [] as SongCandidate[]))
       );
       const all = settled.flat();
       if (all.length === 0) {
         return fallbackCandidates(context, targetCount);
       }
-      const balanced = balanceCandidates(all, brief, targetCount);
+      const balanced = buildJourneySet(all, brief, targetCount);
       return balanced.length > 0 ? balanced : fallbackCandidates(context, targetCount);
     } catch {
       return fallbackCandidates(context, targetCount);
@@ -1109,12 +1398,16 @@ function resolveCandidatesFromModelText(
 ): SongCandidate[] {
   const parsed = tryParseCandidateJson(text, targetCount, source);
   if (parsed && parsed.length >= targetCount) {
-    return parsed;
+    return buildJourneySet(parsed, buildMusicalBrief(context), targetCount);
   }
 
   if (parsed && parsed.length > 0) {
     const padded = [...parsed, ...fallbackCandidates(context, targetCount - parsed.length)];
-    return padded.map((item) => ({ ...item, source }));
+    return buildJourneySet(
+      padded.map((item) => ({ ...item, source })),
+      buildMusicalBrief(context),
+      targetCount
+    );
   }
 
   return fallbackCandidates(context, targetCount);
@@ -1134,7 +1427,7 @@ export function parseCandidateJson(
 
 export function fallbackCandidates(context: JourneyContext, targetCount: number): SongCandidate[] {
   const phaseOffset = Math.abs(normalizeText(context.phase).split("").reduce((acc, char) => acc + char.charCodeAt(0), 0));
-  return [...FALLBACK_CANDIDATES]
+  const candidates = [...FALLBACK_CANDIDATES]
     .slice(phaseOffset % 3)
     .concat(FALLBACK_CANDIDATES)
     .slice(0, targetCount)
@@ -1142,6 +1435,7 @@ export function fallbackCandidates(context: JourneyContext, targetCount: number)
       ...candidate,
       reason: `${candidate.reason}; selected for ${context.phase} toward ${context.destination}`
     }));
+  return buildJourneySet(candidates, buildMusicalBrief(context), targetCount);
 }
 
 export function selectRollingBatch<T extends ResolvedTrack>(

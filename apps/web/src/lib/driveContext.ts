@@ -1,8 +1,12 @@
 export interface DriveContext {
   phase?: string;
   speedBucket?: string;
+  paceTrend?: string;
   etaMinutes?: number;
+  etaTrend?: string;
   temperatureBucket?: string;
+  autopilotState?: string;
+  batteryPercent?: number;
   coarseRegion?: string;
   localTimeIso?: string;
 }
@@ -60,6 +64,18 @@ const WEATHER_LABEL: Record<string, string> = {
   hot: "Hot"
 };
 
+const PACE_TREND_LABEL: Record<string, string> = {
+  accelerating: "Accelerating",
+  steady: "Steady",
+  slowing: "Slowing"
+};
+
+const ETA_TREND_LABEL: Record<string, string> = {
+  approaching: "Approaching",
+  steady: "Steady",
+  unknown: "Unclear"
+};
+
 function titleCase(value: string): string {
   return value
     .split(/[_\s]+/)
@@ -86,8 +102,19 @@ export function buildContextPills(context?: DriveContext): ContextPill[] {
   if (pace) {
     pills.push({ key: "tempo", label: "Pace", value: pace });
   }
+  const paceTrend = context.paceTrend ? PACE_TREND_LABEL[context.paceTrend] : undefined;
+  if (paceTrend && context.paceTrend !== "steady") {
+    pills.push({ key: "pace-trend", label: "Trend", value: paceTrend });
+  }
   if (typeof context.etaMinutes === "number" && context.etaMinutes > 0) {
     pills.push({ key: "eta", label: "ETA", value: formatEta(context.etaMinutes) });
+  }
+  const etaTrend = context.etaTrend ? ETA_TREND_LABEL[context.etaTrend] : undefined;
+  if (etaTrend && context.etaTrend !== "steady" && context.etaTrend !== "unknown") {
+    pills.push({ key: "eta-trend", label: "ETA", value: etaTrend });
+  }
+  if (context.autopilotState === "active") {
+    pills.push({ key: "assist", label: "Assist", value: "Autopilot" });
   }
   const weather = context.temperatureBucket ? WEATHER_LABEL[context.temperatureBucket] : undefined;
   if (weather) {

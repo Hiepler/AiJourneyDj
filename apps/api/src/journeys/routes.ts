@@ -62,7 +62,7 @@ export async function registerJourneyRoutes(
       analysisFailed && (!latestUpdate || analysisFailed.createdAtIso > latestUpdate.createdAtIso)
     );
 
-    const ctx = contextFromJourney(journey, store.latestTelemetry(id));
+    const ctx = contextFromJourney(journey, store.latestTelemetry(id), store.recentTelemetry(id));
     const taste = store.getCachedTasteProfile("local");
 
     return {
@@ -79,8 +79,12 @@ export async function registerJourneyRoutes(
       context: {
         phase: ctx.phase,
         speedBucket: ctx.speedBucket,
+        paceTrend: ctx.paceTrend,
         etaMinutes: ctx.etaMinutes,
+        etaTrend: ctx.etaTrend,
         temperatureBucket: ctx.temperatureBucket,
+        autopilotState: ctx.autopilotState,
+        batteryPercent: ctx.batteryPercent,
         coarseRegion: ctx.coarseRegion,
         localTimeIso: ctx.localTimeIso,
         // Server-side ingest time of the latest telemetry → powers the "Live · vor Xs" badge.

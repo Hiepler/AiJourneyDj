@@ -528,7 +528,7 @@ export class JourneyService {
   private async analyzeTidalJourney(journey: JourneyRecord, reason: string): Promise<PlaylistUpdate> {
     const journeyId = journey.id;
     const telemetry = this.store.latestTelemetry(journeyId);
-    const context = contextFromJourney(journey, telemetry);
+    const context = contextFromJourney(journey, telemetry, this.store.recentTelemetry(journeyId));
     const candidates = await this.generateAndStoreCandidates(journeyId, context, 12);
     const accessToken = await this.tidalAuth.getAccessToken();
     const resolver = new TidalResolver(this.tidalAdapter, {
@@ -585,7 +585,7 @@ export class JourneyService {
   private async analyzeSpotifyJourney(journey: JourneyRecord, reason: string): Promise<PlaylistUpdate> {
     const journeyId = journey.id;
     const telemetry = this.store.latestTelemetry(journeyId);
-    const context = contextFromJourney(journey, telemetry);
+    const context = contextFromJourney(journey, telemetry, this.store.recentTelemetry(journeyId));
 
     // Cost control: only the LLM lenses cost tokens. Run them when the vibe actually changes;
     // for routine top-ups, reuse the already-generated candidate pool if it can refill the buffer.
