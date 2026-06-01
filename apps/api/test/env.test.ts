@@ -43,4 +43,9 @@ describe("env", () => {
     expect(loadConfig({}).ADAPTIVE_DRIVE_MODE_ENABLED).toBe(true);
     expect(loadConfig({ ADAPTIVE_DRIVE_MODE_ENABLED: "false" }).ADAPTIVE_DRIVE_MODE_ENABLED).toBe(false);
   });
+
+  it("defaults the telemetry poll cadence to a cost-friendly 120s, overridable", () => {
+    expect(loadConfig({}).TESLA_POLL_SECONDS).toBe(120);
+    expect(loadConfig({ TESLA_POLL_SECONDS: "60" }).TESLA_POLL_SECONDS).toBe(60);
+  });
 });
