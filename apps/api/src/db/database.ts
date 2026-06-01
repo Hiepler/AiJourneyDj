@@ -191,6 +191,11 @@ export function migrate(db: Db): void {
   tryAddColumn(db, "telemetry_snapshots", "received_at", "TEXT");
   tryAddColumn(db, "telemetry_snapshots", "speed_kph", "REAL");
   tryAddColumn(db, "telemetry_snapshots", "outside_temp_c", "REAL");
+  tryAddColumn(db, "telemetry_snapshots", "traffic_delay_minutes", "REAL");
+  tryAddColumn(db, "telemetry_snapshots", "energy_percent_at_arrival", "REAL");
+  tryAddColumn(db, "telemetry_snapshots", "audio_volume", "REAL");
+  tryAddColumn(db, "journeys", "drive_mode", "TEXT");
+  tryAddColumn(db, "journeys", "adaptive_mode_enabled", "INTEGER NOT NULL DEFAULT 1");
   tryAddColumn(db, "song_candidates", "genre", "TEXT");
   tryAddColumn(db, "song_candidates", "lens", "TEXT");
   tryAddColumn(db, "song_candidates", "role", "TEXT");

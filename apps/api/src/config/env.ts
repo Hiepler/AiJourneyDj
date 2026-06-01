@@ -61,6 +61,8 @@ const schema = z.object({
   SPOTIFY_PLAYBACK_POLL_IDLE_SECONDS: z.coerce.number().int().min(5).default(30),
   SPOTIFY_REFILL_THRESHOLD: z.coerce.number().int().min(0).default(3),
   SPOTIFY_REFILL_MIN_INTERVAL_SECONDS: z.coerce.number().int().min(0).default(60),
+  // Adaptive Drive Mode (comfort feature; biases selection from telemetry, not a safety system).
+  ADAPTIVE_DRIVE_MODE_ENABLED: envBoolean(true),
   XAI_API_KEY: z.string().optional(),
   XAI_BASE_URL: z.string().url().default("https://api.x.ai/v1"),
   XAI_MODEL: z.string().default("grok-4.3"),
