@@ -17,3 +17,8 @@ test-results/
 
 # Local Claude Code / agent session state
 .claude/
+
+# Tesla key material (NEVER commit)
+*.pem
+tesla-private.pem
+tesla-public.pem

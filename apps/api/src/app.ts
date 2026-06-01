@@ -112,6 +112,8 @@ export async function buildApp(config: AppConfig) {
       spotifyConnected,
       spotifyMock: config.SPOTIFY_MOCK,
       spotifyPremium,
+      teslaConnected: teslaAuth.isConnected(),
+      teslaFleetEnabled: config.TESLA_FLEET_ENABLED,
       xaiMock: config.XAI_MOCK,
       songScout: songScoutInfo,
       telemetryEnabled: config.TESLA_TELEMETRY_ENABLED,
@@ -199,6 +201,27 @@ export async function buildApp(config: AppConfig) {
   app.post("/auth/tesla/disconnect", async () => {
     teslaAuth.disconnect();
     return { ok: true };
+  });
+
+  // Read-only verification: confirms the stored token works by listing vehicles.
+  // Listing vehicles never wakes a sleeping car. Returns only display name + online state (no VIN).
+  app.get("/auth/tesla/status", async (_request, reply) => {
+    if (!teslaAuth.isConnected()) {
+      return { connected: false, fleetEnabled: config.TESLA_FLEET_ENABLED };
+    }
+    try {
+      const token = await teslaAuth.getAccessToken();
+      const base = config.TESLA_API_BASE_URL.replace(/\/$/, "");
+      const response = await fetch(`${base}/api/1/vehicles`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!response.ok) {
+        return reply.code(502).send({ connected: true, tokenValid: false, status: response.status });
+      }
+      const body = (await response.json()) as { response?: Array<{ display_name?: string; state?: string }> };
+      const vehicles = (body.response ?? []).map((v) => ({ name: v.display_name ?? "Tesla", state: v.state ?? "unknown" }));
+      return { connected: true, tokenValid: true, fleetEnabled: config.TESLA_FLEET_ENABLED, vehicles };
+    } catch (error) {
+      return reply.code(502).send({ connected: true, tokenValid: false, error: error instanceof Error ? error.message : String(error) });
+    }
   });
 
   app.post("/auth/tesla/register-partner", async (_request, reply) => {
