@@ -6,7 +6,7 @@ import type { JourneyRecord, NormalizedTelemetryEvent } from "@ai-journey-dj/cor
 import { afterEach, describe, expect, it } from "vitest";
 
 import { migrate, openDatabase } from "../src/db/database.js";
-import { Store } from "../src/db/store.js";
+import { contextFromJourney, Store } from "../src/db/store.js";
 
 const tmpDirs: string[] = [];
 afterEach(() => {
@@ -83,5 +83,48 @@ describe("telemetry received_at (store)", () => {
     // Both stamped at ingest time (now), so it must parse as a valid recent ISO string.
     expect(receivedAt).toBeDefined();
     expect(Number.isNaN(Date.parse(receivedAt!))).toBe(false);
+  });
+
+  it("round-trips speed and temperature context for later journey analysis", () => {
+    const store = freshStore();
+    const journey = makeJourney();
+    store.createJourney(journey);
+
+    store.saveTelemetry(
+      "journey-1",
+      event({
+        timestampIso: "2026-06-01T18:30:00.000Z",
+        speedKph: 118,
+        outsideTempC: 27,
+        etaMinutes: 42
+      }),
+      "golden_hour"
+    );
+
+    const telemetry = store.latestTelemetry("journey-1");
+    expect(telemetry).toMatchObject({
+      speedKph: 118,
+      outsideTempC: 27,
+      etaMinutes: 42
+    });
+
+    const context = contextFromJourney({ ...journey, phase: "golden_hour" }, telemetry);
+    expect(context.speedBucket).toBe("highway");
+    expect(context.temperatureBucket).toBe("warm");
+  });
+
+  it("derives privacy-safe drive trends from recent telemetry snapshots", () => {
+    const journey = makeJourney();
+    const history = [
+      event({ timestampIso: "2026-06-01T18:00:00.000Z", speedKph: 42, etaMinutes: 55 }),
+      event({ timestampIso: "2026-06-01T18:03:00.000Z", speedKph: 68, etaMinutes: 48 }),
+      event({ timestampIso: "2026-06-01T18:06:00.000Z", speedKph: 103, etaMinutes: 40, autopilotState: "active" })
+    ];
+
+    const context = contextFromJourney(journey, history[2], history);
+
+    expect(context.paceTrend).toBe("accelerating");
+    expect(context.etaTrend).toBe("approaching");
+    expect(context.autopilotState).toBe("active");
   });
 });

@@ -9,6 +9,7 @@ import {
   buildJourneyPrompt,
   buildLensPrompt,
   buildMusicalBrief,
+  buildJourneySet,
   createSongScout,
   DEFAULT_LENSES,
   deriveTasteProfile,
@@ -20,6 +21,7 @@ import {
   repairJsonString,
   resolveXaiModel,
   salvageCandidatesFromText,
+  selectJourneyLenses,
   selectRollingBatch,
   tryParseCandidateJson,
   XaiSongScout
@@ -246,6 +248,46 @@ describe("recommendation", () => {
     });
     expect(calm.targetEnergy).toBeLessThan(fast.targetEnergy);
     expect(calm.intensity).toBe("winding-down");
+  });
+
+  it("selectJourneyLenses adapts the scout lenses to the cinematic drive context", () => {
+    const golden = buildMusicalBrief(context);
+    expect(selectJourneyLenses(golden).map((lens) => lens.key)).toEqual([
+      "cinematic_warmth",
+      "steady_momentum",
+      "regional_texture",
+      "timeless_anchor",
+      "leftfield_bridge"
+    ]);
+
+    const focus = buildMusicalBrief({
+      ...context,
+      phase: "focus",
+      speedBucket: "highway",
+      passengerMode: "solo",
+      localTimeIso: "2026-05-28T23:30:00.000Z"
+    });
+    expect(selectJourneyLenses(focus).map((lens) => lens.key)).toContain("low_distraction");
+  });
+
+  it("buildJourneySet creates a five-track cinematic set with roles and diversity", () => {
+    const candidates: SongCandidate[] = [
+      { artist: "A", title: "Anchor", year: 2024, genre: "electronic", reason: "", source: "gemini", confidence: 0.9 },
+      { artist: "B", title: "Drive", year: 2023, genre: "rock", reason: "", source: "gemini", confidence: 0.88 },
+      { artist: "C", title: "Bridge", year: 1998, genre: "soul", reason: "", source: "gemini", confidence: 0.82 },
+      { artist: "D", title: "Surprise", year: 2014, genre: "hip-hop", reason: "", source: "gemini", confidence: 0.79 },
+      { artist: "E", title: "Resolve", year: 1979, genre: "ambient", reason: "", source: "gemini", confidence: 0.76 },
+      { artist: "A", title: "Duplicate Artist", year: 2020, genre: "electronic", reason: "", source: "gemini", confidence: 0.95 },
+      { artist: "F", title: "Another Pulse", year: 2022, genre: "electronic", reason: "", source: "gemini", confidence: 0.91 }
+    ];
+
+    const set = buildJourneySet(candidates, buildMusicalBrief(context), 5);
+
+    expect(set).toHaveLength(5);
+    expect(set.map((candidate) => candidate.role)).toEqual(["anchor", "momentum", "bridge", "surprise", "resolution"]);
+    expect(new Set(set.map((candidate) => candidate.artist))).toHaveLength(5);
+    expect(new Set(set.map((candidate) => candidate.genre))).toHaveLength(5);
+    expect(set.every((candidate) => candidate.scores && candidate.scores.total > 0)).toBe(true);
   });
 
   it("balanceCandidates dedupes and spreads across decades/genres/artists", () => {

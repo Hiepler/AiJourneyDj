@@ -48,6 +48,10 @@ export interface JourneyContext {
   etaMinutes?: number;
   speedBucket: SpeedBucket;
   temperatureBucket?: TemperatureBucket;
+  paceTrend?: "accelerating" | "steady" | "slowing";
+  etaTrend?: "approaching" | "steady" | "unknown";
+  autopilotState?: "off" | "available" | "active" | "unknown";
+  batteryPercent?: number;
   phase: JourneyPhase;
   userPrompt: string;
   passengerMode: PassengerMode;
@@ -55,6 +59,18 @@ export interface JourneyContext {
   tasteProfile?: TasteProfile;
   /** Familiarity↔discovery balance, 0 = pure discovery … 1 = lean into known taste. */
   tasteWeight?: number;
+}
+
+export type SongCandidateRole = "anchor" | "momentum" | "bridge" | "surprise" | "resolution";
+
+export interface SongCandidateScores {
+  contextFit: number;
+  telemetryFit: number;
+  tasteFit: number;
+  diversityGain: number;
+  novelty: number;
+  fatiguePenalty: number;
+  total: number;
 }
 
 export interface SongCandidate {
@@ -68,6 +84,12 @@ export interface SongCandidate {
   genre?: string;
   /** Generation lens this candidate came from (e.g. "current", "classics") — diagnostics/balancing. */
   lens?: string;
+  /** Role in the next five-track cinematic journey set. */
+  role?: SongCandidateRole;
+  /** Internal selection diagnostics; never provider catalog data. */
+  scores?: SongCandidateScores;
+  /** Privacy-safe drive signals that influenced this pick. */
+  telemetrySignals?: string[];
   reason: string;
   source: "grok" | "gemini" | "fallback" | "musicbrainz" | "listenbrainz";
   confidence: number;
