@@ -68,11 +68,14 @@ export function migrate(db: Db): void {
       coarse_region TEXT,
       destination TEXT,
       eta_minutes INTEGER,
+      speed_kph REAL,
+      outside_temp_c REAL,
       speed_bucket TEXT,
       temperature_bucket TEXT,
       phase TEXT,
       autopilot_state TEXT,
-      battery_percent INTEGER
+      battery_percent INTEGER,
+      received_at TEXT
     );
 
     CREATE TABLE IF NOT EXISTS song_candidates (
@@ -83,6 +86,10 @@ export function migrate(db: Db): void {
       album TEXT,
       year INTEGER,
       isrc TEXT,
+      genre TEXT,
+      lens TEXT,
+      role TEXT,
+      scores_json TEXT,
       reason TEXT NOT NULL,
       source TEXT NOT NULL,
       confidence REAL NOT NULL,
@@ -182,6 +189,12 @@ export function migrate(db: Db): void {
   tryAddColumn(db, "playlist_updates", "provider", "TEXT");
   tryAddColumn(db, "playback_sessions", "played_track_ids", "TEXT NOT NULL DEFAULT '[]'");
   tryAddColumn(db, "telemetry_snapshots", "received_at", "TEXT");
+  tryAddColumn(db, "telemetry_snapshots", "speed_kph", "REAL");
+  tryAddColumn(db, "telemetry_snapshots", "outside_temp_c", "REAL");
+  tryAddColumn(db, "song_candidates", "genre", "TEXT");
+  tryAddColumn(db, "song_candidates", "lens", "TEXT");
+  tryAddColumn(db, "song_candidates", "role", "TEXT");
+  tryAddColumn(db, "song_candidates", "scores_json", "TEXT");
 
   db.run("INSERT OR IGNORE INTO users (id, created_at) VALUES (?, ?)", ["local", new Date().toISOString()]);
 }
