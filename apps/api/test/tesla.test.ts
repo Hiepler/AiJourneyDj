@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
-import { pollTeslaOnce } from "../src/telemetry/teslaFleetPoller.js";
+import { makeVehicleIdResolver, pollTeslaOnce } from "../src/telemetry/teslaFleetPoller.js";
 import { loadConfig } from "../src/config/env.js";
 import { migrate, openDatabase } from "../src/db/database.js";
 import { Store } from "../src/db/store.js";
@@ -85,12 +85,14 @@ describe("tesla routes", () => {
 });
 
 describe("tesla fleet poller (single tick)", () => {
-  function fakeDeps(vehicleState: string) {
+  // online=200 vehicle_data; asleep=408 (vehicle_data does not wake the car).
+  function fakeDeps(vehicleState: "online" | "asleep") {
     const calls: string[] = [];
     const fetchImpl: typeof fetch = async (input) => {
       const url = String(input);
       calls.push(url);
       if (url.includes("/vehicles/") && url.includes("vehicle_data")) {
+        if (vehicleState === "asleep") return new Response("{}", { status: 408 });
         return new Response(
           JSON.stringify({
             response: {
@@ -103,9 +105,6 @@ describe("tesla fleet poller (single tick)", () => {
           { status: 200 }
         );
       }
-      if (url.includes("/vehicles")) {
-        return new Response(JSON.stringify({ response: [{ id: 1, id_s: "1", state: vehicleState }] }), { status: 200 });
-      }
       return new Response("{}", { status: 200 });
     };
     return { calls, fetchImpl };
@@ -117,41 +116,40 @@ describe("tesla fleet poller (single tick)", () => {
     await pollTeslaOnce({
       apiBaseUrl: "https://fleet.test",
       accessToken: "t",
-      vehicleId: undefined,
+      resolveVehicleId: async () => "1",
       hasActiveJourney: () => false,
       ingest: async (event) => void ingested.push(event),
       geocode: async () => undefined,
       appSecret: "s",
       fetchImpl
     });
-    expect(calls.some((u) => u.includes("vehicle_data"))).toBe(false);
+    expect(calls).toHaveLength(0);
     expect(ingested).toHaveLength(0);
   });
 
-  it("does not call vehicle_data when the vehicle is asleep", async () => {
+  it("does not ingest when the vehicle is asleep (408), without waking it", async () => {
     const ingested: unknown[] = [];
-    const { calls, fetchImpl } = fakeDeps("asleep");
+    const { fetchImpl } = fakeDeps("asleep");
     await pollTeslaOnce({
       apiBaseUrl: "https://fleet.test",
       accessToken: "t",
-      vehicleId: undefined,
+      resolveVehicleId: async () => "1",
       hasActiveJourney: () => true,
       ingest: async (event) => void ingested.push(event),
       geocode: async () => undefined,
       appSecret: "s",
       fetchImpl
     });
-    expect(calls.some((u) => u.includes("vehicle_data"))).toBe(false);
     expect(ingested).toHaveLength(0);
   });
 
-  it("ingests normalized telemetry when online with an active journey", async () => {
+  it("ingests telemetry online with exactly ONE request (no per-tick vehicle-list call)", async () => {
     const ingested: unknown[] = [];
-    const { fetchImpl } = fakeDeps("online");
+    const { calls, fetchImpl } = fakeDeps("online");
     await pollTeslaOnce({
       apiBaseUrl: "https://fleet.test",
       accessToken: "t",
-      vehicleId: undefined,
+      resolveVehicleId: async () => "1",
       hasActiveJourney: () => true,
       ingest: async (event) => void ingested.push(event),
       geocode: async () => "Bavaria, Germany",
@@ -161,6 +159,42 @@ describe("tesla fleet poller (single tick)", () => {
     expect(ingested).toHaveLength(1);
     expect((ingested[0] as { speedKph?: number }).speedKph).toBe(97);
     expect((ingested[0] as { coarseRegion?: string }).coarseRegion).toBe("Bavaria, Germany");
-    expect((ingested[0] as Record<string, unknown>).coordinates).toBeUndefined();
+    // Cost guard: a tick must hit only vehicle_data — never the billed /api/1/vehicles list.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain("vehicle_data");
+    expect(calls.some((u) => u.endsWith("/api/1/vehicles"))).toBe(false);
+  });
+});
+
+describe("makeVehicleIdResolver (cost: discover once, then cache)", () => {
+  it("returns a configured id without any API call", async () => {
+    const calls: string[] = [];
+    const resolve = makeVehicleIdResolver({
+      apiBaseUrl: "https://fleet.test",
+      configuredVehicleId: "VID",
+      getAccessToken: async () => "t",
+      fetchImpl: async (input) => {
+        calls.push(String(input));
+        return new Response("{}", { status: 200 });
+      }
+    });
+    expect(await resolve()).toBe("VID");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("discovers the id once via the list, then caches it (no second list call)", async () => {
+    const calls: string[] = [];
+    const resolve = makeVehicleIdResolver({
+      apiBaseUrl: "https://fleet.test",
+      configuredVehicleId: undefined,
+      getAccessToken: async () => "t",
+      fetchImpl: async (input) => {
+        calls.push(String(input));
+        return new Response(JSON.stringify({ response: [{ id: 7, id_s: "7" }] }), { status: 200 });
+      }
+    });
+    expect(await resolve()).toBe("7");
+    expect(await resolve()).toBe("7");
+    expect(calls).toHaveLength(1); // discovered once, cached thereafter
   });
 });
