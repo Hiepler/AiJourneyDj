@@ -1,5 +1,6 @@
 import type {
   JourneyContext,
+  JourneyPhase,
   JourneyRecord,
   NormalizedTelemetryEvent,
   PlaybackSession,
@@ -7,7 +8,9 @@ import type {
   QueueOperation,
   ResolvedTrack,
   SongCandidate,
-  TasteProfile
+  SpeedBucket,
+  TasteProfile,
+  TemperatureBucket
 } from "@ai-journey-dj/core";
 import { speedBucket, temperatureBucket } from "@ai-journey-dj/telemetry";
 
@@ -26,6 +29,13 @@ export interface StoredCredentials {
   refreshToken?: string;
   expiresAtIso?: string;
   userId?: string;
+}
+
+export interface TelemetrySnapshotReadModel extends NormalizedTelemetryEvent {
+  speedBucket?: SpeedBucket;
+  temperatureBucket?: TemperatureBucket;
+  phase?: JourneyPhase;
+  receivedAtIso?: string;
 }
 
 export class Store {
@@ -146,14 +156,16 @@ export class Store {
   saveTelemetry(journeyId: string | undefined, event: NormalizedTelemetryEvent, phase: string): void {
     this.db.run(
       `INSERT INTO telemetry_snapshots
-       (journey_id, timestamp, coarse_region, destination, eta_minutes, speed_bucket, temperature_bucket, phase, autopilot_state, battery_percent, received_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (journey_id, timestamp, coarse_region, destination, eta_minutes, speed_kph, outside_temp_c, speed_bucket, temperature_bucket, phase, autopilot_state, battery_percent, received_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         journeyId,
         event.timestampIso,
         event.coarseRegion,
         event.destination,
         event.etaMinutes,
+        event.speedKph,
+        event.outsideTempC,
         speedBucket(event.speedKph),
         temperatureBucket(event.outsideTempC),
         phase,
@@ -173,29 +185,31 @@ export class Store {
     return row?.received_at ?? undefined;
   }
 
-  latestTelemetry(journeyId: string): NormalizedTelemetryEvent | undefined {
+  latestTelemetry(journeyId: string): TelemetrySnapshotReadModel | undefined {
     const row = this.db.get<any>(
       "SELECT * FROM telemetry_snapshots WHERE journey_id = ? ORDER BY timestamp DESC LIMIT 1",
       [journeyId]
     );
 
     if (!row) return undefined;
-    return {
-      timestampIso: row.timestamp,
-      coarseRegion: row.coarse_region,
-      destination: row.destination,
-      etaMinutes: row.eta_minutes,
-      autopilotState: row.autopilot_state,
-      batteryPercent: row.battery_percent
-    };
+    return mapTelemetrySnapshot(row);
+  }
+
+  recentTelemetry(journeyId: string, limit = 5): TelemetrySnapshotReadModel[] {
+    return this.db
+      .all<any>("SELECT * FROM telemetry_snapshots WHERE journey_id = ? ORDER BY timestamp DESC LIMIT ?", [
+        journeyId,
+        limit
+      ])
+      .map(mapTelemetrySnapshot);
   }
 
   saveCandidate(journeyId: string, candidate: SongCandidate): string {
     const id = candidate.id ?? crypto.randomUUID();
     this.db.run(
       `INSERT OR IGNORE INTO song_candidates
-       (id, journey_id, artist, title, album, year, isrc, reason, source, confidence, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, journey_id, artist, title, album, year, isrc, genre, lens, role, scores_json, reason, source, confidence, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         journeyId,
@@ -204,6 +218,10 @@ export class Store {
         candidate.album,
         candidate.year,
         candidate.isrc,
+        candidate.genre,
+        candidate.lens,
+        candidate.role,
+        candidate.scores ? JSON.stringify(candidate.scores) : undefined,
         candidate.reason,
         candidate.source,
         candidate.confidence,
@@ -507,14 +525,66 @@ function mapJourney(row: any): JourneyRecord {
   };
 }
 
-export function contextFromJourney(journey: JourneyRecord, telemetry?: NormalizedTelemetryEvent): JourneyContext {
+function mapTelemetrySnapshot(row: any): TelemetrySnapshotReadModel {
+  return {
+    timestampIso: row.timestamp,
+    coarseRegion: row.coarse_region ?? undefined,
+    destination: row.destination ?? undefined,
+    etaMinutes: row.eta_minutes ?? undefined,
+    speedKph: row.speed_kph ?? undefined,
+    outsideTempC: row.outside_temp_c ?? undefined,
+    speedBucket: row.speed_bucket ?? undefined,
+    temperatureBucket: row.temperature_bucket ?? undefined,
+    phase: row.phase ?? undefined,
+    autopilotState: row.autopilot_state ?? undefined,
+    batteryPercent: row.battery_percent ?? undefined,
+    receivedAtIso: row.received_at ?? undefined
+  };
+}
+
+function derivePaceTrend(history: TelemetrySnapshotReadModel[]): JourneyContext["paceTrend"] {
+  const ordered = [...history]
+    .filter((item) => typeof item.speedKph === "number")
+    .sort((a, b) => Date.parse(a.timestampIso) - Date.parse(b.timestampIso));
+  if (ordered.length < 2) return undefined;
+  const first = ordered[0].speedKph!;
+  const last = ordered[ordered.length - 1].speedKph!;
+  const delta = last - first;
+  if (delta >= 12) return "accelerating";
+  if (delta <= -12) return "slowing";
+  return "steady";
+}
+
+function deriveEtaTrend(history: TelemetrySnapshotReadModel[]): JourneyContext["etaTrend"] {
+  const ordered = [...history]
+    .filter((item) => typeof item.etaMinutes === "number")
+    .sort((a, b) => Date.parse(a.timestampIso) - Date.parse(b.timestampIso));
+  if (ordered.length < 2) return undefined;
+  const first = ordered[0].etaMinutes!;
+  const last = ordered[ordered.length - 1].etaMinutes!;
+  if (last < first - 2) return "approaching";
+  if (Math.abs(last - first) <= 2) return "steady";
+  return "unknown";
+}
+
+export function contextFromJourney(
+  journey: JourneyRecord,
+  telemetry?: TelemetrySnapshotReadModel,
+  recentTelemetry: TelemetrySnapshotReadModel[] = telemetry ? [telemetry] : []
+): JourneyContext {
+  const speed = telemetry?.speedBucket ?? speedBucket(telemetry?.speedKph);
+  const temp = telemetry?.temperatureBucket ?? temperatureBucket(telemetry?.outsideTempC);
   return {
     destination: telemetry?.destination ?? journey.destination,
     coarseRegion: telemetry?.coarseRegion,
     localTimeIso: telemetry?.timestampIso ?? new Date().toISOString(),
     etaMinutes: telemetry?.etaMinutes,
-    speedBucket: speedBucket(telemetry?.speedKph),
-    temperatureBucket: temperatureBucket(telemetry?.outsideTempC),
+    speedBucket: speed,
+    temperatureBucket: temp,
+    paceTrend: derivePaceTrend(recentTelemetry),
+    etaTrend: deriveEtaTrend(recentTelemetry),
+    autopilotState: telemetry?.autopilotState,
+    batteryPercent: telemetry?.batteryPercent,
     phase: journey.phase,
     userPrompt: journey.userPrompt,
     passengerMode: journey.passengerMode

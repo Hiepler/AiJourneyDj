@@ -33,6 +33,21 @@ describe("buildContextPills", () => {
     const pills = buildContextPills({ phase: "departure", etaMinutes: 45, coarseRegion: "X" });
     expect(pills.find((pill) => pill.key === "eta")?.value).toBe("45 min");
   });
+
+  it("surfaces privacy-safe drive trends when present", () => {
+    const pills = buildContextPills({
+      phase: "cruise",
+      speedBucket: "highway",
+      paceTrend: "accelerating",
+      etaTrend: "approaching",
+      autopilotState: "active"
+    });
+
+    expect(pills.map((pill) => pill.key)).toEqual(["phase", "tempo", "pace-trend", "eta-trend", "assist"]);
+    expect(pills.find((pill) => pill.key === "pace-trend")?.value).toBe("Accelerating");
+    expect(pills.find((pill) => pill.key === "eta-trend")?.value).toBe("Approaching");
+    expect(pills.find((pill) => pill.key === "assist")?.value).toBe("Autopilot");
+  });
 });
 
 describe("telemetryLiveness", () => {
