@@ -1,5 +1,10 @@
+import { existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import cors from "@fastify/cors";
 import sensible from "@fastify/sensible";
+import fastifyStatic from "@fastify/static";
 import Fastify from "fastify";
 
 import { NoopOpenMusicClient, OpenMusicClient } from "@ai-journey-dj/open-music";
@@ -254,6 +259,23 @@ export async function buildApp(config: AppConfig) {
 
   await registerJourneyRoutes(app, journeyService, store, tidalAuth, spotifyAuth);
   await registerTelemetryRoutes(app, config, journeyService);
+
+  // In production (or when WEB_DIST_DIR is set), the API also serves the built web SPA so the whole
+  // app lives on one origin (no CORS; OAuth/Spotify same-origin; one domain for Tesla's public key).
+  const webDist = process.env.WEB_DIST_DIR ?? resolve(dirname(fileURLToPath(import.meta.url)), "../../web/dist");
+  const serveWeb = process.env.WEB_DIST_DIR ? existsSync(webDist) : config.NODE_ENV === "production" && existsSync(webDist);
+  if (serveWeb) {
+    await app.register(fastifyStatic, { root: webDist, wildcard: false });
+    const apiPrefixes = ["/health", "/auth", "/journeys", "/history", "/internal", "/spotify", "/.well-known"];
+    app.setNotFoundHandler((request, reply) => {
+      const path = request.url.split("?")[0];
+      const isApi = apiPrefixes.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
+      if (request.method === "GET" && !isApi) {
+        return reply.sendFile("index.html");
+      }
+      return reply.code(404).send({ error: "Not found" });
+    });
+  }
 
   return { app, store, journeyService, teslaAuth };
 }
