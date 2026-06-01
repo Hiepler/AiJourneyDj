@@ -1,5 +1,24 @@
 # Production Deployment + Tesla Fleet Onboarding
 
+## 0. Deploy on Coolify (single container)
+
+The repo ships a single-container `Dockerfile`: it builds the web SPA and the Fastify API serves it on
+one origin (port 3000). One image, one domain — ideal for the Tesla browser and the Tesla public key.
+
+1. In Coolify: New → **Application** → connect this Git repo + branch.
+2. **Build Pack: Dockerfile** (the repo root `Dockerfile`).
+3. **Port:** `3000`. **Domain:** `aijourneydj.ruhrco.de` → Coolify provisions Let's Encrypt TLS.
+4. **Persistent Storage:** add a volume mounted at `/data` (SQLite lives here).
+5. **Environment variables** (production values; see `.env.example`):
+   - `APP_SECRET` (long random), `DATABASE_PATH=/data/ai-journey-dj.db`
+   - `API_BASE_URL=https://aijourneydj.ruhrco.de`, `APP_BASE_URL=https://aijourneydj.ruhrco.de`, `CORS_ORIGIN=https://aijourneydj.ruhrco.de`
+   - `SPOTIFY_MOCK=false`, `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `SPOTIFY_REDIRECT_URI=https://aijourneydj.ruhrco.de/auth/spotify/callback`
+   - `XAI_MOCK=false`, `GEMINI_API_KEY`
+   - Tesla: `TESLA_FLEET_ENABLED=true`, `TESLA_CLIENT_ID`, `TESLA_CLIENT_SECRET`, `TESLA_REDIRECT_URI=https://aijourneydj.ruhrco.de/auth/tesla/callback`, `TESLA_PUBLIC_KEY_PEM`
+6. **Healthcheck path:** `/health`.
+7. Deploy, then verify `https://aijourneydj.ruhrco.de/health` returns `{ "ok": true }` and the app UI loads at `/`.
+8. Continue with the Tesla onboarding (sections 4-5): verify the public-key URL, `POST /auth/tesla/register-partner`, `/auth/tesla/login`.
+
 ## 1. Host
 - Deploy API + web behind your domain with TLS (the Tesla in-car browser, Spotify Web Playback, and
   all OAuth flows require HTTPS).
