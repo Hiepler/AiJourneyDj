@@ -13,6 +13,38 @@ export interface ContextPill {
   value: string;
 }
 
+export type TelemetryLiveness =
+  | { state: "live"; secondsAgo: number; label: string }
+  | { state: "stale"; secondsAgo: number; label: string }
+  | { state: "none"; label: string };
+
+/** Telemetry newer than this counts as a fresh, actively-streaming "live" reading. */
+export const TELEMETRY_LIVE_THRESHOLD_SECONDS = 180;
+
+function formatAgo(secondsAgo: number): string {
+  if (secondsAgo < 5) return "gerade eben";
+  if (secondsAgo < 60) return `vor ${secondsAgo}s`;
+  if (secondsAgo < 3600) return `vor ${Math.floor(secondsAgo / 60)} min`;
+  const hours = Math.floor(secondsAgo / 3600);
+  return `vor ${hours} Std`;
+}
+
+/**
+ * Classifies the freshness of the latest ingested telemetry for the live badge.
+ * `nowMs` is injected so this stays pure and unit-testable.
+ */
+export function telemetryLiveness(lastTelemetryAt: string | undefined, nowMs: number): TelemetryLiveness {
+  if (!lastTelemetryAt) return { state: "none", label: "Keine Live-Daten" };
+  const ts = new Date(lastTelemetryAt).getTime();
+  if (Number.isNaN(ts)) return { state: "none", label: "Keine Live-Daten" };
+  const secondsAgo = Math.max(0, Math.round((nowMs - ts) / 1000));
+  const ago = formatAgo(secondsAgo);
+  if (secondsAgo <= TELEMETRY_LIVE_THRESHOLD_SECONDS) {
+    return { state: "live", secondsAgo, label: `Live · ${ago}` };
+  }
+  return { state: "stale", secondsAgo, label: `Zuletzt ${ago}` };
+}
+
 const PACE_LABEL: Record<string, string> = {
   parked: "Parked",
   city: "City",

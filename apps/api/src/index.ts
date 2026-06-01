@@ -8,6 +8,7 @@ import { loadConfig } from "./config/env.js";
 import { buildApp } from "./app.js";
 import { startTelemetryConsumer } from "./telemetry/kafkaConsumer.js";
 import { startTeslaFleetPoller } from "./telemetry/teslaFleetPoller.js";
+import { startSpotifyPlaybackPoller } from "./playback/spotifyPlaybackPoller.js";
 
 const config = loadConfig();
 const { app, store, journeyService, teslaAuth } = await buildApp(config);
@@ -17,6 +18,7 @@ await startTelemetryConsumer(config, journeyService).catch((error) => {
 });
 
 const teslaPoller = startTeslaFleetPoller(config, store, teslaAuth, journeyService, app.log);
+const spotifyPoller = startSpotifyPlaybackPoller(config, store, journeyService, app.log);
 
 const runJourneyWorker = () => {
   journeyService.maybeRefreshActiveJourneys().catch((error) => {
@@ -30,6 +32,7 @@ const worker = setInterval(runJourneyWorker, 60_000);
 process.on("SIGTERM", async () => {
   clearInterval(worker);
   if (teslaPoller) clearInterval(teslaPoller);
+  spotifyPoller.stop();
   await app.close();
 });
 
