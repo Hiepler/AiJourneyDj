@@ -240,6 +240,22 @@ export async function buildApp(config: AppConfig) {
     }
   });
 
+  app.post("/auth/tesla/register-telemetry", async (_request, reply) => {
+    if (!config.TESLA_PUBLIC_KEY_PEM || !config.TESLA_TELEMETRY_CA_PEM) {
+      return reply.code(400).send({ ok: false, error: "TESLA_TELEMETRY_CA_PEM not configured." });
+    }
+    try {
+      const result = await teslaAuth.registerTelemetryConfig({
+        caPem: config.TESLA_TELEMETRY_CA_PEM,
+        hostname: config.TESLA_TELEMETRY_HOST,
+        port: config.TESLA_TELEMETRY_PORT
+      });
+      return reply.code(result.ok ? 200 : 502).send(result);
+    } catch (error) {
+      return reply.code(500).send({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.get("/auth/tidal/login", async (request, reply) => {
     const returnBase = appBaseUrl(request, config);
     try {
