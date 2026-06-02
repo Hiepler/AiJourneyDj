@@ -6,6 +6,7 @@ import type { TeslaAuthService } from "../auth/teslaAuth.js";
 import type { JourneyService } from "../journeys/journeyService.js";
 import type { Store } from "../db/store.js";
 import { makeGeocoder } from "./geocoder.js";
+import { shouldPollRest, StreamLiveness } from "./streamSource.js";
 
 export interface PollDeps {
   apiBaseUrl: string;
@@ -13,6 +14,8 @@ export interface PollDeps {
   /** Resolves the target vehicle id (configured or discovered+cached) — avoids a per-tick list call. */
   resolveVehicleId: () => Promise<string | undefined>;
   hasActiveJourney: () => boolean;
+  /** When provided and true, streaming is live → the REST tick stands down (no API call). */
+  streamingIsFresh?: () => boolean;
   ingest: (event: NormalizedTelemetryEvent) => Promise<void>;
   geocode: (lat: number, lon: number) => Promise<string | undefined>;
   appSecret: string;
@@ -29,6 +32,7 @@ export interface PollDeps {
  */
 export async function pollTeslaOnce(deps: PollDeps): Promise<void> {
   if (!deps.hasActiveJourney()) return;
+  if (deps.streamingIsFresh?.()) return; // streaming is live → no REST call needed
 
   const id = await deps.resolveVehicleId();
   if (!id) return; // no vehicle configured/discoverable
@@ -79,6 +83,7 @@ export function startTeslaFleetPoller(
   store: Store,
   teslaAuth: TeslaAuthService,
   journeyService: JourneyService,
+  liveness: StreamLiveness,
   logger: { warn: (obj: Record<string, unknown>, msg?: string) => void }
 ): NodeJS.Timeout | undefined {
   if (!config.TESLA_FLEET_ENABLED) return undefined;
@@ -100,6 +105,8 @@ export function startTeslaFleetPoller(
         accessToken,
         resolveVehicleId,
         hasActiveJourney: () => store.listActiveJourneys().length > 0,
+        streamingIsFresh: () =>
+          !shouldPollRest(liveness.lastIso(), Date.now(), config.STREAM_FRESH_WINDOW_SECONDS * 1000),
         ingest: (event) => journeyService.ingestTelemetry(event),
         geocode,
         appSecret: config.APP_SECRET,
