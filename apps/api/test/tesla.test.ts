@@ -164,6 +164,26 @@ describe("tesla fleet poller (single tick)", () => {
     expect(calls[0]).toContain("vehicle_data");
     expect(calls.some((u) => u.endsWith("/api/1/vehicles"))).toBe(false);
   });
+
+  it("skips the poll tick when streaming is fresh", async () => {
+    const calls: string[] = [];
+    const fetchImpl: typeof fetch = async (input) => {
+      calls.push(String(input));
+      return new Response("{}", { status: 200 });
+    };
+    await pollTeslaOnce({
+      apiBaseUrl: "https://fleet.test",
+      accessToken: "t",
+      resolveVehicleId: async () => "1",
+      hasActiveJourney: () => true,
+      streamingIsFresh: () => true, // streaming live → must not call the API
+      ingest: async () => {},
+      geocode: async () => undefined,
+      appSecret: "s",
+      fetchImpl
+    });
+    expect(calls).toHaveLength(0);
+  });
 });
 
 describe("makeVehicleIdResolver (cost: discover once, then cache)", () => {
