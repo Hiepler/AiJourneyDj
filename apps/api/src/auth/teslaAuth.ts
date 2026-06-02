@@ -141,6 +141,30 @@ export class TeslaAuthService {
     return { ok: response.ok, status: response.status, body: await response.text() };
   }
 
+  /**
+   * Diagnostic: reports each vehicle's fleet status — crucially `key_paired_vins` (is our virtual key
+   * on the car?), firmware version, and fleet-telemetry version. Read-only; uses the user token.
+   * Discovers VINs via /api/1/vehicles, then POSTs them to /api/1/vehicles/fleet_status.
+   */
+  async getFleetStatus(): Promise<{ ok: boolean; status: number; body: string }> {
+    const token = await this.getAccessToken();
+    const base = this.config.TESLA_API_BASE_URL.replace(/\/$/, "");
+    const listResponse = await this.fetchImpl(`${base}/api/1/vehicles`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (!listResponse.ok) {
+      return { ok: false, status: listResponse.status, body: await listResponse.text() };
+    }
+    const list = (await listResponse.json()) as { response?: Array<{ vin?: string }> };
+    const vins = (list.response ?? []).map((vehicle) => vehicle.vin).filter((vin): vin is string => Boolean(vin));
+    const response = await this.fetchImpl(`${base}/api/1/vehicles/fleet_status`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ vins })
+    });
+    return { ok: response.ok, status: response.status, body: await response.text() };
+  }
+
   /** Removes the fleet-telemetry streaming config. Config write, not a vehicle command. */
   async deleteTelemetryConfig(): Promise<{ ok: boolean; status: number }> {
     const token = await this.getPartnerToken();
