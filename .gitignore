@@ -22,3 +22,8 @@ test-results/
 *.pem
 tesla-private.pem
 tesla-public.pem
+# TLS / CA material for fleet-telemetry mTLS (NEVER commit)
+*.key
+*.crt
+*.csr
+*.srl

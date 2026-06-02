@@ -80,6 +80,34 @@ describe("TeslaAuthService", () => {
     expect(captured[0].body.ca).toBe("CA");
     expect(captured[0].body.fields.VehicleSpeed.interval_seconds).toBe(5);
   });
+
+  it("getFleetStatus discovers VINs then POSTs them to fleet_status", async () => {
+    const { config, store } = build();
+    const service = new TeslaAuthService(config, store);
+    // Seed a credential so getAccessToken returns a token without a refresh round-trip.
+    service.persistForTest({ accessToken: "user-token", expiresAtIso: new Date(Date.now() + 3_600_000).toISOString() });
+    const calls: { url: string; method: string; body?: any }[] = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      calls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      if (url.endsWith("/api/1/vehicles")) {
+        return new Response(JSON.stringify({ response: [{ vin: "VIN1" }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ response: { key_paired_vins: ["VIN1"], firmware_version: "2024.26" } }), {
+        status: 200
+      });
+    };
+    service.setFetchForTest(fetchImpl);
+
+    const res = await service.getFleetStatus();
+    expect(res.ok).toBe(true);
+    expect(res.body).toContain("key_paired_vins");
+    // First lists vehicles, then POSTs the discovered VIN to fleet_status.
+    expect(calls[0].url).toMatch(/\/api\/1\/vehicles$/);
+    const statusCall = calls.find((c) => c.url.endsWith("/fleet_status"));
+    expect(statusCall?.method).toBe("POST");
+    expect(statusCall?.body.vins).toEqual(["VIN1"]);
+  });
 });
 
 describe("tesla routes", () => {

@@ -258,6 +258,16 @@ export async function buildApp(config: AppConfig) {
     }
   });
 
+  // Diagnostic: confirm the virtual key is paired (key_paired_vins) + firmware/telemetry version.
+  app.post("/auth/tesla/fleet-status", async (_request, reply) => {
+    try {
+      const result = await teslaAuth.getFleetStatus();
+      return reply.code(result.ok ? 200 : 502).send(result);
+    } catch (error) {
+      return reply.code(500).send({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.get("/auth/tidal/login", async (request, reply) => {
     const returnBase = appBaseUrl(request, config);
     try {
