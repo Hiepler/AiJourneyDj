@@ -8,13 +8,11 @@ import { loadConfig } from "./config/env.js";
 import { buildApp } from "./app.js";
 import { startMqttTelemetryConsumer } from "./telemetry/mqttTelemetryConsumer.js";
 import { startTeslaFleetPoller } from "./telemetry/teslaFleetPoller.js";
-import { StreamLiveness } from "./telemetry/streamSource.js";
 import { startSpotifyPlaybackPoller } from "./playback/spotifyPlaybackPoller.js";
 
 const config = loadConfig();
-const { app, store, journeyService, teslaAuth } = await buildApp(config);
+const { app, store, journeyService, teslaAuth, streamLiveness } = await buildApp(config);
 
-const streamLiveness = new StreamLiveness();
 const mqttConsumer = startMqttTelemetryConsumer(config, journeyService, streamLiveness, app.log);
 const teslaPoller = startTeslaFleetPoller(config, store, teslaAuth, journeyService, streamLiveness, app.log);
 const spotifyPoller = startSpotifyPlaybackPoller(config, store, journeyService, app.log);

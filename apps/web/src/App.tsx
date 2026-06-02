@@ -650,7 +650,12 @@ export function App() {
                     : "Noch keine Live-Fahrdaten abgerufen – Journey starten und losfahren"
               }
             >
-              <Satellite size={15} /> {liveness.state === "none" ? "Keine Live-Daten" : liveness.label}
+              <Satellite size={15} />{" "}
+              {liveness.state === "none"
+                ? "Keine Live-Daten"
+                : liveness.state === "live" && detail?.context?.telemetrySource === "streaming"
+                  ? "Live (Streaming)"
+                  : liveness.label}
             </span>
           ) : null}
           {activeJourneyId && detail && driveMode && driveMode !== "neutral" ? (

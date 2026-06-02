@@ -22,6 +22,7 @@ import { TidalAuthService } from "./auth/tidalAuth.js";
 import { JourneyService } from "./journeys/journeyService.js";
 import { registerJourneyRoutes } from "./journeys/routes.js";
 import { registerTelemetryRoutes } from "./telemetry/routes.js";
+import { StreamLiveness } from "./telemetry/streamSource.js";
 
 export async function buildApp(config: AppConfig) {
   const db = openDatabase(config.DATABASE_PATH);
@@ -30,6 +31,7 @@ export async function buildApp(config: AppConfig) {
   const tidalAuth = new TidalAuthService(config, store);
   const spotifyAuth = new SpotifyAuthService(config, store);
   const teslaAuth = new TeslaAuthService(config, store);
+  const streamLiveness = new StreamLiveness();
   const tidalAdapter = config.TIDAL_MOCK
     ? new MockTidalAdapter()
     : new OfficialTidalAdapter({ baseUrl: config.TIDAL_API_BASE_URL });
@@ -296,7 +298,7 @@ export async function buildApp(config: AppConfig) {
     return { ok: true };
   });
 
-  await registerJourneyRoutes(app, journeyService, store, tidalAuth, spotifyAuth);
+  await registerJourneyRoutes(app, journeyService, store, tidalAuth, spotifyAuth, config, streamLiveness);
   await registerTelemetryRoutes(app, config, journeyService);
 
   // In production (or when WEB_DIST_DIR is set), the API also serves the built web SPA so the whole
@@ -316,5 +318,5 @@ export async function buildApp(config: AppConfig) {
     });
   }
 
-  return { app, store, journeyService, teslaAuth };
+  return { app, store, journeyService, teslaAuth, streamLiveness };
 }
