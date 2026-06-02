@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { normalizeFleetVehicleData, normalizeTeslaPayload } from "./index.js";
+import { normalizeFleetStream, normalizeFleetVehicleData, normalizeTeslaPayload } from "./index.js";
 
 describe("tesla telemetry mapping", () => {
   it("treats streaming VehicleSpeed as mph (not m/s)", () => {
@@ -80,5 +80,42 @@ describe("tesla telemetry mapping", () => {
     expect(event.trafficDelayMinutes).toBeUndefined();
     expect(event.energyPercentAtArrival).toBeUndefined();
     expect(event.audioVolume).toBeUndefined();
+  });
+
+  it("normalizeFleetStream maps streaming fields incl. real-time driving signals", () => {
+    const { coordinates, ...event } = normalizeFleetStream(
+      {
+        vin: "VIN1",
+        VehicleSpeed: 60, // mph
+        Location: { latitude: 48.1, longitude: 11.5 },
+        Soc: 64,
+        OutsideTemp: 21,
+        MinutesToArrival: 73.4,
+        RouteTrafficMinutesDelay: 12,
+        LongitudinalAcceleration: -2.5,
+        BrakePedal: true,
+        LightsHazardsActive: false
+      },
+      "secret"
+    );
+    expect(event.speedKph).toBe(97); // 60 mph
+    expect(event.batteryPercent).toBe(64);
+    expect(event.etaMinutes).toBe(73);
+    expect(event.trafficDelayMinutes).toBe(12);
+    expect(event.longitudinalAccelMps2).toBe(-2.5);
+    expect(event.brakePedal).toBe(true);
+    expect(event.hazardsActive).toBe(false);
+    expect(coordinates).toEqual({ lat: 48.1, lon: 11.5 });
+    // Raw GPS must never appear on the normalized event.
+    expect((event as Record<string, unknown>).Location).toBeUndefined();
+  });
+
+  it("normalizeFleetStream leaves unknown/missing fields undefined", () => {
+    const { coordinates, ...event } = normalizeFleetStream({ vin: "VIN1", VehicleSpeed: 30 }, "secret");
+    expect(event.speedKph).toBe(48);
+    expect(event.brakePedal).toBeUndefined();
+    expect(event.hazardsActive).toBeUndefined();
+    expect(event.longitudinalAccelMps2).toBeUndefined();
+    expect(coordinates).toBeUndefined();
   });
 });

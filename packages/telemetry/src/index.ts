@@ -107,6 +107,44 @@ export function normalizeFleetVehicleData(payload: Record<string, any>, appSecre
   };
 }
 
+/**
+ * Maps a Fleet *Telemetry* (streaming) payload into a normalized event. Field names differ from the
+ * REST vehicle_data schema (e.g. VehicleSpeed in mph, Location object). Raw GPS is returned only as
+ * transient `coordinates` for server-side geocoding — never stored or sent to the AI.
+ */
+export function normalizeFleetStream(payload: Record<string, any>, appSecret: string): FleetTelemetryResult {
+  const vin = typeof payload?.vin === "string" ? payload.vin : undefined;
+  const speedMph = typeof payload?.VehicleSpeed === "number" ? payload.VehicleSpeed : undefined;
+  const speedKph = typeof speedMph === "number" ? Math.round(speedMph * 1.609) : undefined;
+  const loc = (payload?.Location ?? {}) as Record<string, any>;
+  const lat = typeof loc.latitude === "number" ? loc.latitude : undefined;
+  const lon = typeof loc.longitude === "number" ? loc.longitude : undefined;
+  const ts = typeof payload?.createdAt === "string" ? payload.createdAt : new Date().toISOString();
+
+  return {
+    vehicleIdHash: vin ? hashVehicleId(vin, appSecret) : undefined,
+    timestampIso: ts,
+    coarseRegion: undefined, // filled in by the consumer via reverse-geocoding
+    destination: typeof payload?.DestinationName === "string" ? payload.DestinationName : undefined,
+    etaMinutes: typeof payload?.MinutesToArrival === "number" ? Math.round(payload.MinutesToArrival) : undefined,
+    speedKph,
+    outsideTempC: typeof payload?.OutsideTemp === "number" ? payload.OutsideTemp : undefined,
+    autopilotState: "unknown",
+    batteryPercent: typeof payload?.Soc === "number" ? payload.Soc : undefined,
+    trafficDelayMinutes:
+      typeof payload?.RouteTrafficMinutesDelay === "number" ? Math.round(payload.RouteTrafficMinutesDelay) : undefined,
+    energyPercentAtArrival:
+      typeof payload?.ExpectedEnergyPercentAtTripArrival === "number"
+        ? payload.ExpectedEnergyPercentAtTripArrival
+        : undefined,
+    longitudinalAccelMps2:
+      typeof payload?.LongitudinalAcceleration === "number" ? payload.LongitudinalAcceleration : undefined,
+    brakePedal: typeof payload?.BrakePedal === "boolean" ? payload.BrakePedal : undefined,
+    hazardsActive: typeof payload?.LightsHazardsActive === "boolean" ? payload.LightsHazardsActive : undefined,
+    coordinates: typeof lat === "number" && typeof lon === "number" ? { lat, lon } : undefined
+  };
+}
+
 export function simulatedTelemetry(step: number, destination = "Lago di Garda"): NormalizedTelemetryEvent {
   const etaMinutes = Math.max(8, 140 - step * 7);
   return {

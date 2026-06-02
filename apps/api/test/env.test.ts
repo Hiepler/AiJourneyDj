@@ -48,4 +48,15 @@ describe("env", () => {
     expect(loadConfig({}).TESLA_POLL_SECONDS).toBe(120);
     expect(loadConfig({ TESLA_POLL_SECONDS: "60" }).TESLA_POLL_SECONDS).toBe(60);
   });
+
+  it("provides MQTT + stream-window config with defaults", () => {
+    const config = loadConfig({
+      MQTT_URL: "mqtt://localhost:1883",
+      MQTT_TOPIC: "tesla/telemetry",
+      STREAM_FRESH_WINDOW_SECONDS: "90"
+    });
+    expect(config.MQTT_URL).toBe("mqtt://localhost:1883");
+    expect(config.MQTT_TOPIC).toBe("tesla/telemetry");
+    expect(config.STREAM_FRESH_WINDOW_SECONDS).toBe(90);
+  });
 });
