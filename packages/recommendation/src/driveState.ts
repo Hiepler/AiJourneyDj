@@ -21,6 +21,9 @@ const FOCUS_MIN_ETA_MIN = 45;
 const PACE_STEADY_DELTA = 12; // |Δ km/h| within this → steady (mirrors the trend derivation)
 const VOLUME_DROP_STEP = 1; // audioVolume units a user must drop to count as a calm cue
 const VOLUME_AMPLIFY = 0.15;
+const HARD_BRAKE_MPS2 = -3.5; // strong deceleration → sudden braking
+const STOPGO_SPEED_KPH = 35; // brake cycles below this = stop-and-go
+const STOPGO_MIN_BRAKE_EVENTS = 2; // brake presses within the recent window
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
@@ -65,6 +68,20 @@ export function assessDriveState(
 ): DriveStateAssessment {
   const latest = recent[recent.length - 1];
   if (!latest) return NEUTRAL;
+
+  // R0a. Sudden braking / hazards (strong, real-time — streaming only).
+  if (latest.hazardsActive === true || (typeof latest.longitudinalAccelMps2 === "number" && latest.longitudinalAccelMps2 <= HARD_BRAKE_MPS2)) {
+    const signals = latest.hazardsActive ? ["hazard lights"] : ["hard braking"];
+    return { mode: "calm", reason: "sudden braking", intensity: 0.8, signals };
+  }
+
+  // R0b. Stop-and-go: repeated brake presses at low speed (streaming only).
+  const brakeEvents = recent.filter((e) => e.brakePedal === true).length;
+  if (brakeEvents >= STOPGO_MIN_BRAKE_EVENTS && typeof latest.speedKph === "number" && latest.speedKph <= STOPGO_SPEED_KPH) {
+    const signals = [`${brakeEvents} brake events in stop-and-go`];
+    const intensity = applyVolumeAmplifier(0.55, recent, signals);
+    return { mode: "calm", reason: "stop-and-go traffic", intensity, signals };
+  }
 
   // 1. Heavy traffic — the most reliable urban-stress signal we have.
   if (typeof latest.trafficDelayMinutes === "number" && latest.trafficDelayMinutes >= TRAFFIC_DELAY_CALM_MIN) {
