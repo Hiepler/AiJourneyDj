@@ -97,6 +97,9 @@ const schema = z.object({
   TESLA_TELEMETRY_ENABLED: envBoolean(false),
   KAFKA_BROKERS: z.string().default("localhost:19092"),
   TESLA_TELEMETRY_TOPIC: z.string().default("tesla.telemetry.normalized"),
+  MQTT_URL: z.string().default("mqtt://localhost:1883"),
+  MQTT_TOPIC: z.string().default("tesla/telemetry"),
+  STREAM_FRESH_WINDOW_SECONDS: z.coerce.number().int().min(1).default(30),
   JOURNEY_REFRESH_MINUTES: z.coerce.number().int().min(1).default(12)
 });
 
