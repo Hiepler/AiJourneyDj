@@ -113,6 +113,45 @@ export class TeslaAuthService {
     return token.access_token;
   }
 
+  /** Registers the fleet-telemetry streaming config (field/interval/minimum_delta table). Config write, not a vehicle command — never wakes the car. */
+  async registerTelemetryConfig(opts: {
+    caPem: string;
+    hostname: string;
+    port: number;
+  }): Promise<{ ok: boolean; status: number; body: string }> {
+    const token = await this.getPartnerToken();
+    const fields = {
+      VehicleSpeed: { interval_seconds: 5, minimum_delta: 3 },
+      LongitudinalAcceleration: { interval_seconds: 2, minimum_delta: 0.8 },
+      BrakePedal: { interval_seconds: 1 },
+      LightsHazardsActive: { interval_seconds: 1 },
+      Location: { interval_seconds: 30, minimum_delta: 250 },
+      MinutesToArrival: { interval_seconds: 60 },
+      RouteTrafficMinutesDelay: { interval_seconds: 60 },
+      Soc: { interval_seconds: 60 },
+      OutsideTemp: { interval_seconds: 300, minimum_delta: 1 }
+    };
+    const body = JSON.stringify({ hostname: opts.hostname, port: opts.port, ca: opts.caPem, fields });
+    const url = `${this.config.TESLA_API_BASE_URL.replace(/\/$/, "")}/api/1/vehicles/fleet_telemetry_config`;
+    const response = await this.fetchImpl(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body
+    });
+    return { ok: response.ok, status: response.status, body: await response.text() };
+  }
+
+  /** Removes the fleet-telemetry streaming config. Config write, not a vehicle command. */
+  async deleteTelemetryConfig(): Promise<{ ok: boolean; status: number }> {
+    const token = await this.getPartnerToken();
+    const url = `${this.config.TESLA_API_BASE_URL.replace(/\/$/, "")}/api/1/vehicles/fleet_telemetry_config`;
+    const response = await this.fetchImpl(url, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    return { ok: response.ok, status: response.status };
+  }
+
   private getCredentials(): StoredCredentials | undefined {
     const encrypted = this.store.getEncryptedCredentials("tesla");
     return encrypted ? decryptJson<StoredCredentials>(encrypted, this.config.APP_SECRET) : undefined;
