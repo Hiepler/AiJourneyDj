@@ -6,7 +6,8 @@ import type { TeslaAuthService } from "../auth/teslaAuth.js";
 import type { JourneyService } from "../journeys/journeyService.js";
 import type { Store } from "../db/store.js";
 import { makeGeocoder } from "./geocoder.js";
-import { shouldPollRest, StreamLiveness } from "./streamSource.js";
+import type { StreamLiveness } from "./streamSource.js";
+import { shouldPollRest } from "./streamSource.js";
 
 export interface PollDeps {
   apiBaseUrl: string;

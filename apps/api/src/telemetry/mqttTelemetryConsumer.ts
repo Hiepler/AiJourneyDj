@@ -6,7 +6,7 @@ import { normalizeFleetStream } from "@ai-journey-dj/telemetry";
 import type { AppConfig } from "../config/env.js";
 import type { JourneyService } from "../journeys/journeyService.js";
 import { makeGeocoder } from "./geocoder.js";
-import { StreamLiveness } from "./streamSource.js";
+import type { StreamLiveness } from "./streamSource.js";
 
 export interface StreamMessageDeps {
   raw: Buffer | Uint8Array;
