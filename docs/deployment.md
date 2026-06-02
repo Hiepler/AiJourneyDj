@@ -66,3 +66,65 @@ one origin (port 3000). One image, one domain — ideal for the Tesla browser an
 - Start a journey, begin driving (car `online`); within ~`TESLA_POLL_SECONDS` the cockpit's live
   context (Pace/ETA/Region) should reflect real data and the soundtrack should re-curate as the phase
   changes.
+
+## 7. (Optional) Fleet Telemetry streaming — real-time, lower cost
+
+Streaming replaces REST polling as the **primary** source (REST stays as automatic fallback). The car
+pushes data over mTLS to a self-hosted `fleet-telemetry` server → MQTT (Mosquitto) → the API's MQTT
+consumer → the same ingest pipeline. On-change + `minimum_delta` keep a 10 h drive in the cents.
+Requires vehicle firmware **2024.26+** (some Intel-MCU Model S/X need 2025.20+).
+
+This is **infrastructure work done by hand** — it is not covered by automated tests. Follow in order.
+
+### 7.1 Generate a CA (validates the car's client cert)
+```bash
+openssl ecparam -name prime256v1 -genkey -noout -out ca.key
+openssl req -x509 -new -key ca.key -days 3650 -subj "/CN=Ai Journey DJ Telemetry CA" -out ca.crt
+```
+Keep `ca.key` secret. `ca.crt` goes into the telemetry config (step 7.4) and into `TESLA_TELEMETRY_CA_PEM`.
+
+### 7.2 Two new Coolify services (same internal network as the API)
+- **`mosquitto`** (image `eclipse-mosquitto`): internal only (no public port), anonymous listener on
+  `1883` within the Coolify network. The API connects via `MQTT_URL=mqtt://mosquitto:1883`.
+- **`fleet-telemetry`** (image `teslamotors/fleet-telemetry:latest`): a `config.json` with
+  - `tls.server_cert` / `tls.server_key`: a publicly trusted cert for `telemetry.<domain>` (so the car
+    trusts the server) — e.g. issued by Let's Encrypt and mounted into the container,
+  - the MQTT dispatcher: `{ "mqtt": { "broker": "tcp://mosquitto:1883", "topic_base": "tesla/telemetry" } }`,
+  - `records` listing the fields + intervals from the spec.
+  Expose it on a dedicated port (e.g. `4443`).
+
+### 7.3 Traefik TCP passthrough (critical)
+mTLS must terminate **at the fleet-telemetry container**, not at Traefik — otherwise the car's client
+cert is stripped. Configure Coolify/Traefik to **TCP-passthrough (SNI route)** `telemetry.<domain>:4443`
+straight to the fleet-telemetry service. Do **not** put it behind the app's HTTP router / Basic Auth.
+Add a DNS A record `telemetry.<domain> → <server IP>`.
+
+### 7.4 Register the telemetry config with Tesla
+Set in the API env and redeploy:
+```
+TESLA_TELEMETRY_ENABLED=true
+MQTT_URL=mqtt://mosquitto:1883
+MQTT_TOPIC=tesla/telemetry
+STREAM_FRESH_WINDOW_SECONDS=90
+TESLA_TELEMETRY_HOST=telemetry.<domain>
+TESLA_TELEMETRY_PORT=4443
+TESLA_TELEMETRY_CA_PEM=<contents of ca.crt>
+```
+Then register once (config write — no command, does not wake the car):
+```bash
+curl -XPOST -u USER:PASS https://<domain>/auth/tesla/register-telemetry
+# expect {"ok":true,"status":200,...}
+```
+Note: max **3 telemetry configs per vehicle** — if you iterate, delete the old one first
+(`DELETE` via `teslaAuth.deleteTelemetryConfig()` / re-register overwrites).
+
+### 7.5 Verification checklist
+- `fleet-telemetry` logs show the vehicle's mTLS connection while driving.
+- Mosquitto receives messages on `tesla/telemetry`.
+- API logs: no `mqtt.error`; `GET /journeys/:id` → `context.telemetrySource: "streaming"`; the cockpit
+  live badge reads **"Live (Streaming)"**.
+- Park the car → stream stops → within `STREAM_FRESH_WINDOW_SECONDS` the REST poller resumes (fallback).
+- Tesla usage dashboard: streaming signals accrue at fractions of a cent on a calm cruise.
+
+**If anything fails, streaming is optional:** leave `TESLA_TELEMETRY_ENABLED=false` and the app runs on
+the (cost-optimized) REST poller exactly as before.
