@@ -61,6 +61,8 @@ export interface JourneyContext {
   tasteWeight?: number;
   /** Adaptive Drive Mode assessment (comfort feature; biases selection toward calm/focus). */
   driveState?: DriveStateAssessment;
+  /** Which source produced the latest context: live streaming vs REST polling. */
+  telemetrySource?: "streaming" | "polling";
 }
 
 export type SongCandidateRole = "anchor" | "momentum" | "bridge" | "surprise" | "resolution";
@@ -141,6 +143,12 @@ export interface NormalizedTelemetryEvent {
   energyPercentAtArrival?: number;
   /** In-cabin media volume 0–11 (media_info.audio_volume). Read-only — used as a calm signal, never set. */
   audioVolume?: number;
+  /** Longitudinal acceleration in m/s² (streaming only — LongitudinalAcceleration). Negative = braking. */
+  longitudinalAccelMps2?: number;
+  /** Brake pedal pressed (streaming only — BrakePedal). */
+  brakePedal?: boolean;
+  /** Hazard lights active (streaming only — LightsHazardsActive). */
+  hazardsActive?: boolean;
 }
 
 /** Situational driving mode the Adaptive Drive Mode derives from telemetry. */

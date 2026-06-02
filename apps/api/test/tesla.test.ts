@@ -58,6 +58,28 @@ describe("TeslaAuthService", () => {
 
     expect(await service.getAccessToken()).toBe("fresh");
   });
+
+  it("registerTelemetryConfig POSTs ca + fields to the fleet_telemetry_config endpoint", async () => {
+    const { config, store } = build();
+    const service = new TeslaAuthService(config, store);
+    const captured: { url: string; body: any }[] = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      // Partner token request goes to the OAuth token URL.
+      if (url === config.TESLA_OAUTH_TOKEN_URL) {
+        return new Response(JSON.stringify({ access_token: "partner-token" }), { status: 200 });
+      }
+      captured.push({ url, body: JSON.parse(String(init?.body ?? "{}")) });
+      return new Response(JSON.stringify({ response: { updated_vehicles: 1 } }), { status: 200 });
+    };
+    service.setFetchForTest(fetchImpl);
+
+    const res = await service.registerTelemetryConfig({ caPem: "CA", hostname: "telemetry.test", port: 4443 });
+    expect(res.ok).toBe(true);
+    expect(captured[0].url).toContain("/api/1/vehicles/fleet_telemetry_config");
+    expect(captured[0].body.ca).toBe("CA");
+    expect(captured[0].body.fields.VehicleSpeed.interval_seconds).toBe(5);
+  });
 });
 
 describe("tesla routes", () => {
@@ -163,6 +185,26 @@ describe("tesla fleet poller (single tick)", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]).toContain("vehicle_data");
     expect(calls.some((u) => u.endsWith("/api/1/vehicles"))).toBe(false);
+  });
+
+  it("skips the poll tick when streaming is fresh", async () => {
+    const calls: string[] = [];
+    const fetchImpl: typeof fetch = async (input) => {
+      calls.push(String(input));
+      return new Response("{}", { status: 200 });
+    };
+    await pollTeslaOnce({
+      apiBaseUrl: "https://fleet.test",
+      accessToken: "t",
+      resolveVehicleId: async () => "1",
+      hasActiveJourney: () => true,
+      streamingIsFresh: () => true, // streaming live → must not call the API
+      ingest: async () => {},
+      geocode: async () => undefined,
+      appSecret: "s",
+      fetchImpl
+    });
+    expect(calls).toHaveLength(0);
   });
 });
 

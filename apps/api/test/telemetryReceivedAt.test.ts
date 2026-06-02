@@ -127,4 +127,10 @@ describe("telemetry received_at (store)", () => {
     expect(context.etaTrend).toBe("approaching");
     expect(context.autopilotState).toBe("active");
   });
+
+  it("contextFromJourney carries the telemetry source", () => {
+    const journey = makeJourney();
+    const ctx = contextFromJourney(journey, undefined, [], "streaming");
+    expect(ctx.telemetrySource).toBe("streaming");
+  });
 });

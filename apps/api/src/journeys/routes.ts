@@ -1,9 +1,11 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
+import type { AppConfig } from "../config/env.js";
 import type { TidalAuthService } from "../auth/tidalAuth.js";
 import type { SpotifyAuthService } from "../auth/spotifyAuth.js";
 import { contextFromJourney, type Store } from "../db/store.js";
+import { shouldPollRest, type StreamLiveness } from "../telemetry/streamSource.js";
 import type { JourneyService } from "./journeyService.js";
 
 const startSchema = z.object({
@@ -27,7 +29,9 @@ export async function registerJourneyRoutes(
   service: JourneyService,
   store: Store,
   tidalAuth: TidalAuthService,
-  spotifyAuth: SpotifyAuthService
+  spotifyAuth: SpotifyAuthService,
+  config: AppConfig,
+  streamLiveness: StreamLiveness
 ): Promise<void> {
   app.post("/journeys", async (request, reply) => {
     const input = startSchema.parse(request.body);
@@ -62,7 +66,14 @@ export async function registerJourneyRoutes(
       analysisFailed && (!latestUpdate || analysisFailed.createdAtIso > latestUpdate.createdAtIso)
     );
 
-    const ctx = contextFromJourney(journey, store.latestTelemetry(id), store.recentTelemetry(id));
+    const telemetrySource = shouldPollRest(
+      streamLiveness.lastIso(),
+      Date.now(),
+      config.STREAM_FRESH_WINDOW_SECONDS * 1000
+    )
+      ? "polling"
+      : "streaming";
+    const ctx = contextFromJourney(journey, store.latestTelemetry(id), store.recentTelemetry(id), telemetrySource);
     const taste = store.getCachedTasteProfile("local");
 
     return {
@@ -93,7 +104,8 @@ export async function registerJourneyRoutes(
         driveMode: ctx.driveState?.mode ?? journey.driveMode ?? "neutral",
         driveModeReason: ctx.driveState?.reason,
         driveModeSignals: ctx.driveState?.signals,
-        adaptiveModeEnabled: journey.adaptiveModeEnabled !== false
+        adaptiveModeEnabled: journey.adaptiveModeEnabled !== false,
+        telemetrySource: ctx.telemetrySource
       },
       // Personalization readout from the 24h taste cache (only top genres exposed).
       taste: taste ? { topGenres: taste.topGenres } : undefined

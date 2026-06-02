@@ -73,6 +73,7 @@ export interface JourneyDetail {
     driveModeReason?: string;
     driveModeSignals?: string[];
     adaptiveModeEnabled?: boolean;
+    telemetrySource?: "streaming" | "polling";
   };
   taste?: {
     topGenres: string[];

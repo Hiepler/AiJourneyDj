@@ -87,6 +87,32 @@ describe("assessDriveState", () => {
   });
 });
 
+describe("assessDriveState — real-time streaming signals", () => {
+  const DAY = "2026-06-01T14:00:00.000Z";
+
+  it("flags a hard brake / hazards as a strong calm cue", () => {
+    const hazard = assessDriveState([ev({ speedKph: 50, hazardsActive: true })], DAY);
+    expect(hazard.mode).toBe("calm");
+    expect(hazard.reason).toBe("sudden braking");
+
+    const hardBrake = assessDriveState([ev({ speedKph: 50, longitudinalAccelMps2: -4 })], DAY);
+    expect(hardBrake.mode).toBe("calm");
+  });
+
+  it("flags repeated brake cycles at low speed as stop-and-go calm", () => {
+    const recent = [
+      ev({ speedKph: 20, brakePedal: true }),
+      ev({ speedKph: 8, brakePedal: false }),
+      ev({ speedKph: 18, brakePedal: true })
+    ];
+    expect(assessDriveState(recent, DAY).mode).toBe("calm");
+  });
+
+  it("does not trigger on a single brake tap at speed", () => {
+    expect(assessDriveState([ev({ speedKph: 100, brakePedal: true })], DAY).mode).toBe("neutral");
+  });
+});
+
 describe("stabilizeDriveMode (hysteresis)", () => {
   it("keeps the engaged mode until a new mode holds for `hold` polls", () => {
     expect(stabilizeDriveMode("neutral", ["calm"], 2)).toBe("neutral"); // 1 poll → not yet
