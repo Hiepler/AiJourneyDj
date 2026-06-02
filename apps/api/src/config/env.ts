@@ -95,8 +95,6 @@ const schema = z.object({
   TESLA_POLL_SECONDS: z.coerce.number().int().min(10).default(120),
   GEOCODER_URL: z.string().url().default("https://nominatim.openstreetmap.org/reverse"),
   TESLA_TELEMETRY_ENABLED: envBoolean(false),
-  KAFKA_BROKERS: z.string().default("localhost:19092"),
-  TESLA_TELEMETRY_TOPIC: z.string().default("tesla.telemetry.normalized"),
   MQTT_URL: z.string().default("mqtt://localhost:1883"),
   MQTT_TOPIC: z.string().default("tesla/telemetry"),
   STREAM_FRESH_WINDOW_SECONDS: z.coerce.number().int().min(10).default(90),
@@ -118,7 +116,6 @@ export function loadConfig(env = process.env) {
   return {
     ...config,
     DATABASE_PATH: databasePath,
-    kafkaBrokers: config.KAFKA_BROKERS.split(",").map((broker) => broker.trim()).filter(Boolean),
     journeyRefreshMs: config.JOURNEY_REFRESH_MINUTES * 60_000
   };
 }

@@ -6,7 +6,7 @@ loadDotenv({ path: resolve(fileURLToPath(new URL(".", import.meta.url)), "../../
 
 import { loadConfig } from "./config/env.js";
 import { buildApp } from "./app.js";
-import { startTelemetryConsumer } from "./telemetry/kafkaConsumer.js";
+import { startMqttTelemetryConsumer } from "./telemetry/mqttTelemetryConsumer.js";
 import { startTeslaFleetPoller } from "./telemetry/teslaFleetPoller.js";
 import { StreamLiveness } from "./telemetry/streamSource.js";
 import { startSpotifyPlaybackPoller } from "./playback/spotifyPlaybackPoller.js";
@@ -14,11 +14,8 @@ import { startSpotifyPlaybackPoller } from "./playback/spotifyPlaybackPoller.js"
 const config = loadConfig();
 const { app, store, journeyService, teslaAuth } = await buildApp(config);
 
-await startTelemetryConsumer(config, journeyService).catch((error) => {
-  app.log.error({ error }, "Tesla telemetry consumer failed to start.");
-});
-
 const streamLiveness = new StreamLiveness();
+const mqttConsumer = startMqttTelemetryConsumer(config, journeyService, streamLiveness, app.log);
 const teslaPoller = startTeslaFleetPoller(config, store, teslaAuth, journeyService, streamLiveness, app.log);
 const spotifyPoller = startSpotifyPlaybackPoller(config, store, journeyService, app.log);
 
@@ -34,6 +31,7 @@ const worker = setInterval(runJourneyWorker, 60_000);
 process.on("SIGTERM", async () => {
   clearInterval(worker);
   if (teslaPoller) clearInterval(teslaPoller);
+  if (mqttConsumer) await mqttConsumer.stop();
   spotifyPoller.stop();
   await app.close();
 });
