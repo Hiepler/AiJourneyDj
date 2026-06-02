@@ -588,7 +588,8 @@ function deriveEtaTrend(history: TelemetrySnapshotReadModel[]): JourneyContext["
 export function contextFromJourney(
   journey: JourneyRecord,
   telemetry?: TelemetrySnapshotReadModel,
-  recentTelemetry: TelemetrySnapshotReadModel[] = telemetry ? [telemetry] : []
+  recentTelemetry: TelemetrySnapshotReadModel[] = telemetry ? [telemetry] : [],
+  telemetrySource?: "streaming" | "polling"
 ): JourneyContext {
   const speed = telemetry?.speedBucket ?? speedBucket(telemetry?.speedKph);
   const temp = telemetry?.temperatureBucket ?? temperatureBucket(telemetry?.outsideTempC);
@@ -606,7 +607,8 @@ export function contextFromJourney(
     phase: journey.phase,
     userPrompt: journey.userPrompt,
     passengerMode: journey.passengerMode,
-    driveState: driveStateForBrief(journey, recentTelemetry)
+    driveState: driveStateForBrief(journey, recentTelemetry),
+    telemetrySource
   };
 }
 
