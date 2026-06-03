@@ -5,7 +5,16 @@ import { decryptJson, encryptJson } from "@ai-journey-dj/crypto";
 import type { AppConfig } from "../config/env.js";
 import type { StoredCredentials, Store } from "../db/store.js";
 
-export const TESLA_SCOPES = ["openid", "offline_access", "vehicle_device_data", "vehicle_location"] as const;
+// vehicle_cmds is required for Fleet Telemetry streaming: pairing the virtual key + signing the
+// fleet_telemetry_config go through the Vehicle Command Protocol. We never SEND commands — the
+// capability is only what Tesla requires to authorize telemetry-config writes.
+export const TESLA_SCOPES = [
+  "openid",
+  "offline_access",
+  "vehicle_device_data",
+  "vehicle_location",
+  "vehicle_cmds"
+] as const;
 
 export class TeslaAuthService {
   private fetchImpl: typeof fetch = fetch;
