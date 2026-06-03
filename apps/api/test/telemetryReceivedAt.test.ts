@@ -113,6 +113,27 @@ describe("telemetry received_at (store)", () => {
     expect(context.temperatureBucket).toBe("warm");
   });
 
+  it("round-trips real-time streaming drive signals", () => {
+    const store = freshStore();
+    store.createJourney(makeJourney());
+
+    store.saveTelemetry(
+      "journey-1",
+      event({
+        longitudinalAccelMps2: -4.2,
+        brakePedal: false,
+        hazardsActive: true
+      }),
+      "cruise"
+    );
+
+    expect(store.latestTelemetry("journey-1")).toMatchObject({
+      longitudinalAccelMps2: -4.2,
+      brakePedal: false,
+      hazardsActive: true
+    });
+  });
+
   it("derives privacy-safe drive trends from recent telemetry snapshots", () => {
     const journey = makeJourney();
     const history = [

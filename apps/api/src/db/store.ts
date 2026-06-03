@@ -166,8 +166,8 @@ export class Store {
   saveTelemetry(journeyId: string | undefined, event: NormalizedTelemetryEvent, phase: string): void {
     this.db.run(
       `INSERT INTO telemetry_snapshots
-       (journey_id, timestamp, coarse_region, destination, eta_minutes, speed_kph, outside_temp_c, speed_bucket, temperature_bucket, phase, autopilot_state, battery_percent, traffic_delay_minutes, energy_percent_at_arrival, audio_volume, received_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (journey_id, timestamp, coarse_region, destination, eta_minutes, speed_kph, outside_temp_c, speed_bucket, temperature_bucket, phase, autopilot_state, battery_percent, traffic_delay_minutes, energy_percent_at_arrival, audio_volume, longitudinal_accel_mps2, brake_pedal, hazards_active, received_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         journeyId,
         event.timestampIso,
@@ -184,6 +184,9 @@ export class Store {
         event.trafficDelayMinutes ?? null,
         event.energyPercentAtArrival ?? null,
         event.audioVolume ?? null,
+        event.longitudinalAccelMps2 ?? null,
+        event.brakePedal === undefined ? null : event.brakePedal ? 1 : 0,
+        event.hazardsActive === undefined ? null : event.hazardsActive ? 1 : 0,
         new Date().toISOString()
       ]
     );
@@ -556,6 +559,9 @@ function mapTelemetrySnapshot(row: any): TelemetrySnapshotReadModel {
     trafficDelayMinutes: row.traffic_delay_minutes ?? undefined,
     energyPercentAtArrival: row.energy_percent_at_arrival ?? undefined,
     audioVolume: row.audio_volume ?? undefined,
+    longitudinalAccelMps2: row.longitudinal_accel_mps2 ?? undefined,
+    brakePedal: row.brake_pedal === null || row.brake_pedal === undefined ? undefined : row.brake_pedal !== 0,
+    hazardsActive: row.hazards_active === null || row.hazards_active === undefined ? undefined : row.hazards_active !== 0,
     receivedAtIso: row.received_at ?? undefined
   };
 }
