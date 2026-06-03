@@ -76,21 +76,28 @@ Requires vehicle firmware **2024.26+** (some Intel-MCU Model S/X need 2025.20+).
 
 This is **infrastructure work done by hand** — it is not covered by automated tests. Follow in order.
 
-### 7.1 Generate a CA (validates the car's client cert)
-```bash
-openssl ecparam -name prime256v1 -genkey -noout -out ca.key
-openssl req -x509 -new -key ca.key -days 3650 -subj "/CN=Ai Journey DJ Telemetry CA" -out ca.crt
+### 7.1 Prepare the telemetry TLS certificate chain
+Fleet Telemetry must terminate TLS in the `fleet-telemetry` container. Use a publicly trusted TLS
+certificate for `telemetry.<domain>` and mount its fullchain/certificate + private key into the
+container, for example:
+
 ```
-Keep `ca.key` secret. `ca.crt` goes into the telemetry config (step 7.4) and into `TESLA_TELEMETRY_CA_PEM`.
+/etc/certs/server/tls.crt  # certificate/fullchain for telemetry.<domain>
+/etc/certs/server/tls.key  # matching private key
+```
+
+`TESLA_TELEMETRY_CA_PEM` is the CA/certificate chain Tesla should use to validate that server
+certificate. Use the chain that passes Tesla's `check_server_cert.sh` validation. Do not put any
+private key into `TESLA_TELEMETRY_CA_PEM`.
 
 ### 7.2 Two new Coolify services (same internal network as the API)
 - **`mosquitto`** (image `eclipse-mosquitto`): internal only (no public port), anonymous listener on
   `1883` within the Coolify network. The API connects via `MQTT_URL=mqtt://mosquitto:1883`.
-- **`fleet-telemetry`** (image `teslamotors/fleet-telemetry:latest`): a `config.json` with
+- **`fleet-telemetry`** (image `tesla/fleet-telemetry:latest`): a `config.json` with
   - `tls.server_cert` / `tls.server_key`: a publicly trusted cert for `telemetry.<domain>` (so the car
     trusts the server) — e.g. issued by Let's Encrypt and mounted into the container,
   - the MQTT dispatcher: `{ "mqtt": { "broker": "tcp://mosquitto:1883", "topic_base": "tesla/telemetry" } }`,
-  - `records` listing the fields + intervals from the spec.
+  - `records` sending `V`, `alerts`, `errors`, and `connectivity` to `mqtt`.
   Expose it on a dedicated port (e.g. `4443`).
 
 ### 7.3 Traefik TCP passthrough (critical)
@@ -108,7 +115,7 @@ MQTT_TOPIC=tesla/telemetry
 STREAM_FRESH_WINDOW_SECONDS=90
 TESLA_TELEMETRY_HOST=telemetry.<domain>
 TESLA_TELEMETRY_PORT=4443
-TESLA_TELEMETRY_CA_PEM=<contents of ca.crt>
+TESLA_TELEMETRY_CA_PEM=<server certificate CA chain validated by check_server_cert.sh>
 ```
 Then register once (config write — no command, does not wake the car):
 ```bash
