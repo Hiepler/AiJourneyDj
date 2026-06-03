@@ -59,4 +59,16 @@ describe("env", () => {
     expect(config.MQTT_TOPIC).toBe("tesla/telemetry");
     expect(config.STREAM_FRESH_WINDOW_SECONDS).toBe(90);
   });
+
+  it("provides admin + vehicle-command proxy config", () => {
+    const config = loadConfig({
+      ADMIN_API_TOKEN: "secret",
+      TESLA_COMMAND_PROXY_URL: "https://vehicle-command:4444",
+      TESLA_TELEMETRY_VINS: "VIN1, VIN2"
+    });
+
+    expect(config.ADMIN_API_TOKEN).toBe("secret");
+    expect(config.TESLA_COMMAND_PROXY_URL).toBe("https://vehicle-command:4444");
+    expect(config.teslaTelemetryVins).toEqual(["VIN1", "VIN2"]);
+  });
 });

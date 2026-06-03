@@ -59,26 +59,75 @@ describe("TeslaAuthService", () => {
     expect(await service.getAccessToken()).toBe("fresh");
   });
 
-  it("registerTelemetryConfig POSTs ca + fields to the fleet_telemetry_config endpoint", async () => {
-    const { config, store } = build();
+  it("registerTelemetryConfig POSTs unsigned config to the vehicle-command proxy with the user token", async () => {
+    const { config, store } = build({
+      TESLA_COMMAND_PROXY_URL: "https://vehicle-command:4444",
+      TESLA_TELEMETRY_VINS: "VIN1,VIN2"
+    });
     const service = new TeslaAuthService(config, store);
-    const captured: { url: string; body: any }[] = [];
+    service.persistForTest({ accessToken: "user-token", expiresAtIso: new Date(Date.now() + 3_600_000).toISOString() });
+    const captured: { url: string; headers?: HeadersInit; body: any }[] = [];
     const fetchImpl: typeof fetch = async (input, init) => {
-      const url = String(input);
-      // Partner token request goes to the OAuth token URL.
-      if (url === config.TESLA_OAUTH_TOKEN_URL) {
-        return new Response(JSON.stringify({ access_token: "partner-token" }), { status: 200 });
-      }
-      captured.push({ url, body: JSON.parse(String(init?.body ?? "{}")) });
+      captured.push({ url: String(input), headers: init?.headers, body: JSON.parse(String(init?.body ?? "{}")) });
       return new Response(JSON.stringify({ response: { updated_vehicles: 1 } }), { status: 200 });
     };
     service.setFetchForTest(fetchImpl);
 
     const res = await service.registerTelemetryConfig({ caPem: "CA", hostname: "telemetry.test", port: 4443 });
     expect(res.ok).toBe(true);
-    expect(captured[0].url).toContain("/api/1/vehicles/fleet_telemetry_config");
-    expect(captured[0].body.ca).toBe("CA");
-    expect(captured[0].body.fields.VehicleSpeed.interval_seconds).toBe(5);
+    expect(captured).toHaveLength(1);
+    expect(captured[0].url).toBe("https://vehicle-command:4444/api/1/vehicles/fleet_telemetry_config");
+    expect(captured[0].headers).toMatchObject({ Authorization: "Bearer user-token" });
+    expect(captured[0].body.vins).toEqual(["VIN1", "VIN2"]);
+    expect(captured[0].body.config.ca).toBe("CA");
+    expect(captured[0].body.config.fields.VehicleSpeed.interval_seconds).toBe(5);
+  });
+
+  it("registerTelemetryConfig discovers VINs when none are configured", async () => {
+    const { config, store } = build({ TESLA_COMMAND_PROXY_URL: "https://vehicle-command:4444" });
+    const service = new TeslaAuthService(config, store);
+    service.persistForTest({ accessToken: "user-token", expiresAtIso: new Date(Date.now() + 3_600_000).toISOString() });
+    const calls: { url: string; method: string; body?: any }[] = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      calls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      if (url.endsWith("/api/1/vehicles")) {
+        return new Response(JSON.stringify({ response: [{ vin: "VIN1" }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ response: { updated_vehicles: 1 } }), { status: 200 });
+    };
+    service.setFetchForTest(fetchImpl);
+
+    const res = await service.registerTelemetryConfig({ caPem: "CA", hostname: "telemetry.test", port: 4443 });
+    expect(res.ok).toBe(true);
+    expect(calls[0].url).toMatch(/\/api\/1\/vehicles$/);
+    expect(calls[1].url).toBe("https://vehicle-command:4444/api/1/vehicles/fleet_telemetry_config");
+    expect(calls[1].body.vins).toEqual(["VIN1"]);
+  });
+
+  it("deleteTelemetryConfig removes the config per VIN through the vehicle-command proxy", async () => {
+    const { config, store } = build({
+      TESLA_COMMAND_PROXY_URL: "https://vehicle-command:4444",
+      TESLA_TELEMETRY_VINS: "VIN1,VIN2"
+    });
+    const service = new TeslaAuthService(config, store);
+    service.persistForTest({ accessToken: "user-token", expiresAtIso: new Date(Date.now() + 3_600_000).toISOString() });
+    const calls: { url: string; method: string; headers?: HeadersInit }[] = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      calls.push({ url: String(input), method: init?.method ?? "GET", headers: init?.headers });
+      return new Response(JSON.stringify({ response: { deleted: true } }), { status: 200 });
+    };
+    service.setFetchForTest(fetchImpl);
+
+    const res = await service.deleteTelemetryConfig();
+    expect(res.ok).toBe(true);
+    expect(calls).toHaveLength(2);
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://vehicle-command:4444/api/1/vehicles/VIN1/fleet_telemetry_config",
+      "https://vehicle-command:4444/api/1/vehicles/VIN2/fleet_telemetry_config"
+    ]);
+    expect(calls.every((call) => call.method === "DELETE")).toBe(true);
+    expect(calls[0].headers).toMatchObject({ Authorization: "Bearer user-token" });
   });
 
   it("getFleetStatus discovers VINs then POSTs them to fleet_status", async () => {
@@ -130,6 +179,84 @@ describe("tesla routes", () => {
     const res = await app.inject({ method: "GET", url: "/.well-known/appspecific/com.tesla.3p.public-key.pem" });
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain("BEGIN PUBLIC KEY");
+    await app.close();
+  });
+
+  it("requires the admin token for operational Tesla setup endpoints", async () => {
+    const { app } = await buildApp(
+      build({
+        ADMIN_API_TOKEN: "admin-secret",
+        TESLA_PUBLIC_KEY_PEM: "PUBLIC",
+        TESLA_TELEMETRY_CA_PEM: "CA",
+        TESLA_TELEMETRY_HOST: "telemetry.test"
+      }).config
+    );
+
+    const missing = await app.inject({ method: "POST", url: "/auth/tesla/register-telemetry" });
+    expect(missing.statusCode).toBe(403);
+
+    const wrong = await app.inject({
+      method: "POST",
+      url: "/auth/tesla/fleet-status",
+      headers: { Authorization: "Bearer wrong" }
+    });
+    expect(wrong.statusCode).toBe(403);
+    await app.close();
+  });
+
+  it("registers telemetry through the protected route when the admin token is valid", async () => {
+    const { config } = build({
+      ADMIN_API_TOKEN: "admin-secret",
+      TESLA_PUBLIC_KEY_PEM: "PUBLIC",
+      TESLA_TELEMETRY_CA_PEM: "CA",
+      TESLA_TELEMETRY_HOST: "telemetry.test",
+      TESLA_COMMAND_PROXY_URL: "https://vehicle-command:4444",
+      TESLA_TELEMETRY_VINS: "VIN1"
+    });
+    const { app, teslaAuth } = await buildApp(config);
+    teslaAuth.persistForTest({ accessToken: "user-token", expiresAtIso: new Date(Date.now() + 3_600_000).toISOString() });
+    const calls: string[] = [];
+    teslaAuth.setFetchForTest(async (input) => {
+      calls.push(String(input));
+      return new Response(JSON.stringify({ response: { updated_vehicles: 1 } }), { status: 200 });
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/auth/tesla/register-telemetry",
+      headers: { Authorization: "Bearer admin-secret" }
+    });
+    expect(res.statusCode).toBe(200);
+    expect(calls).toEqual(["https://vehicle-command:4444/api/1/vehicles/fleet_telemetry_config"]);
+    await app.close();
+  });
+
+  it("deletes telemetry config through the protected route when the admin token is valid", async () => {
+    const { config } = build({
+      ADMIN_API_TOKEN: "admin-secret",
+      TESLA_COMMAND_PROXY_URL: "https://vehicle-command:4444",
+      TESLA_TELEMETRY_VINS: "VIN1"
+    });
+    const { app, teslaAuth } = await buildApp(config);
+    teslaAuth.persistForTest({ accessToken: "user-token", expiresAtIso: new Date(Date.now() + 3_600_000).toISOString() });
+    const calls: { url: string; method: string }[] = [];
+    teslaAuth.setFetchForTest(async (input, init) => {
+      calls.push({ url: String(input), method: init?.method ?? "GET" });
+      return new Response(JSON.stringify({ response: { deleted: true } }), { status: 200 });
+    });
+
+    const res = await app.inject({
+      method: "DELETE",
+      url: "/auth/tesla/register-telemetry",
+      headers: { Authorization: "Bearer admin-secret" }
+    });
+    expect(res.statusCode).toBe(200);
+    expect(calls).toEqual([
+      {
+        url: "https://vehicle-command:4444/api/1/vehicles/VIN1/fleet_telemetry_config",
+        method: "DELETE"
+      }
+    ]);
     await app.close();
   });
 });

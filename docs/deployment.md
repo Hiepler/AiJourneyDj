@@ -90,7 +90,7 @@ container, for example:
 certificate. Use the chain that passes Tesla's `check_server_cert.sh` validation. Do not put any
 private key into `TESLA_TELEMETRY_CA_PEM`.
 
-### 7.2 Two new Coolify services (same internal network as the API)
+### 7.2 Three new Coolify services (same internal network as the API)
 - **`mosquitto`** (image `eclipse-mosquitto`): internal only (no public port), anonymous listener on
   `1883` within the Coolify network. The API connects via `MQTT_URL=mqtt://mosquitto:1883`.
 - **`fleet-telemetry`** (image `tesla/fleet-telemetry:latest`): a `config.json` with
@@ -99,6 +99,22 @@ private key into `TESLA_TELEMETRY_CA_PEM`.
   - the MQTT dispatcher: `{ "mqtt": { "broker": "tcp://mosquitto:1883", "topic_base": "tesla/telemetry" } }`,
   - `records` sending `V`, `alerts`, `errors`, and `connectivity` to `mqtt`.
   Expose it on a dedicated port (e.g. `4443`).
+- **`vehicle-command`** (image `tesla/vehicle-command:latest`): internal only, used by the API to sign
+  Fleet Telemetry configs before forwarding them to Tesla. Run it on **port `4444`** to avoid confusion
+  with public `fleet-telemetry:4443`. Required settings/mounts:
+  - `TESLA_HTTP_PROXY_TLS_CERT=/config/tls-cert.pem`
+  - `TESLA_HTTP_PROXY_TLS_KEY=/config/tls-key.pem`
+  - `TESLA_HTTP_PROXY_HOST=0.0.0.0`
+  - `TESLA_HTTP_PROXY_PORT=4444`
+  - `TESLA_HTTP_PROXY_TIMEOUT=10s`
+  - `TESLA_KEY_FILE=/config/fleet-key.pem`
+  - security option `no-new-privileges:true`
+  - mount `/config/fleet-key.pem` (the private command-auth key), `/config/tls-cert.pem`,
+    `/config/tls-key.pem`.
+
+The proxy TLS cert can be an internal/self-signed server cert, but the API must trust it. In Node,
+set `NODE_EXTRA_CA_CERTS=/config/vehicle-command/tls-cert.pem` at process start and mount that same
+cert into the API container.
 
 ### 7.3 Traefik TCP passthrough (critical)
 mTLS must terminate **at the fleet-telemetry container**, not at Traefik — otherwise the car's client
@@ -109,6 +125,7 @@ Add a DNS A record `telemetry.<domain> → <server IP>`.
 ### 7.4 Register the telemetry config with Tesla
 Set in the API env and redeploy:
 ```
+ADMIN_API_TOKEN=<long random secret>
 TESLA_TELEMETRY_ENABLED=true
 MQTT_URL=mqtt://mosquitto:1883
 MQTT_TOPIC=tesla/telemetry
@@ -116,16 +133,44 @@ STREAM_FRESH_WINDOW_SECONDS=90
 TESLA_TELEMETRY_HOST=telemetry.<domain>
 TESLA_TELEMETRY_PORT=4443
 TESLA_TELEMETRY_CA_PEM=<server certificate CA chain validated by check_server_cert.sh>
+TESLA_COMMAND_PROXY_URL=https://vehicle-command:4444
+NODE_EXTRA_CA_CERTS=/config/vehicle-command/tls-cert.pem
+# Optional. If empty, the API discovers VINs from /api/1/vehicles.
+TESLA_TELEMETRY_VINS=
 ```
-Then register once (config write — no command, does not wake the car):
+
+Before the real registration, smoke-test the proxy:
 ```bash
-curl -XPOST -u USER:PASS https://<domain>/auth/tesla/register-telemetry
+# Pass-through test: from the API/container network, the proxy should list vehicles with the user token.
+curl --cacert /config/vehicle-command/tls-cert.pem \
+  -H "Authorization: Bearer $TESLA_AUTH_TOKEN" \
+  https://vehicle-command:4444/api/1/vehicles
+
+# Signing dry-run: proves the mounted fleet-key can sign without writing a config to Tesla.
+docker run --rm -v ./docker/tesla/vehicle-command:/config \
+  --entrypoint tesla-jws tesla/vehicle-command:latest \
+  -key-file /config/fleet-key.pem -fleet sign TelemetryClient /config/telemetry_config.json
+```
+
+Then register once through the protected API endpoint (config write — no wake command):
+```bash
+curl -XPOST \
+  -H "Authorization: Bearer $ADMIN_API_TOKEN" \
+  https://<domain>/auth/tesla/register-telemetry
 # expect {"ok":true,"status":200,...}
 ```
-Note: max **3 telemetry configs per vehicle** — if you iterate, delete the old one first
-(`DELETE` via `teslaAuth.deleteTelemetryConfig()` / re-register overwrites).
+If you need to retry cleanly, delete first:
+```bash
+curl -XDELETE \
+  -H "Authorization: Bearer $ADMIN_API_TOKEN" \
+  https://<domain>/auth/tesla/register-telemetry
+```
+Note: max **3 telemetry configs per vehicle** — delete old configs if you iterate.
 
 ### 7.5 Verification checklist
+- Protected setup endpoints return `403` without `Authorization: Bearer $ADMIN_API_TOKEN`.
+- `POST /auth/tesla/fleet-status` (with admin token) confirms the virtual key is paired.
+- `GET /api/1/vehicles/<VIN>/fleet_telemetry_config` shows `synced: true` after the vehicle adopts it.
 - `fleet-telemetry` logs show the vehicle's mTLS connection while driving.
 - Mosquitto receives messages on `tesla/telemetry`.
 - API logs: no `mqtt.error`; `GET /journeys/:id` → `context.telemetrySource: "streaming"`; the cockpit
