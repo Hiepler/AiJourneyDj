@@ -3,6 +3,13 @@ export interface GeocoderOptions {
   baseUrl?: string;
 }
 
+export interface GeocodeResult {
+  coarseRegion?: string;
+  countryName?: string;
+  countryCode?: string;
+  geoSource: "reverse-geocode";
+}
+
 const NOMINATIM_REVERSE = "https://nominatim.openstreetmap.org/reverse";
 
 /** Rounds to ~0.1° (~11 km) so a coarse area maps to one cache bucket. */
@@ -10,7 +17,9 @@ function bucket(lat: number, lon: number): string {
   return `${lat.toFixed(1)},${lon.toFixed(1)}`;
 }
 
-function regionFromAddress(address: Record<string, unknown> | undefined): string | undefined {
+function regionFromAddress(
+  address: Record<string, unknown> | undefined,
+): string | undefined {
   if (!address) return undefined;
   const area =
     (address.state as string) ||
@@ -23,12 +32,30 @@ function regionFromAddress(address: Record<string, unknown> | undefined): string
   return area || country || undefined;
 }
 
-/** One-shot reverse geocode → coarse region (e.g. "Bavaria, Germany"); undefined on any error. */
-export async function coarseRegionFor(
+function geocodeFromAddress(
+  address: Record<string, unknown> | undefined,
+): GeocodeResult | undefined {
+  const coarseRegion = regionFromAddress(address);
+  const countryName = address?.country as string | undefined;
+  const countryCode =
+    typeof address?.country_code === "string"
+      ? address.country_code.toUpperCase()
+      : undefined;
+  if (!coarseRegion && !countryName && !countryCode) return undefined;
+  return {
+    coarseRegion,
+    countryName,
+    countryCode,
+    geoSource: "reverse-geocode",
+  };
+}
+
+/** One-shot reverse geocode → coarse region + country metadata; undefined on any error. */
+export async function geocodeFor(
   lat: number,
   lon: number,
-  options: GeocoderOptions = {}
-): Promise<string | undefined> {
+  options: GeocoderOptions = {},
+): Promise<GeocodeResult | undefined> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const baseUrl = options.baseUrl ?? NOMINATIM_REVERSE;
   try {
@@ -38,25 +65,50 @@ export async function coarseRegionFor(
     url.searchParams.set("format", "jsonv2");
     url.searchParams.set("zoom", "8");
     const response = await fetchImpl(url, {
-      headers: { "User-Agent": "AIJourneyDJ/1.0 (single-user journey soundtrack)" },
-      signal: AbortSignal.timeout(5_000)
+      headers: {
+        "User-Agent": "AIJourneyDJ/1.0 (single-user journey soundtrack)",
+      },
+      signal: AbortSignal.timeout(5_000),
     });
     if (!response.ok) return undefined;
-    const payload = (await response.json()) as { address?: Record<string, unknown> };
-    return regionFromAddress(payload.address);
+    const payload = (await response.json()) as {
+      address?: Record<string, unknown>;
+    };
+    return geocodeFromAddress(payload.address);
   } catch {
     return undefined;
   }
 }
 
+/** One-shot reverse geocode → coarse region (e.g. "Bavaria, Germany"); undefined on any error. */
+export async function coarseRegionFor(
+  lat: number,
+  lon: number,
+  options: GeocoderOptions = {},
+): Promise<string | undefined> {
+  return (await geocodeFor(lat, lon, options))?.coarseRegion;
+}
+
 /** Builds a cached geocoder: nearby coordinates (same ~0.1° bucket) reuse the first result. */
-export function makeGeocoder(options: GeocoderOptions = {}): (lat: number, lon: number) => Promise<string | undefined> {
-  const cache = new Map<string, string | undefined>();
+export function makeGeocodeResolver(
+  options: GeocoderOptions = {},
+): (lat: number, lon: number) => Promise<GeocodeResult | undefined> {
+  const cache = new Map<string, GeocodeResult | undefined>();
   return async (lat: number, lon: number) => {
     const key = bucket(lat, lon);
     if (cache.has(key)) return cache.get(key);
-    const region = await coarseRegionFor(lat, lon, options);
-    cache.set(key, region);
-    return region;
+    const result = await geocodeFor(lat, lon, options);
+    cache.set(key, result);
+    return result;
+  };
+}
+
+export function makeGeocoder(
+  options: GeocoderOptions = {},
+): (lat: number, lon: number) => Promise<string | undefined> {
+  const geocode = makeGeocodeResolver(options);
+  return async (lat: number, lon: number) => {
+    const result = await geocode(lat, lon);
+    return result?.coarseRegion;
   };
 }

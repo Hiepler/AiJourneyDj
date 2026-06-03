@@ -30,6 +30,14 @@ export interface Track {
   albumArtUrl?: string;
   artist: string;
   title: string;
+  popularity?: number;
+  explicit?: boolean;
+  releaseDate?: string;
+  chartRank?: number;
+  chartPlaycount?: number;
+  chartCountry?: string;
+  chartSource?: string;
+  moodTags?: string[];
   matchConfidence: number;
   matchReason: string;
   addedToPlaylist: boolean;
@@ -67,6 +75,9 @@ export interface JourneyDetail {
     autopilotState?: string;
     batteryPercent?: number;
     coarseRegion?: string;
+    countryName?: string;
+    countryCode?: string;
+    geoSource?: "reverse-geocode" | "manual" | "simulated";
     localTimeIso?: string;
     lastTelemetryAt?: string;
     driveMode?: "calm" | "focus" | "neutral";
@@ -108,6 +119,10 @@ export interface Health {
   teslaFleetEnabled?: boolean;
   xaiMock: boolean;
   songScout: SongScoutHealth;
+  lastfm?: {
+    enabled: boolean;
+    configured: boolean;
+  };
   telemetryEnabled: boolean;
   journeyRefreshMinutes: number;
 }
@@ -121,7 +136,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let body = init?.body;
   const hasBody = body !== undefined && body !== null && body !== "";
 
-  if (!hasBody && (method === "POST" || method === "PUT" || method === "PATCH")) {
+  if (
+    !hasBody &&
+    (method === "POST" || method === "PUT" || method === "PATCH")
+  ) {
     body = "{}";
   }
   if (body !== undefined && body !== null && !headers.has("Content-Type")) {
@@ -132,14 +150,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     method,
     body,
-    headers
+    headers,
   });
 
   if (!response.ok) {
     const text = await response.text();
-    let payload: { message?: string; error?: string; hint?: string } | undefined;
+    let payload:
+      | { message?: string; error?: string; hint?: string }
+      | undefined;
     try {
-      payload = JSON.parse(text) as { message?: string; error?: string; hint?: string };
+      payload = JSON.parse(text) as {
+        message?: string;
+        error?: string;
+        hint?: string;
+      };
     } catch {
       payload = undefined;
     }
@@ -165,53 +189,75 @@ export const api = {
   }) =>
     request<Journey>("/journeys", {
       method: "POST",
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
     }),
   journey: (id: string) => request<JourneyDetail>(`/journeys/${id}`),
   analyze: (id: string) =>
-    request<{ id: string; batchSize: number; status: string }>(`/journeys/${id}/analyze`, {
-      method: "POST"
-    }),
+    request<{ id: string; batchSize: number; status: string }>(
+      `/journeys/${id}/analyze`,
+      {
+        method: "POST",
+      },
+    ),
   stop: (id: string) =>
     request<Journey>(`/journeys/${id}/stop`, {
-      method: "POST"
+      method: "POST",
     }),
   setPhase: (id: string, phase: string) =>
     request<Journey>(`/journeys/${id}/phase`, {
       method: "POST",
-      body: JSON.stringify({ phase })
+      body: JSON.stringify({ phase }),
     }),
   setTasteWeight: (id: string, weight: number) =>
     request<Journey>(`/journeys/${id}/taste`, {
       method: "POST",
-      body: JSON.stringify({ weight })
+      body: JSON.stringify({ weight }),
     }),
   setAdaptiveMode: (id: string, enabled: boolean) =>
     request<Journey>(`/journeys/${id}/adaptive-mode`, {
       method: "POST",
-      body: JSON.stringify({ enabled })
+      body: JSON.stringify({ enabled }),
     }),
-  registerSpotifyDevice: (id: string, payload: { deviceId: string; status?: string; syncOnly?: boolean }) =>
-    request<JourneyDetail["playbackSession"]>(`/journeys/${id}/playback/device`, {
-      method: "POST",
-      body: JSON.stringify(payload)
-    }),
-  skipTrack: (id: string, payload: { direction: "next" | "previous"; deviceId?: string }) =>
-    request<NonNullable<JourneyDetail["playbackSession"]>>(`/journeys/${id}/playback/skip`, {
-      method: "POST",
-      body: JSON.stringify(payload)
-    }),
-  spotifyDevices: () => request<{ devices: SpotifyDevice[] }>("/spotify/devices"),
+  registerSpotifyDevice: (
+    id: string,
+    payload: { deviceId: string; status?: string; syncOnly?: boolean },
+  ) =>
+    request<JourneyDetail["playbackSession"]>(
+      `/journeys/${id}/playback/device`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      },
+    ),
+  skipTrack: (
+    id: string,
+    payload: { direction: "next" | "previous"; deviceId?: string },
+  ) =>
+    request<NonNullable<JourneyDetail["playbackSession"]>>(
+      `/journeys/${id}/playback/skip`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      },
+    ),
+  spotifyDevices: () =>
+    request<{ devices: SpotifyDevice[] }>("/spotify/devices"),
   setTransport: (id: string, action: "pause" | "resume") =>
-    request<NonNullable<JourneyDetail["playbackSession"]>>(`/journeys/${id}/playback/transport`, {
-      method: "POST",
-      body: JSON.stringify({ action })
-    }),
+    request<NonNullable<JourneyDetail["playbackSession"]>>(
+      `/journeys/${id}/playback/transport`,
+      {
+        method: "POST",
+        body: JSON.stringify({ action }),
+      },
+    ),
   fallbackToTidal: (id: string) =>
     request<Journey>(`/journeys/${id}/fallback/tidal`, {
-      method: "POST"
+      method: "POST",
     }),
-  spotifyToken: () => request<{ accessToken: string; premium: boolean; expiresAtIso?: string }>("/auth/spotify/token"),
+  spotifyToken: () =>
+    request<{ accessToken: string; premium: boolean; expiresAtIso?: string }>(
+      "/auth/spotify/token",
+    ),
   tidalLoginUrl: `${API_BASE_URL}/auth/tidal/login`,
-  spotifyLoginUrl: `${API_BASE_URL}/auth/spotify/login`
+  spotifyLoginUrl: `${API_BASE_URL}/auth/spotify/login`,
 };

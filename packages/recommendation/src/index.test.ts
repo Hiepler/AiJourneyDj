@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 
-import type { JourneyContext, ResolvedTrack, SongCandidate } from "@ai-journey-dj/core";
+import type {
+  JourneyContext,
+  ResolvedTrack,
+  SongCandidate,
+} from "@ai-journey-dj/core";
 
 import {
   assertJourneyContextIsPrivacySafe,
   assertPromptIsPrivacySafe,
   balanceCandidates,
+  buildRecommendationPolicy,
   buildJourneyPrompt,
   buildLensPrompt,
   buildMusicalBrief,
@@ -17,15 +22,17 @@ import {
   extractXaiResponseText,
   fallbackCandidates,
   GeminiSongScout,
+  lastfmTracksToCandidates,
   MultiLensSongScout,
   parseCandidateJson,
+  rankResolvedTracksForPolicy,
   repairJsonString,
   resolveXaiModel,
   salvageCandidatesFromText,
   selectJourneyLenses,
   selectRollingBatch,
   tryParseCandidateJson,
-  XaiSongScout
+  XaiSongScout,
 } from "./index.js";
 
 const context: JourneyContext = {
@@ -38,7 +45,7 @@ const context: JourneyContext = {
   temperatureBucket: "warm",
   phase: "golden_hour",
   userPrompt: "cinematic but focused",
-  passengerMode: "couple"
+  passengerMode: "couple",
 };
 
 describe("recommendation", () => {
@@ -59,24 +66,50 @@ describe("recommendation", () => {
     const gemini = createSongScout({
       provider: "gemini",
       mock: false,
-      gemini: { apiKey: "g", baseUrl: "https://gemini.test/v1beta", model: "gemini-3.5-flash", mock: false },
-      xai: { apiKey: "x", baseUrl: "https://api.x.ai/v1", model: "grok-4.3", mock: false }
+      gemini: {
+        apiKey: "g",
+        baseUrl: "https://gemini.test/v1beta",
+        model: "gemini-3.5-flash",
+        mock: false,
+      },
+      xai: {
+        apiKey: "x",
+        baseUrl: "https://api.x.ai/v1",
+        model: "grok-4.3",
+        mock: false,
+      },
     });
-    expect(gemini.info).toMatchObject({ provider: "gemini", model: "gemini-3.5-flash", webSearch: true });
+    expect(gemini.info).toMatchObject({
+      provider: "gemini",
+      model: "gemini-3.5-flash",
+      webSearch: true,
+    });
     expect(gemini.scout).toBeInstanceOf(GeminiSongScout);
 
     const grok = createSongScout({
       provider: "xai",
       mock: false,
-      gemini: { apiKey: "g", baseUrl: "https://gemini.test/v1beta", model: "gemini-3.5-flash", mock: false },
-      xai: { apiKey: "x", baseUrl: "https://api.x.ai/v1", model: "grok-4.3", mock: false }
+      gemini: {
+        apiKey: "g",
+        baseUrl: "https://gemini.test/v1beta",
+        model: "gemini-3.5-flash",
+        mock: false,
+      },
+      xai: {
+        apiKey: "x",
+        baseUrl: "https://api.x.ai/v1",
+        model: "grok-4.3",
+        mock: false,
+      },
     });
     expect(grok.info.provider).toBe("xai");
     expect(grok.scout).toBeInstanceOf(XaiSongScout);
   });
 
   it("rejects user prompts that reference private streaming data", () => {
-    expect(() => assertPromptIsPrivacySafe("match my tidal library")).toThrow(/library/);
+    expect(() => assertPromptIsPrivacySafe("match my tidal library")).toThrow(
+      /library/,
+    );
   });
 
   it("maps retired grok model slugs to current models", () => {
@@ -89,9 +122,14 @@ describe("recommendation", () => {
       output: [
         {
           type: "message",
-          content: [{ type: "output_text", text: '{"songs":[{"artist":"M83","title":"Wait"}]}' }]
-        }
-      ]
+          content: [
+            {
+              type: "output_text",
+              text: '{"songs":[{"artist":"M83","title":"Wait"}]}',
+            },
+          ],
+        },
+      ],
     });
 
     expect(text).toContain("M83");
@@ -106,7 +144,7 @@ describe("recommendation", () => {
       apiKey: "k",
       baseUrl: "https://gemini.test/v1beta/openai",
       model: "gemini-3.5-flash",
-      mock: true
+      mock: true,
     });
     await expect(scout.generateCandidates(context, 4)).resolves.toHaveLength(4);
   });
@@ -121,19 +159,36 @@ describe("recommendation", () => {
 
     const parsed = tryParseCandidateJson(broken, 5, "gemini");
     expect(parsed).toHaveLength(2);
-    expect(parsed?.[0]).toMatchObject({ artist: "M83", title: "Wait", source: "gemini" });
+    expect(parsed?.[0]).toMatchObject({
+      artist: "M83",
+      title: "Wait",
+      source: "gemini",
+    });
 
     expect(salvageCandidatesFromText(broken)).toHaveLength(2);
-    expect(parseCandidateJson(repairJsonString('{"songs":[{"artist":"A","title":"B","confidence":0.7}]}'), 1)).toHaveLength(1);
+    expect(
+      parseCandidateJson(
+        repairJsonString(
+          '{"songs":[{"artist":"A","title":"B","confidence":0.7}]}',
+        ),
+        1,
+      ),
+    ).toHaveLength(1);
   });
 
   it("GeminiSongScout falls back when the model returns unparseable text", async () => {
     const fetchImpl: typeof fetch = async () =>
       new Response(
         JSON.stringify({
-          candidates: [{ content: { parts: [{ text: "No JSON here, just prose about driving." }] } }]
+          candidates: [
+            {
+              content: {
+                parts: [{ text: "No JSON here, just prose about driving." }],
+              },
+            },
+          ],
         }),
-        { status: 200 }
+        { status: 200 },
       );
 
     const scout = new GeminiSongScout({
@@ -141,7 +196,7 @@ describe("recommendation", () => {
       baseUrl: "https://gemini.test/v1beta",
       model: "gemini-3.5-flash",
       mock: false,
-      fetchImpl
+      fetchImpl,
     });
 
     const candidates = await scout.generateCandidates(context, 4);
@@ -150,9 +205,15 @@ describe("recommendation", () => {
   });
 
   it("GeminiSongScout uses native generateContent with Google Search grounding and parses fenced JSON", async () => {
-    let captured: { url: string; headers: Headers; body: Record<string, unknown> } | undefined;
+    let captured:
+      | { url: string; headers: Headers; body: Record<string, unknown> }
+      | undefined;
     const fetchImpl: typeof fetch = async (input, init) => {
-      captured = { url: String(input), headers: new Headers(init?.headers), body: JSON.parse(String(init?.body)) };
+      captured = {
+        url: String(input),
+        headers: new Headers(init?.headers),
+        body: JSON.parse(String(init?.body)),
+      };
       // Grounded responses often wrap JSON in a markdown fence with surrounding prose.
       return new Response(
         JSON.stringify({
@@ -160,13 +221,15 @@ describe("recommendation", () => {
             {
               content: {
                 parts: [
-                  { text: "Here is your set:\n```json\n{\"songs\":[{\"artist\":\"M83\",\"title\":\"Wait\",\"confidence\":0.8}]}\n```" }
-                ]
-              }
-            }
-          ]
+                  {
+                    text: 'Here is your set:\n```json\n{"songs":[{"artist":"M83","title":"Wait","confidence":0.8}]}\n```',
+                  },
+                ],
+              },
+            },
+          ],
         }),
-        { status: 200 }
+        { status: 200 },
       );
     };
 
@@ -175,16 +238,22 @@ describe("recommendation", () => {
       baseUrl: "https://gemini.test/v1beta",
       model: "gemini-3.5-flash",
       mock: false,
-      fetchImpl
+      fetchImpl,
     });
 
     const candidates = await scout.generateCandidates(context, 5);
 
-    expect(captured?.url).toBe("https://gemini.test/v1beta/models/gemini-3.5-flash:generateContent");
+    expect(captured?.url).toBe(
+      "https://gemini.test/v1beta/models/gemini-3.5-flash:generateContent",
+    );
     expect(captured?.headers.get("x-goog-api-key")).toBe("k");
     expect(captured?.body.tools).toEqual([{ google_search: {} }]);
     expect(Array.isArray(captured?.body.contents)).toBe(true);
-    expect(candidates[0]).toMatchObject({ artist: "M83", title: "Wait", source: "gemini" });
+    expect(candidates[0]).toMatchObject({
+      artist: "M83",
+      title: "Wait",
+      source: "gemini",
+    });
   });
 
   it("GeminiSongScout aborts a hanging request via its timeout signal", async () => {
@@ -193,7 +262,9 @@ describe("recommendation", () => {
       sawSignal = init?.signal instanceof AbortSignal;
       // Never resolves on its own — only the abort signal can settle it (simulates a hung provider).
       return new Promise((_resolve, reject) => {
-        init?.signal?.addEventListener("abort", () => reject(new Error("The operation was aborted")));
+        init?.signal?.addEventListener("abort", () =>
+          reject(new Error("The operation was aborted")),
+        );
       });
     };
     const scout = new GeminiSongScout({
@@ -202,7 +273,7 @@ describe("recommendation", () => {
       model: "gemini-3.5-flash",
       mock: false,
       requestTimeoutMs: 30,
-      fetchImpl
+      fetchImpl,
     });
 
     // On timeout the scout aborts and degrades to deterministic candidates, so a journey
@@ -220,7 +291,7 @@ describe("recommendation", () => {
       artist: "Artist",
       title: `Track ${index}`,
       matchConfidence: 0.9,
-      matchReason: "test"
+      matchReason: "test",
     }));
 
     const selected = selectRollingBatch(tracks, new Set(["track-1"]), 5);
@@ -230,7 +301,7 @@ describe("recommendation", () => {
       "track-2",
       "track-3",
       "track-4",
-      "track-5"
+      "track-5",
     ]);
   });
 
@@ -245,7 +316,7 @@ describe("recommendation", () => {
       ...context,
       speedBucket: "parked",
       phase: "rest",
-      localTimeIso: "2026-05-28T23:30:00.000Z"
+      localTimeIso: "2026-05-28T23:30:00.000Z",
     });
     expect(calm.targetEnergy).toBeLessThan(fast.targetEnergy);
     expect(calm.intensity).toBe("winding-down");
@@ -255,25 +326,41 @@ describe("recommendation", () => {
     const neutral = buildMusicalBrief(context);
     const calm = buildMusicalBrief({
       ...context,
-      driveState: { mode: "calm", reason: "heavy traffic", intensity: 0.8, signals: ["12 min traffic delay"] }
+      driveState: {
+        mode: "calm",
+        reason: "heavy traffic",
+        intensity: 0.8,
+        signals: ["12 min traffic delay"],
+      },
     });
 
     expect(calm.targetEnergy).toBeLessThan(neutral.targetEnergy);
     expect(calm.driveMode).toBe("calm");
     expect(calm.driveReason).toBe("heavy traffic");
     expect(calm.tasteWeight).toBeGreaterThan(neutral.tasteWeight);
-    expect(calm.moodWords).toEqual(expect.arrayContaining(["calm", "instrumental-leaning"]));
+    expect(calm.moodWords).toEqual(
+      expect.arrayContaining(["calm", "instrumental-leaning"]),
+    );
     // The deliberate "leftfield" surprise lens is dropped in calm.
-    expect(selectJourneyLenses(calm).map((l) => l.key)).not.toContain("leftfield_bridge");
+    expect(selectJourneyLenses(calm).map((l) => l.key)).not.toContain(
+      "leftfield_bridge",
+    );
     // The drive-state line is injected into the lens prompt for Gemini.
-    expect(buildLensPrompt(selectJourneyLenses(calm)[0], calm, 5)).toContain("heavy traffic");
+    expect(buildLensPrompt(selectJourneyLenses(calm)[0], calm, 5)).toContain(
+      "heavy traffic",
+    );
   });
 
   it("Adaptive Drive Mode (focus) raises energy and stays engaging", () => {
     const neutral = buildMusicalBrief(context);
     const focus = buildMusicalBrief({
       ...context,
-      driveState: { mode: "focus", reason: "long night drive", intensity: 0.5, signals: ["night highway"] }
+      driveState: {
+        mode: "focus",
+        reason: "long night drive",
+        intensity: 0.5,
+        signals: ["night highway"],
+      },
     });
     expect(focus.targetEnergy).toBeGreaterThan(neutral.targetEnergy);
     expect(focus.driveMode).toBe("focus");
@@ -291,7 +378,7 @@ describe("recommendation", () => {
       "steady_momentum",
       "regional_texture",
       "timeless_anchor",
-      "leftfield_bridge"
+      "leftfield_bridge",
     ]);
 
     const focus = buildMusicalBrief({
@@ -299,44 +386,273 @@ describe("recommendation", () => {
       phase: "focus",
       speedBucket: "highway",
       passengerMode: "solo",
-      localTimeIso: "2026-05-28T23:30:00.000Z"
+      localTimeIso: "2026-05-28T23:30:00.000Z",
     });
-    expect(selectJourneyLenses(focus).map((lens) => lens.key)).toContain("low_distraction");
+    expect(selectJourneyLenses(focus).map((lens) => lens.key)).toContain(
+      "low_distraction",
+    );
+  });
+
+  it("family mode creates a clean current-pop policy and family-specific lenses", () => {
+    const familyContext = {
+      ...context,
+      passengerMode: "family" as const,
+      userPrompt: "uplifting, high-energy, feel-good momentum",
+      countryName: "Germany",
+    };
+    const policy = buildRecommendationPolicy(familyContext);
+    const brief = buildMusicalBrief(familyContext);
+
+    expect(policy.cleanRequired).toBe(true);
+    expect(policy.targetPopularity).toBeGreaterThanOrEqual(70);
+    expect(policy.moodTags).toEqual(
+      expect.arrayContaining(["pop", "dance-pop", "feelgood"]),
+    );
+    expect(brief.moodWords).toEqual(
+      expect.arrayContaining(["clean", "singalong", "current-pop"]),
+    );
+    expect(brief.genres).toEqual(expect.arrayContaining(["pop", "dance-pop"]));
+    expect(selectJourneyLenses(brief).map((lens) => lens.key)).toEqual([
+      "current_pop_hits",
+      "good_mood",
+      "singalong_classics",
+      "regional_texture",
+      "taste_anchor",
+    ]);
+  });
+
+  it("lastfmTracksToCandidates maps geo/tag chart tracks into chart-aware candidates", () => {
+    const candidates = lastfmTracksToCandidates(
+      [
+        {
+          artist: "Miley Cyrus",
+          title: "Flowers",
+          rank: 1,
+          playcount: 1000,
+          country: "Germany",
+          source: "lastfm-geo",
+        },
+        {
+          artist: "Miley Cyrus",
+          title: "Flowers",
+          rank: 2,
+          tag: "pop",
+          source: "lastfm-tag",
+        },
+      ],
+      context,
+      ["pop", "feelgood"],
+    );
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      artist: "Miley Cyrus",
+      title: "Flowers",
+      source: "lastfm",
+      chartRank: 1,
+      chartPlaycount: 1000,
+      chartCountry: "Germany",
+      chartSource: "lastfm-geo",
+    });
+  });
+
+  it("rankResolvedTracksForPolicy boosts charts/popularity, filters explicit family tracks, and penalizes artist fatigue", () => {
+    const policy = buildRecommendationPolicy({
+      ...context,
+      passengerMode: "family",
+    });
+    const tracks: ResolvedTrack[] = [
+      {
+        provider: "spotify",
+        providerTrackId: "explicit",
+        providerUri: "spotify:track:explicit",
+        artist: "A",
+        title: "Explicit Hit",
+        explicit: true,
+        popularity: 99,
+        matchConfidence: 0.99,
+        matchReason: "artist and title match",
+      },
+      {
+        provider: "spotify",
+        providerTrackId: "chart",
+        providerUri: "spotify:track:chart",
+        artist: "B",
+        title: "Chart Hit",
+        explicit: false,
+        popularity: 82,
+        chartRank: 1,
+        releaseDate: "2024-01-01",
+        moodTags: ["pop"],
+        matchConfidence: 0.9,
+        matchReason: "artist and title match",
+      },
+      {
+        provider: "spotify",
+        providerTrackId: "tired",
+        providerUri: "spotify:track:tired",
+        artist: "Played Artist",
+        title: "Known Song",
+        explicit: false,
+        popularity: 90,
+        chartRank: 2,
+        releaseDate: "2024-01-01",
+        moodTags: ["pop"],
+        matchConfidence: 0.92,
+        matchReason: "artist and title match",
+      },
+    ];
+
+    const ranked = rankResolvedTracksForPolicy(tracks, policy, {
+      consumedArtists: ["Played Artist"],
+      now: new Date("2026-06-03"),
+    });
+
+    expect(ranked.map((track) => track.providerTrackId)).toEqual([
+      "chart",
+      "tired",
+    ]);
   });
 
   it("buildJourneySet creates a five-track cinematic set with roles and diversity", () => {
     const candidates: SongCandidate[] = [
-      { artist: "A", title: "Anchor", year: 2024, genre: "electronic", reason: "", source: "gemini", confidence: 0.9 },
-      { artist: "B", title: "Drive", year: 2023, genre: "rock", reason: "", source: "gemini", confidence: 0.88 },
-      { artist: "C", title: "Bridge", year: 1998, genre: "soul", reason: "", source: "gemini", confidence: 0.82 },
-      { artist: "D", title: "Surprise", year: 2014, genre: "hip-hop", reason: "", source: "gemini", confidence: 0.79 },
-      { artist: "E", title: "Resolve", year: 1979, genre: "ambient", reason: "", source: "gemini", confidence: 0.76 },
-      { artist: "A", title: "Duplicate Artist", year: 2020, genre: "electronic", reason: "", source: "gemini", confidence: 0.95 },
-      { artist: "F", title: "Another Pulse", year: 2022, genre: "electronic", reason: "", source: "gemini", confidence: 0.91 }
+      {
+        artist: "A",
+        title: "Anchor",
+        year: 2024,
+        genre: "electronic",
+        reason: "",
+        source: "gemini",
+        confidence: 0.9,
+      },
+      {
+        artist: "B",
+        title: "Drive",
+        year: 2023,
+        genre: "rock",
+        reason: "",
+        source: "gemini",
+        confidence: 0.88,
+      },
+      {
+        artist: "C",
+        title: "Bridge",
+        year: 1998,
+        genre: "soul",
+        reason: "",
+        source: "gemini",
+        confidence: 0.82,
+      },
+      {
+        artist: "D",
+        title: "Surprise",
+        year: 2014,
+        genre: "hip-hop",
+        reason: "",
+        source: "gemini",
+        confidence: 0.79,
+      },
+      {
+        artist: "E",
+        title: "Resolve",
+        year: 1979,
+        genre: "ambient",
+        reason: "",
+        source: "gemini",
+        confidence: 0.76,
+      },
+      {
+        artist: "A",
+        title: "Duplicate Artist",
+        year: 2020,
+        genre: "electronic",
+        reason: "",
+        source: "gemini",
+        confidence: 0.95,
+      },
+      {
+        artist: "F",
+        title: "Another Pulse",
+        year: 2022,
+        genre: "electronic",
+        reason: "",
+        source: "gemini",
+        confidence: 0.91,
+      },
     ];
 
     const set = buildJourneySet(candidates, buildMusicalBrief(context), 5);
 
     expect(set).toHaveLength(5);
-    expect(set.map((candidate) => candidate.role)).toEqual(["anchor", "momentum", "bridge", "surprise", "resolution"]);
+    expect(set.map((candidate) => candidate.role)).toEqual([
+      "anchor",
+      "momentum",
+      "bridge",
+      "surprise",
+      "resolution",
+    ]);
     expect(new Set(set.map((candidate) => candidate.artist))).toHaveLength(5);
     expect(new Set(set.map((candidate) => candidate.genre))).toHaveLength(5);
-    expect(set.every((candidate) => candidate.scores && candidate.scores.total > 0)).toBe(true);
+    expect(
+      set.every((candidate) => candidate.scores && candidate.scores.total > 0),
+    ).toBe(true);
   });
 
   it("balanceCandidates dedupes and spreads across decades/genres/artists", () => {
     const brief = buildMusicalBrief(context);
     const cands: SongCandidate[] = [
-      { artist: "A", title: "1", year: 1985, genre: "rock", reason: "", source: "gemini", confidence: 0.8 },
-      { artist: "A", title: "1", year: 1985, genre: "rock", reason: "", source: "gemini", confidence: 0.8 }, // dup
-      { artist: "B", title: "2", year: 1986, genre: "rock", reason: "", source: "gemini", confidence: 0.7 },
-      { artist: "C", title: "3", year: 2024, genre: "electronic", reason: "", source: "gemini", confidence: 0.6 },
-      { artist: "D", title: "4", year: 1995, genre: "pop", reason: "", source: "gemini", confidence: 0.5 }
+      {
+        artist: "A",
+        title: "1",
+        year: 1985,
+        genre: "rock",
+        reason: "",
+        source: "gemini",
+        confidence: 0.8,
+      },
+      {
+        artist: "A",
+        title: "1",
+        year: 1985,
+        genre: "rock",
+        reason: "",
+        source: "gemini",
+        confidence: 0.8,
+      }, // dup
+      {
+        artist: "B",
+        title: "2",
+        year: 1986,
+        genre: "rock",
+        reason: "",
+        source: "gemini",
+        confidence: 0.7,
+      },
+      {
+        artist: "C",
+        title: "3",
+        year: 2024,
+        genre: "electronic",
+        reason: "",
+        source: "gemini",
+        confidence: 0.6,
+      },
+      {
+        artist: "D",
+        title: "4",
+        year: 1995,
+        genre: "pop",
+        reason: "",
+        source: "gemini",
+        confidence: 0.5,
+      },
     ];
     const out = balanceCandidates(cands, brief, 3);
     expect(out).toHaveLength(3);
     expect(out.filter((c) => c.artist === "A")).toHaveLength(1); // deduped
-    const decades = new Set(out.map((c) => Math.floor((c.year ?? 0) / 10) * 10));
+    const decades = new Set(
+      out.map((c) => Math.floor((c.year ?? 0) / 10) * 10),
+    );
     expect(decades.size).toBeGreaterThanOrEqual(2); // spread across eras, not all 1980s
   });
 
@@ -348,9 +664,9 @@ describe("recommendation", () => {
         { name: "Tame Impala", genres: ["psychedelic rock", "electronica"] },
         { name: "Khruangbin", genres: ["psychedelic rock", "funk"] },
         { name: "Air", genres: ["downtempo"] },
-        { name: "Caribou", genres: [] }
+        { name: "Caribou", genres: [] },
       ],
-      { maxGenres: 3, maxArtists: 4 }
+      { maxGenres: 3, maxArtists: 4 },
     );
 
     // electronica appears 3x, then downtempo + psychedelic rock (2x each) -> top 3.
@@ -359,7 +675,12 @@ describe("recommendation", () => {
     expect(profile.topGenres).toContain("downtempo");
     expect(profile.topGenres).toContain("psychedelic rock");
     // Representative artists are capped and preserve input order.
-    expect(profile.representativeArtists).toEqual(["Bonobo", "Tycho", "Tame Impala", "Khruangbin"]);
+    expect(profile.representativeArtists).toEqual([
+      "Bonobo",
+      "Tycho",
+      "Tame Impala",
+      "Khruangbin",
+    ]);
   });
 
   it("deriveTasteProfile is empty-safe", () => {
@@ -372,7 +693,10 @@ describe("recommendation", () => {
     const brief = buildMusicalBrief({
       ...context,
       tasteWeight: 0.75,
-      tasteProfile: { topGenres: ["electronica", "indie"], representativeArtists: ["Bonobo", "Tycho"] }
+      tasteProfile: {
+        topGenres: ["electronica", "indie"],
+        representativeArtists: ["Bonobo", "Tycho"],
+      },
     });
     expect(brief.tasteWeight).toBeCloseTo(0.75);
     expect(brief.favoredGenres).toEqual(["electronica", "indie"]);
@@ -389,10 +713,15 @@ describe("recommendation", () => {
     const brief = buildMusicalBrief({
       ...context,
       tasteWeight: 0.75,
-      tasteProfile: { topGenres: ["electronica", "indie"], representativeArtists: ["Bonobo"] }
+      tasteProfile: {
+        topGenres: ["electronica", "indie"],
+        representativeArtists: ["Bonobo"],
+      },
     });
     const current = DEFAULT_LENSES.find((lens) => lens.key === "current")!;
-    const crossgenre = DEFAULT_LENSES.find((lens) => lens.key === "crossgenre")!;
+    const crossgenre = DEFAULT_LENSES.find(
+      (lens) => lens.key === "crossgenre",
+    )!;
 
     const currentPrompt = buildLensPrompt(current, brief, 5);
     expect(currentPrompt).toMatch(/75%/);
@@ -423,15 +752,20 @@ describe("recommendation", () => {
           genre: lens.key,
           reason: "",
           source: "gemini",
-          confidence: 0.8
-        }
-      ]
+          confidence: 0.8,
+        },
+      ],
     });
     const out = await scout.generateCandidates(context, 4);
     expect(out.length).toBeGreaterThan(1);
     expect(out.length).toBeLessThanOrEqual(4);
 
-    const mockScout = new MultiLensSongScout({ apiKey: "k", baseUrl: "x", model: "m", mock: true });
+    const mockScout = new MultiLensSongScout({
+      apiKey: "k",
+      baseUrl: "x",
+      model: "m",
+      mock: true,
+    });
     expect(await mockScout.generateCandidates(context, 5)).toHaveLength(5);
   });
 });

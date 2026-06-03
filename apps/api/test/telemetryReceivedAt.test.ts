@@ -2,7 +2,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { JourneyRecord, NormalizedTelemetryEvent } from "@ai-journey-dj/core";
+import type {
+  JourneyRecord,
+  NormalizedTelemetryEvent,
+} from "@ai-journey-dj/core";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { migrate, openDatabase } from "../src/db/database.js";
@@ -10,7 +13,8 @@ import { contextFromJourney, Store } from "../src/db/store.js";
 
 const tmpDirs: string[] = [];
 afterEach(() => {
-  for (const dir of tmpDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  for (const dir of tmpDirs.splice(0))
+    rmSync(dir, { recursive: true, force: true });
 });
 
 function freshStore(): Store {
@@ -31,11 +35,13 @@ function makeJourney(): JourneyRecord {
     phase: "departure",
     status: "active",
     tasteWeight: 0.4,
-    createdAtIso: new Date().toISOString()
+    createdAtIso: new Date().toISOString(),
   };
 }
 
-function event(overrides: Partial<NormalizedTelemetryEvent> = {}): NormalizedTelemetryEvent {
+function event(
+  overrides: Partial<NormalizedTelemetryEvent> = {},
+): NormalizedTelemetryEvent {
   return {
     timestampIso: new Date().toISOString(),
     coarseRegion: "Northern Italy",
@@ -45,7 +51,7 @@ function event(overrides: Partial<NormalizedTelemetryEvent> = {}): NormalizedTel
     outsideTempC: 22,
     autopilotState: "active",
     batteryPercent: 70,
-    ...overrides
+    ...overrides,
   };
 }
 
@@ -76,8 +82,16 @@ describe("telemetry received_at (store)", () => {
     store.createJourney(makeJourney());
 
     // Older vehicle timestamp first, newer second — latest-by-timestamp wins.
-    store.saveTelemetry("journey-1", event({ timestampIso: "2026-06-01T10:00:00.000Z" }), "cruise");
-    store.saveTelemetry("journey-1", event({ timestampIso: "2026-06-01T11:00:00.000Z" }), "golden_hour");
+    store.saveTelemetry(
+      "journey-1",
+      event({ timestampIso: "2026-06-01T10:00:00.000Z" }),
+      "cruise",
+    );
+    store.saveTelemetry(
+      "journey-1",
+      event({ timestampIso: "2026-06-01T11:00:00.000Z" }),
+      "golden_hour",
+    );
 
     const receivedAt = store.latestTelemetryReceivedAt("journey-1");
     // Both stamped at ingest time (now), so it must parse as a valid recent ISO string.
@@ -94,23 +108,33 @@ describe("telemetry received_at (store)", () => {
       "journey-1",
       event({
         timestampIso: "2026-06-01T18:30:00.000Z",
+        coarseRegion: "Bavaria, Germany",
+        countryName: "Germany",
+        countryCode: "DE",
+        geoSource: "reverse-geocode",
         speedKph: 118,
         outsideTempC: 27,
-        etaMinutes: 42
+        etaMinutes: 42,
       }),
-      "golden_hour"
+      "golden_hour",
     );
 
     const telemetry = store.latestTelemetry("journey-1");
     expect(telemetry).toMatchObject({
       speedKph: 118,
       outsideTempC: 27,
-      etaMinutes: 42
+      etaMinutes: 42,
+      countryName: "Germany",
+      countryCode: "DE",
     });
 
-    const context = contextFromJourney({ ...journey, phase: "golden_hour" }, telemetry);
+    const context = contextFromJourney(
+      { ...journey, phase: "golden_hour" },
+      telemetry,
+    );
     expect(context.speedBucket).toBe("highway");
     expect(context.temperatureBucket).toBe("warm");
+    expect(context.countryName).toBe("Germany");
   });
 
   it("round-trips real-time streaming drive signals", () => {
@@ -122,24 +146,37 @@ describe("telemetry received_at (store)", () => {
       event({
         longitudinalAccelMps2: -4.2,
         brakePedal: false,
-        hazardsActive: true
+        hazardsActive: true,
       }),
-      "cruise"
+      "cruise",
     );
 
     expect(store.latestTelemetry("journey-1")).toMatchObject({
       longitudinalAccelMps2: -4.2,
       brakePedal: false,
-      hazardsActive: true
+      hazardsActive: true,
     });
   });
 
   it("derives privacy-safe drive trends from recent telemetry snapshots", () => {
     const journey = makeJourney();
     const history = [
-      event({ timestampIso: "2026-06-01T18:00:00.000Z", speedKph: 42, etaMinutes: 55 }),
-      event({ timestampIso: "2026-06-01T18:03:00.000Z", speedKph: 68, etaMinutes: 48 }),
-      event({ timestampIso: "2026-06-01T18:06:00.000Z", speedKph: 103, etaMinutes: 40, autopilotState: "active" })
+      event({
+        timestampIso: "2026-06-01T18:00:00.000Z",
+        speedKph: 42,
+        etaMinutes: 55,
+      }),
+      event({
+        timestampIso: "2026-06-01T18:03:00.000Z",
+        speedKph: 68,
+        etaMinutes: 48,
+      }),
+      event({
+        timestampIso: "2026-06-01T18:06:00.000Z",
+        speedKph: 103,
+        etaMinutes: 40,
+        autopilotState: "active",
+      }),
     ];
 
     const context = contextFromJourney(journey, history[2], history);
