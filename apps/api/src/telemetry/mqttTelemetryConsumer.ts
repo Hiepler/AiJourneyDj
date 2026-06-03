@@ -10,20 +10,71 @@ import type { StreamLiveness } from "./streamSource.js";
 
 export interface StreamMessageDeps {
   raw: Buffer | Uint8Array;
+  topic?: string;
+  topicBase?: string;
+  state?: FleetMqttState;
   appSecret: string;
   geocode: (lat: number, lon: number) => Promise<string | undefined>;
   ingest: (event: NormalizedTelemetryEvent) => Promise<void>;
   live: StreamLiveness;
 }
 
+export class FleetMqttState {
+  private readonly byVin = new Map<string, Record<string, unknown>>();
+
+  mergeField(vin: string, field: string, value: unknown): Record<string, unknown> {
+    const current = this.byVin.get(vin) ?? { vin };
+    current.vin = vin;
+    current[field] = value;
+    current.createdAt = new Date().toISOString();
+    this.byVin.set(vin, current);
+    return { ...current };
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function topicBase(topic: string): string {
+  return topic.replace(/\/#$/, "").replace(/\/+$/, "");
+}
+
+function parseFleetMetricTopic(topic: string, base: string): { vin: string; field: string } | undefined {
+  const normalizedTopic = topic.replace(/^\/+|\/+$/g, "");
+  const normalizedBase = topicBase(base).replace(/^\/+|\/+$/g, "");
+  if (!normalizedTopic.startsWith(`${normalizedBase}/`)) return undefined;
+
+  const parts = normalizedTopic.slice(normalizedBase.length + 1).split("/");
+  if (parts.length < 3 || parts[1] !== "v") return undefined;
+  return { vin: parts[0], field: parts.slice(2).join("/") };
+}
+
+function messagePayload(deps: StreamMessageDeps): Record<string, unknown> | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(deps.raw).toString("utf8"));
+  } catch {
+    return undefined;
+  }
+
+  const base = deps.topicBase ? topicBase(deps.topicBase) : undefined;
+  if (!deps.topic || !base || deps.topic.replace(/\/+$/, "") === base) {
+    return isRecord(parsed) ? parsed : undefined;
+  }
+
+  const metric = parseFleetMetricTopic(deps.topic, base);
+  if (!metric) return undefined;
+
+  const state = deps.state ?? new FleetMqttState();
+  return state.mergeField(metric.vin, metric.field, parsed);
+}
+
 /** Pure-ish handler for one streaming message. Best-effort: never throws on bad input. */
 export async function handleStreamMessage(deps: StreamMessageDeps): Promise<void> {
-  let payload: Record<string, unknown>;
-  try {
-    payload = JSON.parse(Buffer.from(deps.raw).toString("utf8"));
-  } catch {
-    return; // ignore malformed messages
-  }
+  const payload = messagePayload(deps);
+  if (!payload) return; // ignore malformed/non-vehicle messages
+
   const { coordinates, ...event } = normalizeFleetStream(payload, deps.appSecret);
   if (coordinates) {
     event.coarseRegion = await deps.geocode(coordinates.lat, coordinates.lon);
@@ -45,13 +96,18 @@ export function startMqttTelemetryConsumer(
 ): MqttConsumerHandle | undefined {
   if (!config.TESLA_TELEMETRY_ENABLED) return undefined;
   const geocode = makeGeocoder({ baseUrl: config.GEOCODER_URL });
+  const base = topicBase(config.MQTT_TOPIC);
+  const state = new FleetMqttState();
   const client = mqtt.connect(config.MQTT_URL, { reconnectPeriod: 5000 });
 
-  client.on("connect", () => client.subscribe(config.MQTT_TOPIC));
+  client.on("connect", () => client.subscribe([base, `${base}/#`]));
   client.on("error", (err) => logger.warn({ err: err.message }, "mqtt.error"));
-  client.on("message", (_topic, raw) => {
+  client.on("message", (topic, raw) => {
     void handleStreamMessage({
       raw,
+      topic,
+      topicBase: base,
+      state,
       appSecret: config.APP_SECRET,
       geocode,
       ingest: (event) => journeyService.ingestTelemetry(event),
