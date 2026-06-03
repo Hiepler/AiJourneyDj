@@ -43,7 +43,7 @@ describe("TeslaAuthService", () => {
     expect(url.searchParams.get("redirect_uri")).toBe("https://dj.example.com/auth/tesla/callback");
     expect(url.searchParams.get("response_type")).toBe("code");
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
-    expect(url.searchParams.get("scope")).toBe("openid offline_access vehicle_device_data vehicle_location");
+    expect(url.searchParams.get("scope")).toBe("openid offline_access vehicle_device_data vehicle_location vehicle_cmds");
   });
 
   it("refreshes an expired access token using the stored refresh token", async () => {
@@ -119,7 +119,7 @@ describe("tesla routes", () => {
     expect(res.statusCode).toBe(302);
     const url = new URL(res.headers.location as string);
     expect(url.origin).toBe("https://auth.tesla.com");
-    expect(url.searchParams.get("scope")).toBe("openid offline_access vehicle_device_data vehicle_location");
+    expect(url.searchParams.get("scope")).toBe("openid offline_access vehicle_device_data vehicle_location vehicle_cmds");
     await app.close();
   });
 
