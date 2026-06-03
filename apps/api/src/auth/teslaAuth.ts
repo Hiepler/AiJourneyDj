@@ -16,6 +16,18 @@ export const TESLA_SCOPES = [
   "vehicle_cmds"
 ] as const;
 
+const TELEMETRY_FIELDS = {
+  VehicleSpeed: { interval_seconds: 5, minimum_delta: 3 },
+  LongitudinalAcceleration: { interval_seconds: 2, minimum_delta: 0.8 },
+  BrakePedal: { interval_seconds: 1 },
+  LightsHazardsActive: { interval_seconds: 1 },
+  Location: { interval_seconds: 30, minimum_delta: 250 },
+  MinutesToArrival: { interval_seconds: 60 },
+  RouteTrafficMinutesDelay: { interval_seconds: 60 },
+  Soc: { interval_seconds: 60 },
+  OutsideTemp: { interval_seconds: 300, minimum_delta: 1 }
+} as const;
+
 export class TeslaAuthService {
   private fetchImpl: typeof fetch = fetch;
 
@@ -122,26 +134,19 @@ export class TeslaAuthService {
     return token.access_token;
   }
 
-  /** Registers the fleet-telemetry streaming config (field/interval/minimum_delta table). Config write, not a vehicle command — never wakes the car. */
+  /** Registers the signed fleet-telemetry config through tesla-http-proxy. Config write, no wake command. */
   async registerTelemetryConfig(opts: {
     caPem: string;
     hostname: string;
     port: number;
   }): Promise<{ ok: boolean; status: number; body: string }> {
-    const token = await this.getPartnerToken();
-    const fields = {
-      VehicleSpeed: { interval_seconds: 5, minimum_delta: 3 },
-      LongitudinalAcceleration: { interval_seconds: 2, minimum_delta: 0.8 },
-      BrakePedal: { interval_seconds: 1 },
-      LightsHazardsActive: { interval_seconds: 1 },
-      Location: { interval_seconds: 30, minimum_delta: 250 },
-      MinutesToArrival: { interval_seconds: 60 },
-      RouteTrafficMinutesDelay: { interval_seconds: 60 },
-      Soc: { interval_seconds: 60 },
-      OutsideTemp: { interval_seconds: 300, minimum_delta: 1 }
-    };
-    const body = JSON.stringify({ hostname: opts.hostname, port: opts.port, ca: opts.caPem, fields });
-    const url = `${this.config.TESLA_API_BASE_URL.replace(/\/$/, "")}/api/1/vehicles/fleet_telemetry_config`;
+    const token = await this.getAccessToken();
+    const vins = await this.resolveTelemetryVins(token);
+    const body = JSON.stringify({
+      vins,
+      config: { hostname: opts.hostname, port: opts.port, ca: opts.caPem, fields: TELEMETRY_FIELDS }
+    });
+    const url = `${this.config.TESLA_COMMAND_PROXY_URL.replace(/\/$/, "")}/api/1/vehicles/fleet_telemetry_config`;
     const response = await this.fetchImpl(url, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -174,15 +179,47 @@ export class TeslaAuthService {
     return { ok: response.ok, status: response.status, body: await response.text() };
   }
 
-  /** Removes the fleet-telemetry streaming config. Config write, not a vehicle command. */
-  async deleteTelemetryConfig(): Promise<{ ok: boolean; status: number }> {
-    const token = await this.getPartnerToken();
-    const url = `${this.config.TESLA_API_BASE_URL.replace(/\/$/, "")}/api/1/vehicles/fleet_telemetry_config`;
-    const response = await this.fetchImpl(url, {
-      method: "DELETE",
-      headers: { Authorization: `Bearer ${token}` }
+  /** Removes the fleet-telemetry config per VIN through tesla-http-proxy. */
+  async deleteTelemetryConfig(): Promise<{ ok: boolean; status: number; body: string }> {
+    const token = await this.getAccessToken();
+    const vins = await this.resolveTelemetryVins(token);
+    const base = this.config.TESLA_COMMAND_PROXY_URL.replace(/\/$/, "");
+    const results: Array<{ vin: string; status: number; body: string }> = [];
+
+    for (const vin of vins) {
+      const response = await this.fetchImpl(`${base}/api/1/vehicles/${encodeURIComponent(vin)}/fleet_telemetry_config`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      results.push({ vin, status: response.status, body: await response.text() });
+    }
+
+    const failed = results.find((result) => result.status < 200 || result.status >= 300);
+    return {
+      ok: !failed,
+      status: failed?.status ?? 200,
+      body: JSON.stringify({ results })
+    };
+  }
+
+  private async resolveTelemetryVins(accessToken: string): Promise<string[]> {
+    if (this.config.teslaTelemetryVins.length > 0) {
+      return this.config.teslaTelemetryVins;
+    }
+
+    const base = this.config.TESLA_API_BASE_URL.replace(/\/$/, "");
+    const response = await this.fetchImpl(`${base}/api/1/vehicles`, {
+      headers: { Authorization: `Bearer ${accessToken}` }
     });
-    return { ok: response.ok, status: response.status };
+    if (!response.ok) {
+      throw new Error(`Tesla vehicle discovery failed with ${response.status}: ${await response.text()}`);
+    }
+    const list = (await response.json()) as { response?: Array<{ vin?: string }> };
+    const vins = (list.response ?? []).map((vehicle) => vehicle.vin).filter((vin): vin is string => Boolean(vin));
+    if (vins.length === 0) {
+      throw new Error("No Tesla VINs available for Fleet Telemetry registration.");
+    }
+    return vins;
   }
 
   private getCredentials(): StoredCredentials | undefined {
