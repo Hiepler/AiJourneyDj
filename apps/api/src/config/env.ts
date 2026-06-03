@@ -37,6 +37,7 @@ const schema = z.object({
   APP_BASE_URL: z.string().url().default("http://localhost:5173"),
   CORS_ORIGIN: z.string().default("http://localhost:5173"),
   APP_SECRET: z.string().default("local-development-secret-change-me"),
+  ADMIN_API_TOKEN: z.string().default(""),
   DATABASE_PATH: z.string().default("./data/ai-journey-dj.db"),
   SIMULATOR_TOKEN: z.string().default("local-dev-simulator-token"),
   TIDAL_CLIENT_ID: z.string().optional(),
@@ -101,6 +102,8 @@ const schema = z.object({
   TESLA_TELEMETRY_CA_PEM: z.string().default(""),
   TESLA_TELEMETRY_HOST: z.string().default(""),
   TESLA_TELEMETRY_PORT: z.coerce.number().int().default(4443),
+  TESLA_COMMAND_PROXY_URL: z.string().url().default("https://vehicle-command:4444"),
+  TESLA_TELEMETRY_VINS: z.string().default(""),
   JOURNEY_REFRESH_MINUTES: z.coerce.number().int().min(1).default(12)
 });
 
@@ -116,6 +119,9 @@ export function loadConfig(env = process.env) {
   return {
     ...config,
     DATABASE_PATH: databasePath,
+    teslaTelemetryVins: config.TESLA_TELEMETRY_VINS.split(",")
+      .map((vin) => vin.trim())
+      .filter(Boolean),
     journeyRefreshMs: config.JOURNEY_REFRESH_MINUTES * 60_000
   };
 }

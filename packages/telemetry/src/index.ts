@@ -67,6 +67,25 @@ export interface FleetTelemetryResult extends NormalizedTelemetryEvent {
   coordinates?: { lat: number; lon: number };
 }
 
+function telemetryNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function telemetryBoolean(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true") return true;
+    if (normalized === "false") return false;
+  }
+  return undefined;
+}
+
 /** Maps a Fleet API `vehicle_data` payload (drive/charge/climate state) into a normalized event. */
 export function normalizeFleetVehicleData(payload: Record<string, any>, appSecret: string): FleetTelemetryResult {
   const drive = (payload?.drive_state ?? {}) as Record<string, any>;
@@ -114,33 +133,32 @@ export function normalizeFleetVehicleData(payload: Record<string, any>, appSecre
  */
 export function normalizeFleetStream(payload: Record<string, any>, appSecret: string): FleetTelemetryResult {
   const vin = typeof payload?.vin === "string" ? payload.vin : undefined;
-  const speedMph = typeof payload?.VehicleSpeed === "number" ? payload.VehicleSpeed : undefined;
+  const speedMph = telemetryNumber(payload?.VehicleSpeed);
   const speedKph = typeof speedMph === "number" ? Math.round(speedMph * 1.609) : undefined;
   const loc = (payload?.Location ?? {}) as Record<string, any>;
-  const lat = typeof loc.latitude === "number" ? loc.latitude : undefined;
-  const lon = typeof loc.longitude === "number" ? loc.longitude : undefined;
+  const lat = telemetryNumber(loc.latitude);
+  const lon = telemetryNumber(loc.longitude);
   const ts = typeof payload?.createdAt === "string" ? payload.createdAt : new Date().toISOString();
+  const minutesToArrival = telemetryNumber(payload?.MinutesToArrival);
+  const routeTrafficDelay = telemetryNumber(payload?.RouteTrafficMinutesDelay);
+  const expectedEnergyAtArrival = telemetryNumber(payload?.ExpectedEnergyPercentAtTripArrival);
+  const longitudinalAcceleration = telemetryNumber(payload?.LongitudinalAcceleration);
 
   return {
     vehicleIdHash: vin ? hashVehicleId(vin, appSecret) : undefined,
     timestampIso: ts,
     coarseRegion: undefined, // filled in by the consumer via reverse-geocoding
     destination: typeof payload?.DestinationName === "string" ? payload.DestinationName : undefined,
-    etaMinutes: typeof payload?.MinutesToArrival === "number" ? Math.round(payload.MinutesToArrival) : undefined,
+    etaMinutes: typeof minutesToArrival === "number" ? Math.round(minutesToArrival) : undefined,
     speedKph,
-    outsideTempC: typeof payload?.OutsideTemp === "number" ? payload.OutsideTemp : undefined,
+    outsideTempC: telemetryNumber(payload?.OutsideTemp),
     autopilotState: "unknown",
-    batteryPercent: typeof payload?.Soc === "number" ? payload.Soc : undefined,
-    trafficDelayMinutes:
-      typeof payload?.RouteTrafficMinutesDelay === "number" ? Math.round(payload.RouteTrafficMinutesDelay) : undefined,
-    energyPercentAtArrival:
-      typeof payload?.ExpectedEnergyPercentAtTripArrival === "number"
-        ? payload.ExpectedEnergyPercentAtTripArrival
-        : undefined,
-    longitudinalAccelMps2:
-      typeof payload?.LongitudinalAcceleration === "number" ? payload.LongitudinalAcceleration : undefined,
-    brakePedal: typeof payload?.BrakePedal === "boolean" ? payload.BrakePedal : undefined,
-    hazardsActive: typeof payload?.LightsHazardsActive === "boolean" ? payload.LightsHazardsActive : undefined,
+    batteryPercent: telemetryNumber(payload?.Soc),
+    trafficDelayMinutes: typeof routeTrafficDelay === "number" ? Math.round(routeTrafficDelay) : undefined,
+    energyPercentAtArrival: expectedEnergyAtArrival,
+    longitudinalAccelMps2: longitudinalAcceleration,
+    brakePedal: telemetryBoolean(payload?.BrakePedal),
+    hazardsActive: telemetryBoolean(payload?.LightsHazardsActive),
     coordinates: typeof lat === "number" && typeof lon === "number" ? { lat, lon } : undefined
   };
 }
