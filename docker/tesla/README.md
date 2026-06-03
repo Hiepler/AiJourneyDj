@@ -11,6 +11,11 @@ to dispatch records into Mosquitto/MQTT:
 - Topic base: `tesla/telemetry`; Tesla's MQTT dispatcher publishes fields below
   `tesla/telemetry/<VIN>/v/<field_name>`.
 - Backend env: `TESLA_TELEMETRY_ENABLED=true`.
+- Vehicle Command Proxy config lives under `docker/tesla/vehicle-command/` when using the optional
+  local compose profile:
+  - `fleet-key.pem` — private command-auth key used to sign Fleet Telemetry config.
+  - `tls-cert.pem` / `tls-key.pem` — internal TLS cert/key for `tesla/vehicle-command` on port `4444`.
+  - `telemetry_config.json` — optional local signing dry-run input for `tesla-jws`.
 
 For local work without a vehicle, use:
 

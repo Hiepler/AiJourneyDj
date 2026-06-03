@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import cors from "@fastify/cors";
 import sensible from "@fastify/sensible";
 import fastifyStatic from "@fastify/static";
-import Fastify from "fastify";
+import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 
 import { NoopOpenMusicClient, OpenMusicClient } from "@ai-journey-dj/open-music";
 import { createSongScout } from "@ai-journey-dj/recommendation";
@@ -23,6 +23,18 @@ import { JourneyService } from "./journeys/journeyService.js";
 import { registerJourneyRoutes } from "./journeys/routes.js";
 import { registerTelemetryRoutes } from "./telemetry/routes.js";
 import { StreamLiveness } from "./telemetry/streamSource.js";
+
+export function isAuthorizedAdminRequest(config: AppConfig, authorization: string | undefined): boolean {
+  return Boolean(config.ADMIN_API_TOKEN && authorization === `Bearer ${config.ADMIN_API_TOKEN}`);
+}
+
+function requireAdmin(request: FastifyRequest, reply: FastifyReply, config: AppConfig): boolean {
+  if (isAuthorizedAdminRequest(config, request.headers.authorization)) {
+    return true;
+  }
+  reply.code(403).send({ error: "Forbidden" });
+  return false;
+}
 
 export async function buildApp(config: AppConfig) {
   const db = openDatabase(config.DATABASE_PATH);
@@ -226,7 +238,8 @@ export async function buildApp(config: AppConfig) {
     }
   });
 
-  app.post("/auth/tesla/register-partner", async (_request, reply) => {
+  app.post("/auth/tesla/register-partner", async (request, reply) => {
+    if (!requireAdmin(request, reply, config)) return reply;
     try {
       const token = await teslaAuth.getPartnerToken();
       const domain = new URL(config.API_BASE_URL).host;
@@ -242,7 +255,8 @@ export async function buildApp(config: AppConfig) {
     }
   });
 
-  app.post("/auth/tesla/register-telemetry", async (_request, reply) => {
+  app.post("/auth/tesla/register-telemetry", async (request, reply) => {
+    if (!requireAdmin(request, reply, config)) return reply;
     if (!config.TESLA_PUBLIC_KEY_PEM || !config.TESLA_TELEMETRY_CA_PEM) {
       return reply.code(400).send({ ok: false, error: "TESLA_TELEMETRY_CA_PEM not configured." });
     }
@@ -258,8 +272,19 @@ export async function buildApp(config: AppConfig) {
     }
   });
 
+  app.delete("/auth/tesla/register-telemetry", async (request, reply) => {
+    if (!requireAdmin(request, reply, config)) return reply;
+    try {
+      const result = await teslaAuth.deleteTelemetryConfig();
+      return reply.code(result.ok ? 200 : 502).send(result);
+    } catch (error) {
+      return reply.code(500).send({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   // Diagnostic: confirm the virtual key is paired (key_paired_vins) + firmware/telemetry version.
-  app.post("/auth/tesla/fleet-status", async (_request, reply) => {
+  app.post("/auth/tesla/fleet-status", async (request, reply) => {
+    if (!requireAdmin(request, reply, config)) return reply;
     try {
       const result = await teslaAuth.getFleetStatus();
       return reply.code(result.ok ? 200 : 502).send(result);
