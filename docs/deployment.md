@@ -19,6 +19,34 @@ one origin (port 3000). One image, one domain — ideal for the Tesla browser an
 7. Deploy, then verify `https://aijourneydj.ruhrco.de/health` returns `{ "ok": true }` and the app UI loads at `/`.
 8. Continue with the Tesla onboarding (sections 4-5): verify the public-key URL, `POST /auth/tesla/register-partner`, `/auth/tesla/login`.
 
+### Coolify / Traefik: Basic Auth without breaking Tesla or admin `curl`
+
+If the app is behind Traefik **HTTP Basic Auth**, two things must stay **without** that middleware:
+
+1. **`/.well-known/appspecific/com.tesla.3p.public-key.pem`** — Tesla fetches the partner public key with no credentials.
+2. **Admin setup routes** — they use `Authorization: Bearer $ADMIN_API_TOKEN`. HTTP allows only one `Authorization` header, so `curl -u` (Basic) and `Bearer` cannot both be sent; exempt these paths and use Bearer only.
+
+Add a **second Traefik router** (same service/port as the app, **priority 1000**, **no** `http-basic-auth` middleware), in addition to your existing `wellknown-*` router. Replace `<coolify-id>` with your application’s Traefik suffix (the random id in your other labels):
+
+```text
+traefik.http.routers.tesla-admin-<coolify-id>.entryPoints=https
+traefik.http.routers.tesla-admin-<coolify-id>.rule=Host(`aijourneydj.ruhrco.de`) && (Path(`/auth/tesla/fleet-status`) || Path(`/auth/tesla/register-partner`) || Path(`/auth/tesla/register-telemetry`))
+traefik.http.routers.tesla-admin-<coolify-id>.priority=1000
+traefik.http.routers.tesla-admin-<coolify-id>.middlewares=gzip
+traefik.http.routers.tesla-admin-<coolify-id>.service=https-0-<coolify-id>
+traefik.http.routers.tesla-admin-<coolify-id>.tls=true
+traefik.http.routers.tesla-admin-<coolify-id>.tls.certresolver=letsencrypt
+```
+
+Redeploy, then verify (no `-u`, only admin token):
+
+```bash
+curl -sS -XPOST -H "Authorization: Bearer $ADMIN_API_TOKEN" \
+  https://aijourneydj.ruhrco.de/auth/tesla/fleet-status
+```
+
+Expected: HTTP **200** (or **403** if the token is wrong — not **401** from Traefik).
+
 ## 1. Host
 - Deploy API + web behind your domain with TLS (the Tesla in-car browser, Spotify Web Playback, and
   all OAuth flows require HTTPS).

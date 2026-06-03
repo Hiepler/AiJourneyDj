@@ -10,18 +10,21 @@ import type { JourneyService } from "../journeys/journeyService.js";
 const normalizedTelemetrySchema = z.object({
   timestampIso: z.string(),
   coarseRegion: z.string().optional(),
+  countryName: z.string().optional(),
+  countryCode: z.string().optional(),
+  geoSource: z.enum(["reverse-geocode", "manual", "simulated"]).optional(),
   destination: z.string().optional(),
   etaMinutes: z.number().optional(),
   speedKph: z.number().optional(),
   outsideTempC: z.number().optional(),
   autopilotState: z.enum(["off", "available", "active", "unknown"]).optional(),
-  batteryPercent: z.number().optional()
+  batteryPercent: z.number().optional(),
 });
 
 export async function registerTelemetryRoutes(
   app: FastifyInstance,
   config: AppConfig,
-  service: JourneyService
+  service: JourneyService,
 ): Promise<void> {
   app.post("/internal/telemetry", async (request, reply) => {
     const token = request.headers["x-simulator-token"];
@@ -29,7 +32,9 @@ export async function registerTelemetryRoutes(
       return reply.code(401).send({ error: "Invalid simulator token." });
     }
 
-    const event = normalizedTelemetrySchema.parse(request.body) as NormalizedTelemetryEvent;
+    const event = normalizedTelemetrySchema.parse(
+      request.body,
+    ) as NormalizedTelemetryEvent;
     await service.ingestTelemetry(event);
     return { ok: true };
   });
@@ -40,7 +45,10 @@ export async function registerTelemetryRoutes(
       return reply.code(401).send({ error: "Invalid simulator token." });
     }
 
-    const event = normalizeTeslaPayload(request.body as Record<string, unknown>, config.APP_SECRET);
+    const event = normalizeTeslaPayload(
+      request.body as Record<string, unknown>,
+      config.APP_SECRET,
+    );
     await service.ingestTelemetry(event);
     return { ok: true };
   });

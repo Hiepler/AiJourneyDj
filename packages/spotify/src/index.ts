@@ -12,6 +12,9 @@ export interface SpotifyTrackSearchResult {
   market?: string;
   externalUrl?: string;
   albumArtUrl?: string;
+  popularity?: number;
+  explicit?: boolean;
+  releaseDate?: string;
 }
 
 export interface SpotifyPlaybackState {
@@ -60,10 +63,19 @@ export interface SpotifyAdapter {
     limit?: number;
     signal?: AbortSignal;
   }): Promise<SpotifyArtist[]>;
-  transferPlayback(args: { accessToken: string; deviceId: string }): Promise<void>;
-  resolvePlaybackDeviceId(args: { accessToken: string; preferredDeviceId: string }): Promise<string>;
+  transferPlayback(args: {
+    accessToken: string;
+    deviceId: string;
+  }): Promise<void>;
+  resolvePlaybackDeviceId(args: {
+    accessToken: string;
+    preferredDeviceId: string;
+  }): Promise<string>;
   skipToNext(args: { accessToken: string; deviceId: string }): Promise<void>;
-  skipToPrevious(args: { accessToken: string; deviceId: string }): Promise<void>;
+  skipToPrevious(args: {
+    accessToken: string;
+    deviceId: string;
+  }): Promise<void>;
   startPlayback(args: {
     accessToken: string;
     deviceId: string;
@@ -89,8 +101,14 @@ export interface SpotifyAdapter {
     uris: string[];
   }): Promise<void>;
   listDevices?(args: { accessToken: string }): Promise<SpotifyDevice[]>;
-  pausePlayback?(args: { accessToken: string; deviceId: string }): Promise<void>;
-  resumePlayback?(args: { accessToken: string; deviceId: string }): Promise<void>;
+  pausePlayback?(args: {
+    accessToken: string;
+    deviceId: string;
+  }): Promise<void>;
+  resumePlayback?(args: {
+    accessToken: string;
+    deviceId: string;
+  }): Promise<void>;
 }
 
 interface OfficialSpotifyAdapterOptions {
@@ -99,7 +117,8 @@ interface OfficialSpotifyAdapterOptions {
   wait?: (ms: number) => Promise<void>;
 }
 
-const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+const delay = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export class OfficialSpotifyAdapter implements SpotifyAdapter {
   private readonly fetchImpl: typeof fetch;
@@ -125,8 +144,12 @@ export class OfficialSpotifyAdapter implements SpotifyAdapter {
     url.searchParams.set("market", args.market);
     url.searchParams.set("limit", String(args.limit));
 
-    const payload = await this.request<any>(url, args.accessToken, { signal: args.signal });
-    const items = Array.isArray(payload?.tracks?.items) ? payload.tracks.items : [];
+    const payload = await this.request<any>(url, args.accessToken, {
+      signal: args.signal,
+    });
+    const items = Array.isArray(payload?.tracks?.items)
+      ? payload.tracks.items
+      : [];
     return items.map((item: any) => mapSpotifyTrack(item, args.market));
   }
 
@@ -140,23 +163,37 @@ export class OfficialSpotifyAdapter implements SpotifyAdapter {
     url.searchParams.set("time_range", args.timeRange ?? "medium_term");
     url.searchParams.set("limit", String(args.limit ?? 20));
 
-    const payload = await this.request<any>(url, args.accessToken, { signal: args.signal });
+    const payload = await this.request<any>(url, args.accessToken, {
+      signal: args.signal,
+    });
     const items = Array.isArray(payload?.items) ? payload.items : [];
     return items.map((item: any) => ({
       id: String(item?.id ?? ""),
       name: String(item?.name ?? ""),
-      genres: Array.isArray(item?.genres) ? item.genres.filter((genre: unknown): genre is string => typeof genre === "string") : []
+      genres: Array.isArray(item?.genres)
+        ? item.genres.filter(
+            (genre: unknown): genre is string => typeof genre === "string",
+          )
+        : [],
     }));
   }
 
-  async transferPlayback(args: { accessToken: string; deviceId: string }): Promise<void> {
+  async transferPlayback(args: {
+    accessToken: string;
+    deviceId: string;
+  }): Promise<void> {
     const url = new URL(`${this.baseUrl}/me/player`);
     // Activation only: do NOT pass play:true — that would resume the account's previous
     // (external) playback context. startPlayback is the single source of truth for content.
-    await this.request(url, args.accessToken, {
-      method: "PUT",
-      body: JSON.stringify({ device_ids: [args.deviceId], play: false })
-    }, { parseJson: false });
+    await this.request(
+      url,
+      args.accessToken,
+      {
+        method: "PUT",
+        body: JSON.stringify({ device_ids: [args.deviceId], play: false }),
+      },
+      { parseJson: false },
+    );
   }
 
   async resolvePlaybackDeviceId(args: {
@@ -164,16 +201,24 @@ export class OfficialSpotifyAdapter implements SpotifyAdapter {
     preferredDeviceId: string;
   }): Promise<string> {
     const url = new URL(`${this.baseUrl}/me/player/devices`);
-    const payload = await this.request<{ devices?: Array<{ id: string; is_active?: boolean; name?: string; type?: string }> }>(
-      url,
-      args.accessToken
-    );
+    const payload = await this.request<{
+      devices?: Array<{
+        id: string;
+        is_active?: boolean;
+        name?: string;
+        type?: string;
+      }>;
+    }>(url, args.accessToken);
     const devices = payload?.devices ?? [];
-    const preferred = devices.find((device) => device.id === args.preferredDeviceId);
+    const preferred = devices.find(
+      (device) => device.id === args.preferredDeviceId,
+    );
     if (preferred) {
       return preferred.id;
     }
-    const journeyPlayer = devices.find((device) => device.name?.includes("AI Journey"));
+    const journeyPlayer = devices.find((device) =>
+      device.name?.includes("AI Journey"),
+    );
     if (journeyPlayer) {
       return journeyPlayer.id;
     }
@@ -188,46 +233,87 @@ export class OfficialSpotifyAdapter implements SpotifyAdapter {
     return args.preferredDeviceId;
   }
 
-  async skipToNext(args: { accessToken: string; deviceId: string }): Promise<void> {
+  async skipToNext(args: {
+    accessToken: string;
+    deviceId: string;
+  }): Promise<void> {
     const url = new URL(`${this.baseUrl}/me/player/next`);
     url.searchParams.set("device_id", args.deviceId);
-    await this.request(url, args.accessToken, { method: "POST" }, { parseJson: false });
+    await this.request(
+      url,
+      args.accessToken,
+      { method: "POST" },
+      { parseJson: false },
+    );
   }
 
-  async skipToPrevious(args: { accessToken: string; deviceId: string }): Promise<void> {
+  async skipToPrevious(args: {
+    accessToken: string;
+    deviceId: string;
+  }): Promise<void> {
     const url = new URL(`${this.baseUrl}/me/player/previous`);
     url.searchParams.set("device_id", args.deviceId);
-    await this.request(url, args.accessToken, { method: "POST" }, { parseJson: false });
+    await this.request(
+      url,
+      args.accessToken,
+      { method: "POST" },
+      { parseJson: false },
+    );
   }
 
-  async startPlayback(args: { accessToken: string; deviceId: string; uris: string[] }): Promise<void> {
+  async startPlayback(args: {
+    accessToken: string;
+    deviceId: string;
+    uris: string[];
+  }): Promise<void> {
     if (args.uris.length === 0) return;
     const url = new URL(`${this.baseUrl}/me/player/play`);
     url.searchParams.set("device_id", args.deviceId);
-    await this.request(url, args.accessToken, {
-      method: "PUT",
-      body: JSON.stringify({ uris: args.uris })
-    }, { parseJson: false });
+    await this.request(
+      url,
+      args.accessToken,
+      {
+        method: "PUT",
+        body: JSON.stringify({ uris: args.uris }),
+      },
+      { parseJson: false },
+    );
   }
 
-  async addToQueue(args: { accessToken: string; deviceId: string; uri: string }): Promise<void> {
+  async addToQueue(args: {
+    accessToken: string;
+    deviceId: string;
+    uri: string;
+  }): Promise<void> {
     const url = new URL(`${this.baseUrl}/me/player/queue`);
     url.searchParams.set("uri", args.uri);
     url.searchParams.set("device_id", args.deviceId);
-    await this.request(url, args.accessToken, { method: "POST" }, { parseJson: false });
+    await this.request(
+      url,
+      args.accessToken,
+      { method: "POST" },
+      { parseJson: false },
+    );
   }
 
-  async getPlaybackState(args: { accessToken: string; market: string }): Promise<SpotifyPlaybackState> {
+  async getPlaybackState(args: {
+    accessToken: string;
+    market: string;
+  }): Promise<SpotifyPlaybackState> {
     const url = new URL(`${this.baseUrl}/me/player`);
     url.searchParams.set("market", args.market);
     const payload = await this.request<any>(url, args.accessToken);
-    const active = payload?.item ? mapSpotifyTrack(payload.item, args.market) : undefined;
+    const active = payload?.item
+      ? mapSpotifyTrack(payload.item, args.market)
+      : undefined;
     const queue = Array.isArray(payload?.queue) ? payload.queue : [];
     return {
       activeProviderTrackId: active?.id,
       activeProviderUri: active?.uri,
       isPlaying: payload?.is_playing === true,
-      queuedProviderTrackIds: queue.map((item: any) => item?.id).filter((id: unknown): id is string => typeof id === "string")
+      queuedProviderTrackIds: queue
+        .map((item: any) => item?.id)
+        .filter((id: unknown): id is string => typeof id === "string"),
     };
   }
 
@@ -236,41 +322,55 @@ export class OfficialSpotifyAdapter implements SpotifyAdapter {
     name: string;
     description: string;
   }): Promise<SpotifyPlaylist> {
-    const profile = await this.request<any>(new URL(`${this.baseUrl}/me`), args.accessToken);
+    const profile = await this.request<any>(
+      new URL(`${this.baseUrl}/me`),
+      args.accessToken,
+    );
     if (!profile?.id) {
       throw new Error("Spotify profile did not include a user id.");
     }
 
-    const playlist = await this.request<any>(new URL(`${this.baseUrl}/users/${profile.id}/playlists`), args.accessToken, {
-      method: "POST",
-      body: JSON.stringify({
-        name: args.name,
-        description: args.description,
-        public: false
-      })
-    });
+    const playlist = await this.request<any>(
+      new URL(`${this.baseUrl}/users/${profile.id}/playlists`),
+      args.accessToken,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          name: args.name,
+          description: args.description,
+          public: false,
+        }),
+      },
+    );
 
     return {
       id: playlist.id,
       name: playlist.name ?? args.name,
-      url: playlist.external_urls?.spotify
+      url: playlist.external_urls?.spotify,
     };
   }
 
-  async addTracksToPlaylist(args: { accessToken: string; playlistId: string; uris: string[] }): Promise<void> {
+  async addTracksToPlaylist(args: {
+    accessToken: string;
+    playlistId: string;
+    uris: string[];
+  }): Promise<void> {
     if (args.uris.length === 0) return;
     const url = new URL(`${this.baseUrl}/playlists/${args.playlistId}/tracks`);
     await this.request(
       url,
       args.accessToken,
       { method: "POST", body: JSON.stringify({ uris: args.uris }) },
-      { parseJson: false }
+      { parseJson: false },
     );
   }
 
   async listDevices(args: { accessToken: string }): Promise<SpotifyDevice[]> {
     const url = new URL(`${this.baseUrl}/me/player/devices`);
-    const payload = await this.request<{ devices?: any[] }>(url, args.accessToken);
+    const payload = await this.request<{ devices?: any[] }>(
+      url,
+      args.accessToken,
+    );
     const devices = Array.isArray(payload?.devices) ? payload.devices : [];
     return devices
       .filter((device) => typeof device?.id === "string")
@@ -280,20 +380,39 @@ export class OfficialSpotifyAdapter implements SpotifyAdapter {
         type: typeof device.type === "string" ? device.type : "Unknown",
         isActive: device.is_active === true,
         isRestricted: device.is_restricted === true,
-        volumePercent: typeof device.volume_percent === "number" ? device.volume_percent : undefined
+        volumePercent:
+          typeof device.volume_percent === "number"
+            ? device.volume_percent
+            : undefined,
       }));
   }
 
-  async pausePlayback(args: { accessToken: string; deviceId: string }): Promise<void> {
+  async pausePlayback(args: {
+    accessToken: string;
+    deviceId: string;
+  }): Promise<void> {
     const url = new URL(`${this.baseUrl}/me/player/pause`);
     url.searchParams.set("device_id", args.deviceId);
-    await this.request(url, args.accessToken, { method: "PUT" }, { parseJson: false });
+    await this.request(
+      url,
+      args.accessToken,
+      { method: "PUT" },
+      { parseJson: false },
+    );
   }
 
-  async resumePlayback(args: { accessToken: string; deviceId: string }): Promise<void> {
+  async resumePlayback(args: {
+    accessToken: string;
+    deviceId: string;
+  }): Promise<void> {
     const url = new URL(`${this.baseUrl}/me/player/play`);
     url.searchParams.set("device_id", args.deviceId);
-    await this.request(url, args.accessToken, { method: "PUT" }, { parseJson: false });
+    await this.request(
+      url,
+      args.accessToken,
+      { method: "PUT" },
+      { parseJson: false },
+    );
   }
 
   private async request<T>(
@@ -301,7 +420,7 @@ export class OfficialSpotifyAdapter implements SpotifyAdapter {
     accessToken: string,
     init: RequestInit = {},
     options: { parseJson?: boolean } = {},
-    attempt = 0
+    attempt = 0,
   ): Promise<T> {
     const parseJson = options.parseJson ?? true;
     const response = await this.fetchImpl(url, {
@@ -310,22 +429,27 @@ export class OfficialSpotifyAdapter implements SpotifyAdapter {
       headers: {
         Authorization: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
-        ...(init.headers ?? {})
-      }
+        ...(init.headers ?? {}),
+      },
     });
 
     if (response.status === 429 && attempt < 4) {
-      const header = Number(response.headers.get("Retry-After") ?? String(attempt + 1));
+      const header = Number(
+        response.headers.get("Retry-After") ?? String(attempt + 1),
+      );
       // Cap the backoff so a large Retry-After can't stall a search far past its timeout budget,
       // and make the wait abortable so the per-search AbortSignal actually bounds total time.
-      const retryAfterMs = Math.min(Math.max(1, Number.isFinite(header) ? header : 1), 5) * 1000;
+      const retryAfterMs =
+        Math.min(Math.max(1, Number.isFinite(header) ? header : 1), 5) * 1000;
       await this.waitUnlessAborted(retryAfterMs, init.signal);
       return this.request(url, accessToken, init, options, attempt + 1);
     }
 
     if (!response.ok) {
       const details = await response.text();
-      throw new Error(`Spotify request failed with ${response.status}: ${details}`);
+      throw new Error(
+        `Spotify request failed with ${response.status}: ${details}`,
+      );
     }
 
     // Fire-and-forget commands (transfer/play/queue) ignore the body; never parse it,
@@ -342,13 +466,16 @@ export class OfficialSpotifyAdapter implements SpotifyAdapter {
       return JSON.parse(raw) as T;
     } catch {
       throw new Error(
-        `Spotify request to ${url.pathname} returned ${response.status} with a non-JSON body: ${JSON.stringify(raw.slice(0, 80))}`
+        `Spotify request to ${url.pathname} returned ${response.status} with a non-JSON body: ${JSON.stringify(raw.slice(0, 80))}`,
       );
     }
   }
 
   /** Waits `ms`, but rejects immediately if the request's abort signal fires (or is already aborted). */
-  private async waitUnlessAborted(ms: number, signal?: AbortSignal | null): Promise<void> {
+  private async waitUnlessAborted(
+    ms: number,
+    signal?: AbortSignal | null,
+  ): Promise<void> {
     if (signal?.aborted) {
       throw new Error("Spotify request aborted before rate-limit retry.");
     }
@@ -359,10 +486,17 @@ export class OfficialSpotifyAdapter implements SpotifyAdapter {
     await Promise.race([
       this.wait(ms),
       new Promise<never>((_resolve, reject) => {
-        signal.addEventListener("abort", () => reject(new Error("Spotify request aborted during rate-limit backoff.")), {
-          once: true
-        });
-      })
+        signal.addEventListener(
+          "abort",
+          () =>
+            reject(
+              new Error("Spotify request aborted during rate-limit backoff."),
+            ),
+          {
+            once: true,
+          },
+        );
+      }),
     ]);
   }
 }
@@ -371,7 +505,10 @@ export function isSpotifyDeviceNotFoundError(error: unknown): boolean {
   if (!(error instanceof Error)) {
     return false;
   }
-  return error.message.includes("404") && error.message.toLowerCase().includes("device not found");
+  return (
+    error.message.includes("404") &&
+    error.message.toLowerCase().includes("device not found")
+  );
 }
 
 export function isSpotifyRateLimitError(error: unknown): boolean {
@@ -386,8 +523,13 @@ export class MockSpotifyAdapter implements SpotifyAdapter {
   private active = new Map<string, string>();
   addTracksToPlaylistCalls: { playlistId: string; uris: string[] }[] = [];
 
-  async searchTracks(args: { query: string; market: string; limit: number }): Promise<SpotifyTrackSearchResult[]> {
-    const [artist = "Unknown Artist", title = args.query] = args.query.split(" - ");
+  async searchTracks(args: {
+    query: string;
+    market: string;
+    limit: number;
+  }): Promise<SpotifyTrackSearchResult[]> {
+    const [artist = "Unknown Artist", title = args.query] =
+      args.query.split(" - ");
     return Array.from({ length: args.limit }, (_, index) => {
       const normalized = normalizeText(`${artist}-${title}-${index}`);
       const id = `mock-spotify-${normalized}`;
@@ -396,11 +538,17 @@ export class MockSpotifyAdapter implements SpotifyAdapter {
         uri: `spotify:track:${id}`,
         title: index === 0 ? title.trim() : `${title.trim()} (${index + 1})`,
         artist: artist.trim(),
-        isrc: index === 0 ? `MOCK${normalizeText(args.query).slice(0, 8).toUpperCase()}` : undefined,
+        isrc:
+          index === 0
+            ? `MOCK${normalizeText(args.query).slice(0, 8).toUpperCase()}`
+            : undefined,
         isPlayable: true,
         market: args.market,
         externalUrl: `https://open.spotify.com/track/${id}`,
-        albumArtUrl: `https://i.scdn.co/image/${id}`
+        albumArtUrl: `https://i.scdn.co/image/${id}`,
+        popularity: Math.max(30, 86 - index * 4),
+        explicit: false,
+        releaseDate: index < 3 ? "2024-01-01" : "2018-01-01",
       };
     });
   }
@@ -412,18 +560,38 @@ export class MockSpotifyAdapter implements SpotifyAdapter {
     signal?: AbortSignal;
   }): Promise<SpotifyArtist[]> {
     const artists: SpotifyArtist[] = [
-      { id: "mock-bonobo", name: "Bonobo", genres: ["electronica", "downtempo", "trip hop"] },
-      { id: "mock-tame-impala", name: "Tame Impala", genres: ["psychedelic rock", "indie"] },
-      { id: "mock-khruangbin", name: "Khruangbin", genres: ["funk", "psychedelic rock"] },
+      {
+        id: "mock-bonobo",
+        name: "Bonobo",
+        genres: ["electronica", "downtempo", "trip hop"],
+      },
+      {
+        id: "mock-tame-impala",
+        name: "Tame Impala",
+        genres: ["psychedelic rock", "indie"],
+      },
+      {
+        id: "mock-khruangbin",
+        name: "Khruangbin",
+        genres: ["funk", "psychedelic rock"],
+      },
       { id: "mock-tycho", name: "Tycho", genres: ["electronica", "chillwave"] },
-      { id: "mock-the-war-on-drugs", name: "The War on Drugs", genres: ["indie", "heartland rock"] }
+      {
+        id: "mock-the-war-on-drugs",
+        name: "The War on Drugs",
+        genres: ["indie", "heartland rock"],
+      },
     ];
-    return typeof args?.limit === "number" ? artists.slice(0, args.limit) : artists;
+    return typeof args?.limit === "number"
+      ? artists.slice(0, args.limit)
+      : artists;
   }
 
   async transferPlayback(): Promise<void> {}
 
-  async resolvePlaybackDeviceId(args: { preferredDeviceId: string }): Promise<string> {
+  async resolvePlaybackDeviceId(args: {
+    preferredDeviceId: string;
+  }): Promise<string> {
     return args.preferredDeviceId;
   }
 
@@ -431,7 +599,10 @@ export class MockSpotifyAdapter implements SpotifyAdapter {
 
   async skipToPrevious(): Promise<void> {}
 
-  async startPlayback(args: { deviceId: string; uris: string[] }): Promise<void> {
+  async startPlayback(args: {
+    deviceId: string;
+    uris: string[];
+  }): Promise<void> {
     if (args.uris[0]) {
       this.active.set(args.deviceId, args.uris[0]);
     }
@@ -448,7 +619,10 @@ export class MockSpotifyAdapter implements SpotifyAdapter {
       activeProviderTrackId: activeProviderUri?.split(":").pop(),
       activeProviderUri,
       isPlaying: Boolean(activeProviderUri),
-      queuedProviderTrackIds: [...this.queued.values()].flat().map((uri) => uri.split(":").pop()).filter((id): id is string => Boolean(id))
+      queuedProviderTrackIds: [...this.queued.values()]
+        .flat()
+        .map((uri) => uri.split(":").pop())
+        .filter((id): id is string => Boolean(id)),
     };
   }
 
@@ -461,19 +635,39 @@ export class MockSpotifyAdapter implements SpotifyAdapter {
     return {
       id,
       name: args.name,
-      url: `https://open.spotify.com/playlist/${id}`
+      url: `https://open.spotify.com/playlist/${id}`,
     };
   }
 
-  async addTracksToPlaylist(args: { accessToken: string; playlistId: string; uris: string[] }): Promise<void> {
+  async addTracksToPlaylist(args: {
+    accessToken: string;
+    playlistId: string;
+    uris: string[];
+  }): Promise<void> {
     if (args.uris.length === 0) return;
-    this.addTracksToPlaylistCalls.push({ playlistId: args.playlistId, uris: args.uris });
+    this.addTracksToPlaylistCalls.push({
+      playlistId: args.playlistId,
+      uris: args.uris,
+    });
   }
 
   async listDevices(): Promise<SpotifyDevice[]> {
     return [
-      { id: "mock-webplayer", name: "AI Journey DJ (Browser)", type: "Computer", isActive: true, isRestricted: false, volumePercent: 85 },
-      { id: "mock-tesla", name: "Tesla Model Y", type: "Automobile", isActive: false, isRestricted: false }
+      {
+        id: "mock-webplayer",
+        name: "AI Journey DJ (Browser)",
+        type: "Computer",
+        isActive: true,
+        isRestricted: false,
+        volumePercent: 85,
+      },
+      {
+        id: "mock-tesla",
+        name: "Tesla Model Y",
+        type: "Automobile",
+        isActive: false,
+        isRestricted: false,
+      },
     ];
   }
 
@@ -511,10 +705,12 @@ export interface SpotifyResolverOptions {
 export class SpotifyResolver {
   constructor(
     private readonly adapter: SpotifyAdapter,
-    private readonly options: SpotifyResolverOptions
+    private readonly options: SpotifyResolverOptions,
   ) {}
 
-  async resolveCandidates(candidates: SongCandidate[]): Promise<ResolvedTrack[]> {
+  async resolveCandidates(
+    candidates: SongCandidate[],
+  ): Promise<ResolvedTrack[]> {
     const resolved: ResolvedTrack[] = [];
     const target = this.options.targetResolveCount ?? 5;
     const timeoutMs = this.options.searchTimeoutMs ?? 8_000;
@@ -525,14 +721,16 @@ export class SpotifyResolver {
       }
 
       const candidate = candidates[index];
-      const query = candidate.isrc ? `isrc:${candidate.isrc}` : `${candidate.artist} - ${candidate.title}`;
+      const query = candidate.isrc
+        ? `isrc:${candidate.isrc}`
+        : `${candidate.artist} - ${candidate.title}`;
       const cacheKey = `${this.options.market}:${query.toLowerCase()}`;
 
       // Cache hit (resolved track) or cached "no match" (null) -> skip the Spotify API call.
       const cached = this.options.cache?.get(cacheKey);
       if (cached !== undefined) {
         if (cached) {
-          resolved.push(cached);
+          resolved.push(withCandidateMetadata(cached, candidate));
         }
         continue;
       }
@@ -544,7 +742,7 @@ export class SpotifyResolver {
           query,
           market: this.options.market,
           limit: 10,
-          signal: AbortSignal.timeout(timeoutMs)
+          signal: AbortSignal.timeout(timeoutMs),
         });
         const best = bestSpotifyMatch(candidate, results);
         const resolvedTrack: ResolvedTrack | null =
@@ -560,8 +758,16 @@ export class SpotifyResolver {
                 artist: best.track.artist,
                 title: best.track.title,
                 isrc: best.track.isrc,
+                popularity: best.track.popularity ?? candidate.popularity,
+                explicit: best.track.explicit ?? candidate.explicit,
+                releaseDate: best.track.releaseDate ?? candidate.releaseDate,
+                chartRank: candidate.chartRank,
+                chartPlaycount: candidate.chartPlaycount,
+                chartCountry: candidate.chartCountry,
+                chartSource: candidate.chartSource,
+                moodTags: candidate.moodTags,
                 matchConfidence: best.confidence,
-                matchReason: best.reason
+                matchReason: best.reason,
               }
             : null;
         // Cache hit and miss alike, so the same song is never searched twice over a drive.
@@ -574,7 +780,7 @@ export class SpotifyResolver {
           artist: candidate.artist,
           title: candidate.title,
           ms: Date.now() - startedAt,
-          ok: true
+          ok: true,
         });
       } catch (error) {
         this.options.onSearch?.({
@@ -583,7 +789,7 @@ export class SpotifyResolver {
           title: candidate.title,
           ms: Date.now() - startedAt,
           ok: false,
-          error: error instanceof Error ? error.message : String(error)
+          error: error instanceof Error ? error.message : String(error),
         });
       }
     }
@@ -592,27 +798,71 @@ export class SpotifyResolver {
   }
 }
 
+function withCandidateMetadata(
+  track: ResolvedTrack,
+  candidate: SongCandidate,
+): ResolvedTrack {
+  return {
+    ...track,
+    popularity: track.popularity ?? candidate.popularity,
+    explicit: track.explicit ?? candidate.explicit,
+    releaseDate: track.releaseDate ?? candidate.releaseDate,
+    chartRank: track.chartRank ?? candidate.chartRank,
+    chartPlaycount: track.chartPlaycount ?? candidate.chartPlaycount,
+    chartCountry: track.chartCountry ?? candidate.chartCountry,
+    chartSource: track.chartSource ?? candidate.chartSource,
+    moodTags: track.moodTags ?? candidate.moodTags,
+  };
+}
+
 export function bestSpotifyMatch(
   candidate: SongCandidate,
-  results: SpotifyTrackSearchResult[]
-): { track: SpotifyTrackSearchResult; confidence: number; reason: string } | undefined {
+  results: SpotifyTrackSearchResult[],
+):
+  | { track: SpotifyTrackSearchResult; confidence: number; reason: string }
+  | undefined {
   const candidateArtist = normalizeText(candidate.artist);
   const candidateTitle = normalizeText(candidate.title);
-  let best: { track: SpotifyTrackSearchResult; confidence: number; reason: string } | undefined;
+  let best:
+    | { track: SpotifyTrackSearchResult; confidence: number; reason: string }
+    | undefined;
 
   for (const track of results) {
     if (track.isPlayable === false) continue;
 
     const artist = normalizeText(track.artist);
     const title = normalizeText(track.title);
-    const artistMatch = artist.includes(candidateArtist) || candidateArtist.includes(artist);
+    const artistMatch =
+      artist.includes(candidateArtist) || candidateArtist.includes(artist);
     const titleMatch = title === candidateTitle;
-    const titleContains = title.includes(candidateTitle) || candidateTitle.includes(title);
-    const isrcMatch = Boolean(candidate.isrc && track.isrc && candidate.isrc === track.isrc);
+    const titleContains =
+      title.includes(candidateTitle) || candidateTitle.includes(title);
+    const isrcMatch = Boolean(
+      candidate.isrc && track.isrc && candidate.isrc === track.isrc,
+    );
 
-    const confidence = isrcMatch ? 0.99 : artistMatch && titleMatch ? 0.94 : artistMatch && titleContains ? 0.84 : titleMatch ? 0.72 : 0.4;
-    const reason = isrcMatch ? "isrc match" : artistMatch && titleMatch ? "artist and title match" : artistMatch && titleContains ? "artist and fuzzy title match" : "low-confidence fuzzy match";
-    if (!best || confidence > best.confidence) {
+    const confidence = isrcMatch
+      ? 0.99
+      : artistMatch && titleMatch
+        ? 0.94
+        : artistMatch && titleContains
+          ? 0.84
+          : titleMatch
+            ? 0.72
+            : 0.4;
+    const reason = isrcMatch
+      ? "isrc match"
+      : artistMatch && titleMatch
+        ? "artist and title match"
+        : artistMatch && titleContains
+          ? "artist and fuzzy title match"
+          : "low-confidence fuzzy match";
+    const popularityTieBreak = (track.popularity ?? 0) / 10_000;
+    const adjusted = confidence + popularityTieBreak;
+    if (
+      !best ||
+      adjusted > best.confidence + (best.track.popularity ?? 0) / 10_000
+    ) {
       best = { track, confidence, reason };
     }
   }
@@ -630,7 +880,11 @@ export function queueTracksForBuffer<T extends ResolvedTrack>(
     excludeProviderTrackIds?: Set<string>;
     /** Song keys already consumed this journey — blocks other versions of the same song. */
     excludeSongKeys?: Set<string>;
-  }
+    /** Artist keys already consumed or currently in use. Preferred distinctness, not a hard fail when the pool is small. */
+    excludeArtistKeys?: Set<string>;
+    preferDistinctArtists?: boolean;
+    cleanRequired?: boolean;
+  },
 ): T[] {
   const target = args.targetBufferSize ?? 5;
   const seenIds = new Set(args.alreadyQueuedProviderIds);
@@ -641,21 +895,27 @@ export function queueTracksForBuffer<T extends ResolvedTrack>(
     seenIds.add(id);
   }
   const seenKeys = new Set(args.excludeSongKeys ?? []);
-
+  const seenArtists = new Set(args.excludeArtistKeys ?? []);
   const selected: T[] = [];
-  for (const track of resolvedTracks) {
-    if (track.provider !== "spotify") continue;
-    if (track.isPlayable === false) continue;
-    if (!track.providerUri) continue;
-    if (seenIds.has(track.providerTrackId)) continue;
-    const key = songKey(track.artist, track.title);
-    if (seenKeys.has(key)) continue;
-    seenIds.add(track.providerTrackId);
-    seenKeys.add(key);
-    selected.push(track);
-    if (selected.length === target) break;
+  const passes = args.preferDistinctArtists ? [true, false] : [false];
+  for (const distinctPass of passes) {
+    for (const track of resolvedTracks) {
+      if (track.provider !== "spotify") continue;
+      if (track.isPlayable === false) continue;
+      if (args.cleanRequired && track.explicit === true) continue;
+      if (!track.providerUri) continue;
+      if (seenIds.has(track.providerTrackId)) continue;
+      const key = songKey(track.artist, track.title);
+      if (seenKeys.has(key)) continue;
+      const artist = normalizeText(track.artist);
+      if (distinctPass && seenArtists.has(artist)) continue;
+      seenIds.add(track.providerTrackId);
+      seenKeys.add(key);
+      seenArtists.add(artist);
+      selected.push(track);
+      if (selected.length === target) return selected;
+    }
   }
-
   return selected;
 }
 
@@ -666,13 +926,23 @@ function mapSpotifyTrack(item: any, market?: string): SpotifyTrackSearchResult {
     uri: item.uri,
     title: item.name ?? "Unknown title",
     artist: Array.isArray(item.artists)
-      ? item.artists.map((artist: { name?: string }) => artist.name).filter(Boolean).join(", ")
+      ? item.artists
+          .map((artist: { name?: string }) => artist.name)
+          .filter(Boolean)
+          .join(", ")
       : "Unknown artist",
     isrc: item.external_ids?.isrc,
     album: item.album?.name,
     isPlayable: item.is_playable ?? true,
     market,
     externalUrl: item.external_urls?.spotify,
-    albumArtUrl: images[0]?.url
+    albumArtUrl: images[0]?.url,
+    popularity:
+      typeof item.popularity === "number" ? item.popularity : undefined,
+    explicit: typeof item.explicit === "boolean" ? item.explicit : undefined,
+    releaseDate:
+      typeof item.album?.release_date === "string"
+        ? item.album.release_date
+        : undefined,
   };
 }

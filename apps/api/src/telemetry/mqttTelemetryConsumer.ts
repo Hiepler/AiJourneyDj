@@ -5,7 +5,7 @@ import { normalizeFleetStream } from "@ai-journey-dj/telemetry";
 
 import type { AppConfig } from "../config/env.js";
 import type { JourneyService } from "../journeys/journeyService.js";
-import { makeGeocoder } from "./geocoder.js";
+import { makeGeocodeResolver, type GeocodeResult } from "./geocoder.js";
 import type { StreamLiveness } from "./streamSource.js";
 
 export interface StreamMessageDeps {
@@ -14,7 +14,10 @@ export interface StreamMessageDeps {
   topicBase?: string;
   state?: FleetMqttState;
   appSecret: string;
-  geocode: (lat: number, lon: number) => Promise<string | undefined>;
+  geocode: (
+    lat: number,
+    lon: number,
+  ) => Promise<string | GeocodeResult | undefined>;
   ingest: (event: NormalizedTelemetryEvent) => Promise<void>;
   live: StreamLiveness;
 }
@@ -22,7 +25,11 @@ export interface StreamMessageDeps {
 export class FleetMqttState {
   private readonly byVin = new Map<string, Record<string, unknown>>();
 
-  mergeField(vin: string, field: string, value: unknown): Record<string, unknown> {
+  mergeField(
+    vin: string,
+    field: string,
+    value: unknown,
+  ): Record<string, unknown> {
     const current = this.byVin.get(vin) ?? { vin };
     current.vin = vin;
     current[field] = value;
@@ -40,7 +47,10 @@ function topicBase(topic: string): string {
   return topic.replace(/\/#$/, "").replace(/\/+$/, "");
 }
 
-function parseFleetMetricTopic(topic: string, base: string): { vin: string; field: string } | undefined {
+function parseFleetMetricTopic(
+  topic: string,
+  base: string,
+): { vin: string; field: string } | undefined {
   const normalizedTopic = topic.replace(/^\/+|\/+$/g, "");
   const normalizedBase = topicBase(base).replace(/^\/+|\/+$/g, "");
   if (!normalizedTopic.startsWith(`${normalizedBase}/`)) return undefined;
@@ -50,7 +60,9 @@ function parseFleetMetricTopic(topic: string, base: string): { vin: string; fiel
   return { vin: parts[0], field: parts.slice(2).join("/") };
 }
 
-function messagePayload(deps: StreamMessageDeps): Record<string, unknown> | undefined {
+function messagePayload(
+  deps: StreamMessageDeps,
+): Record<string, unknown> | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(Buffer.from(deps.raw).toString("utf8"));
@@ -71,13 +83,26 @@ function messagePayload(deps: StreamMessageDeps): Record<string, unknown> | unde
 }
 
 /** Pure-ish handler for one streaming message. Best-effort: never throws on bad input. */
-export async function handleStreamMessage(deps: StreamMessageDeps): Promise<void> {
+export async function handleStreamMessage(
+  deps: StreamMessageDeps,
+): Promise<void> {
   const payload = messagePayload(deps);
   if (!payload) return; // ignore malformed/non-vehicle messages
 
-  const { coordinates, ...event } = normalizeFleetStream(payload, deps.appSecret);
+  const { coordinates, ...event } = normalizeFleetStream(
+    payload,
+    deps.appSecret,
+  );
   if (coordinates) {
-    event.coarseRegion = await deps.geocode(coordinates.lat, coordinates.lon);
+    const geocoded = await deps.geocode(coordinates.lat, coordinates.lon);
+    if (typeof geocoded === "string") {
+      event.coarseRegion = geocoded;
+    } else if (geocoded) {
+      event.coarseRegion = geocoded.coarseRegion;
+      event.countryName = geocoded.countryName;
+      event.countryCode = geocoded.countryCode;
+      event.geoSource = geocoded.geoSource;
+    }
   }
   deps.live.mark(event.timestampIso);
   await deps.ingest(event);
@@ -92,10 +117,10 @@ export function startMqttTelemetryConsumer(
   config: AppConfig,
   journeyService: JourneyService,
   live: StreamLiveness,
-  logger: { warn: (obj: Record<string, unknown>, msg?: string) => void }
+  logger: { warn: (obj: Record<string, unknown>, msg?: string) => void },
 ): MqttConsumerHandle | undefined {
   if (!config.TESLA_TELEMETRY_ENABLED) return undefined;
-  const geocode = makeGeocoder({ baseUrl: config.GEOCODER_URL });
+  const geocode = makeGeocodeResolver({ baseUrl: config.GEOCODER_URL });
   const base = topicBase(config.MQTT_TOPIC);
   const state = new FleetMqttState();
   const client = mqtt.connect(config.MQTT_URL, { reconnectPeriod: 5000 });
@@ -111,8 +136,13 @@ export function startMqttTelemetryConsumer(
       appSecret: config.APP_SECRET,
       geocode,
       ingest: (event) => journeyService.ingestTelemetry(event),
-      live
-    }).catch((error) => logger.warn({ err: error instanceof Error ? error.message : String(error) }, "mqtt.ingest_error"));
+      live,
+    }).catch((error) =>
+      logger.warn(
+        { err: error instanceof Error ? error.message : String(error) },
+        "mqtt.ingest_error",
+      ),
+    );
   });
 
   return { stop: async () => void (await client.endAsync()) };
