@@ -8,11 +8,14 @@ import type {
   ResolvedTrack,
   SongCandidate,
   StreamingProvider,
-  TasteProfile
+  TasteProfile,
 } from "@ai-journey-dj/core";
-import { songKey } from "@ai-journey-dj/core";
+import { normalizeText, songKey } from "@ai-journey-dj/core";
 import { derivePhase } from "@ai-journey-dj/telemetry";
-import { reconcilePlaybackModel, shouldRegenerate } from "../playback/reconcile.js";
+import {
+  reconcilePlaybackModel,
+  shouldRegenerate,
+} from "../playback/reconcile.js";
 import { TidalResolver, type TidalAdapter } from "@ai-journey-dj/tidal";
 import {
   SpotifyResolver,
@@ -20,22 +23,41 @@ import {
   isSpotifyRateLimitError,
   queueTracksForBuffer,
   type SpotifyAdapter,
-  type SpotifyDevice
+  type SpotifyDevice,
 } from "@ai-journey-dj/spotify";
-import type { OpenMusicClient, NoopOpenMusicClient } from "@ai-journey-dj/open-music";
+import type {
+  OpenMusicClient,
+  NoopOpenMusicClient,
+} from "@ai-journey-dj/open-music";
 import type { SongScout } from "@ai-journey-dj/recommendation";
 import {
   assessDriveState,
+  buildRecommendationPolicy,
   deriveTasteProfile,
   fallbackCandidates,
+  lastfmTracksToCandidates,
+  rankResolvedTracksForPolicy,
   selectRollingBatch,
-  stabilizeDriveMode
+  stabilizeDriveMode,
+  type LastfmChartClient,
+  type RecommendationPolicy,
 } from "@ai-journey-dj/recommendation";
 
 /** Default familiarity↔discovery mix for a new drive — between "light" and "balanced". */
 export const DEFAULT_TASTE_WEIGHT = 0.4;
 /** Hard cap on the top-artists fetch so taste loading can never block a journey. */
 const TASTE_FETCH_TIMEOUT_MS = 8_000;
+const COUNTRY_NAME_BY_CODE: Record<string, string> = {
+  AT: "Austria",
+  CH: "Switzerland",
+  DE: "Germany",
+  ES: "Spain",
+  FR: "France",
+  GB: "United Kingdom",
+  IT: "Italy",
+  NL: "Netherlands",
+  US: "United States",
+};
 
 import type { AppConfig } from "../config/env.js";
 import { contextFromJourney, type Store } from "../db/store.js";
@@ -60,12 +82,15 @@ export interface JourneyLogger {
 const noopLogger: JourneyLogger = {
   info() {},
   warn() {},
-  error() {}
+  error() {},
 };
 
 export class JourneyService {
   /** One in-flight analyze per journey; global chain avoids Spotify 429 dogpiles. */
-  private readonly analyzeByJourney = new Map<string, Promise<PlaylistUpdate>>();
+  private readonly analyzeByJourney = new Map<
+    string,
+    Promise<PlaylistUpdate>
+  >();
   private analyzeGlobalChain: Promise<void> = Promise.resolve();
 
   constructor(
@@ -77,7 +102,8 @@ export class JourneyService {
     private readonly spotifyAdapter: SpotifyAdapter,
     private readonly songScout: SongScout,
     private readonly openMusic: OpenMusicClient | NoopOpenMusicClient,
-    private readonly logger: JourneyLogger = noopLogger
+    private readonly lastfmCharts?: LastfmChartClient,
+    private readonly logger: JourneyLogger = noopLogger,
   ) {}
 
   async startJourney(input: StartJourneyInput): Promise<JourneyRecord> {
@@ -94,11 +120,14 @@ export class JourneyService {
       status: "active",
       tasteWeight: DEFAULT_TASTE_WEIGHT,
       spotifyDeviceId: provider === "spotify" ? input.deviceId : undefined,
-      createdAtIso
+      createdAtIso,
     };
 
     this.store.createJourney(journey);
-    this.store.audit(id, "journey.created", "Journey started.", { destination: input.destination, provider });
+    this.store.audit(id, "journey.created", "Journey started.", {
+      destination: input.destination,
+      provider,
+    });
 
     if (provider === "tidal") {
       await this.ensureTidalPlaylist(id, input.destination);
@@ -110,7 +139,7 @@ export class JourneyService {
         status: input.deviceId ? "ready" : "idle",
         queuedTrackIds: [],
         targetBufferSize: 5,
-        lastHeartbeatAt: new Date().toISOString()
+        lastHeartbeatAt: new Date().toISOString(),
       });
     }
 
@@ -144,7 +173,11 @@ export class JourneyService {
       this.store.saveTelemetry(journey.id, event, phase);
       if (phase !== journey.phase) {
         this.store.updateJourneyPhase(journey.id, phase);
-        this.store.audit(journey.id, "telemetry.phase_changed", `Journey phase changed to ${phase}.`);
+        this.store.audit(
+          journey.id,
+          "telemetry.phase_changed",
+          `Journey phase changed to ${phase}.`,
+        );
         await this.analyzeJourney(journey.id, "phase-change");
         continue; // the phase re-curation already reflects the latest telemetry
       }
@@ -163,7 +196,7 @@ export class JourneyService {
 
     // recentTelemetry returns newest-first; sort to oldest→newest for the classifier.
     const recent = [...this.store.recentTelemetry(journeyId, 5)].sort(
-      (a, b) => Date.parse(a.timestampIso) - Date.parse(b.timestampIso)
+      (a, b) => Date.parse(a.timestampIso) - Date.parse(b.timestampIso),
     );
     if (recent.length === 0) return;
 
@@ -173,29 +206,47 @@ export class JourneyService {
     // snapshot the history is unknown → treat as neutral so a fresh mode genuinely needs two polls.
     const rawPrev =
       recent.length >= 2
-        ? assessDriveState(recent.slice(0, -1), recent[recent.length - 2].timestampIso)
+        ? assessDriveState(
+            recent.slice(0, -1),
+            recent[recent.length - 2].timestampIso,
+          )
         : { mode: "neutral" as const, reason: "", intensity: 0, signals: [] };
     const engagedPrev = journey.driveMode ?? "neutral";
-    const engagedNew = stabilizeDriveMode(engagedPrev, [rawPrev.mode, raw.mode], 2);
+    const engagedNew = stabilizeDriveMode(
+      engagedPrev,
+      [rawPrev.mode, raw.mode],
+      2,
+    );
 
     if (engagedNew === engagedPrev) return;
     this.store.updateJourneyDriveMode(journeyId, engagedNew);
-    this.store.audit(journeyId, "drive_mode.changed", `Adaptive Drive Mode → ${engagedNew}${raw.reason ? ` (${raw.reason})` : ""}.`, {
-      mode: engagedNew,
-      reason: raw.reason,
-      signals: raw.signals
-    });
+    this.store.audit(
+      journeyId,
+      "drive_mode.changed",
+      `Adaptive Drive Mode → ${engagedNew}${raw.reason ? ` (${raw.reason})` : ""}.`,
+      {
+        mode: engagedNew,
+        reason: raw.reason,
+        signals: raw.signals,
+      },
+    );
     try {
       await this.analyzeJourney(journeyId, `drive-state:${engagedNew}`);
     } catch (error) {
       this.logger.warn(
-        { journeyId, err: error instanceof Error ? error.message : String(error) },
-        "drive_mode.recurate_error"
+        {
+          journeyId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        "drive_mode.recurate_error",
       );
     }
   }
 
-  async analyzeJourney(journeyId: string, reason = "manual"): Promise<PlaylistUpdate> {
+  async analyzeJourney(
+    journeyId: string,
+    reason = "manual",
+  ): Promise<PlaylistUpdate> {
     const inFlight = this.analyzeByJourney.get(journeyId);
     if (inFlight) {
       return inFlight;
@@ -206,7 +257,7 @@ export class JourneyService {
       .then(() => this.analyzeJourneyBody(journeyId, reason));
     this.analyzeGlobalChain = run.then(
       () => undefined,
-      () => undefined
+      () => undefined,
     );
 
     const tracked = run.finally(() => {
@@ -218,14 +269,20 @@ export class JourneyService {
     return tracked;
   }
 
-  private async analyzeJourneyBody(journeyId: string, reason: string): Promise<PlaylistUpdate> {
+  private async analyzeJourneyBody(
+    journeyId: string,
+    reason: string,
+  ): Promise<PlaylistUpdate> {
     const journey = this.getJourneyOrThrow(journeyId);
     if (journey.status !== "active") {
       throw new Error("Cannot analyze a stopped journey.");
     }
 
     const startedAt = Date.now();
-    this.logger.info({ journeyId, reason, provider: journey.provider }, "journey.analyze.start");
+    this.logger.info(
+      { journeyId, reason, provider: journey.provider },
+      "journey.analyze.start",
+    );
     this.store.clearAuditEvents(journeyId, "analysis.failed");
     try {
       const update =
@@ -237,54 +294,88 @@ export class JourneyService {
         this.store.clearAuditEvents(journeyId, "analysis.failed");
       }
       this.logger.info(
-        { journeyId, reason, status: update.status, batchSize: update.batchSize, trackCount, ms: Date.now() - startedAt },
-        "journey.analyze.done"
+        {
+          journeyId,
+          reason,
+          status: update.status,
+          batchSize: update.batchSize,
+          trackCount,
+          ms: Date.now() - startedAt,
+        },
+        "journey.analyze.done",
       );
       return update;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.logger.error({ journeyId, reason, ms: Date.now() - startedAt, err: message }, "journey.analyze.failed");
+      this.logger.error(
+        { journeyId, reason, ms: Date.now() - startedAt, err: message },
+        "journey.analyze.failed",
+      );
       this.store.audit(journeyId, "analysis.failed", message, { reason });
       throw error;
     }
   }
 
-  async setPhase(journeyId: string, phase: JourneyPhase): Promise<JourneyRecord> {
+  async setPhase(
+    journeyId: string,
+    phase: JourneyPhase,
+  ): Promise<JourneyRecord> {
     const journey = this.getJourneyOrThrow(journeyId);
     if (journey.status !== "active") {
       throw new Error("Cannot change the phase of a stopped journey.");
     }
     this.store.updateJourneyPhase(journeyId, phase);
-    this.store.audit(journeyId, "phase.manual_override", `Drive phase manually set to ${phase}.`, { phase });
+    this.store.audit(
+      journeyId,
+      "phase.manual_override",
+      `Drive phase manually set to ${phase}.`,
+      { phase },
+    );
     await this.analyzeJourney(journeyId, "phase-override");
     return this.getJourneyOrThrow(journeyId);
   }
 
   /** Sets the familiarity↔discovery mix (0..1) and re-curates the queue around it. */
-  async setTasteWeight(journeyId: string, weight: number): Promise<JourneyRecord> {
+  async setTasteWeight(
+    journeyId: string,
+    weight: number,
+  ): Promise<JourneyRecord> {
     const journey = this.getJourneyOrThrow(journeyId);
     if (journey.status !== "active") {
       throw new Error("Cannot change the taste mix of a stopped journey.");
     }
     const clamped = Math.max(0, Math.min(1, weight));
     this.store.updateJourneyTasteWeight(journeyId, clamped);
-    this.store.audit(journeyId, "taste.weight_set", `Vibe mix set to ${Math.round(clamped * 100)}% familiar.`, {
-      tasteWeight: clamped
-    });
+    this.store.audit(
+      journeyId,
+      "taste.weight_set",
+      `Vibe mix set to ${Math.round(clamped * 100)}% familiar.`,
+      {
+        tasteWeight: clamped,
+      },
+    );
     await this.analyzeJourney(journeyId, "taste-override");
     return this.getJourneyOrThrow(journeyId);
   }
 
   /** Per-journey master switch for Adaptive Drive Mode. Disabling clears any engaged mode. */
-  async setAdaptiveMode(journeyId: string, enabled: boolean): Promise<JourneyRecord> {
+  async setAdaptiveMode(
+    journeyId: string,
+    enabled: boolean,
+  ): Promise<JourneyRecord> {
     const journey = this.getJourneyOrThrow(journeyId);
     this.store.setAdaptiveModeEnabled(journeyId, enabled);
     if (!enabled && journey.driveMode && journey.driveMode !== "neutral") {
       this.store.updateJourneyDriveMode(journeyId, "neutral");
     }
-    this.store.audit(journeyId, "drive_mode.toggled", `Adaptive Drive Mode ${enabled ? "enabled" : "disabled"}.`, {
-      enabled
-    });
+    this.store.audit(
+      journeyId,
+      "drive_mode.toggled",
+      `Adaptive Drive Mode ${enabled ? "enabled" : "disabled"}.`,
+      {
+        enabled,
+      },
+    );
     return this.getJourneyOrThrow(journeyId);
   }
 
@@ -292,7 +383,9 @@ export class JourneyService {
    * Loads the listener's taste profile (top artists → favored genres) for personalization.
    * Cached ~24h so the Spotify API is touched at most once/day; any failure degrades to no taste.
    */
-  private async loadTasteProfile(accessToken: string): Promise<TasteProfile | undefined> {
+  private async loadTasteProfile(
+    accessToken: string,
+  ): Promise<TasteProfile | undefined> {
     try {
       const cached = this.store.getCachedTasteProfile("local");
       if (cached) {
@@ -305,7 +398,7 @@ export class JourneyService {
         accessToken,
         timeRange: "medium_term",
         limit: 30,
-        signal: AbortSignal.timeout(TASTE_FETCH_TIMEOUT_MS)
+        signal: AbortSignal.timeout(TASTE_FETCH_TIMEOUT_MS),
       });
       if (artists.length === 0) {
         return undefined;
@@ -324,7 +417,7 @@ export class JourneyService {
     journeyId: string,
     deviceId: string,
     status: PlaybackSession["status"] = "ready",
-    options: { syncOnly?: boolean } = {}
+    options: { syncOnly?: boolean } = {},
   ): Promise<PlaybackSession> {
     const journey = this.getJourneyOrThrow(journeyId);
     if (journey.provider !== "spotify") {
@@ -341,11 +434,18 @@ export class JourneyService {
       activeTrack: existing?.activeTrack,
       queuedTrackIds: existing?.queuedTrackIds ?? [],
       targetBufferSize: 5,
-      lastHeartbeatAt: new Date().toISOString()
+      lastHeartbeatAt: new Date().toISOString(),
     });
-    this.store.audit(journeyId, "spotify.device_ready", "Spotify Web Playback device registered.", { deviceId, status });
+    this.store.audit(
+      journeyId,
+      "spotify.device_ready",
+      "Spotify Web Playback device registered.",
+      { deviceId, status },
+    );
 
-    const hasTracks = this.store.listResolvedTracks(journeyId).some((track) => track.provider === "spotify");
+    const hasTracks = this.store
+      .listResolvedTracks(journeyId)
+      .some((track) => track.provider === "spotify");
     if (options.syncOnly && hasTracks) {
       return this.syncExistingSpotifyPlayback(journeyId, deviceId);
     }
@@ -354,11 +454,17 @@ export class JourneyService {
     return this.store.getPlaybackSession(journeyId) as PlaybackSession;
   }
 
-  async syncExistingSpotifyPlayback(journeyId: string, deviceId: string): Promise<PlaybackSession> {
+  async syncExistingSpotifyPlayback(
+    journeyId: string,
+    deviceId: string,
+  ): Promise<PlaybackSession> {
     const accessToken = await this.spotifyAuth.getAccessToken();
-    const stored = this.store.listResolvedTracks(journeyId).filter((track) => track.provider === "spotify");
+    const stored = this.store
+      .listResolvedTracks(journeyId)
+      .filter((track) => track.provider === "spotify");
     const session = this.store.getPlaybackSession(journeyId);
-    const { activeTrack, queueTracks, queuedTrackIds } = this.pickSpotifyPlaybackTracks(stored, session);
+    const { activeTrack, queueTracks, queuedTrackIds } =
+      this.pickSpotifyPlaybackTracks(stored, session);
 
     const playbackApplied = await this.syncSpotifyPlayback({
       journeyId,
@@ -366,10 +472,12 @@ export class JourneyService {
       deviceId,
       activeTrack,
       queueTracks,
-      shouldStart: true
+      shouldStart: true,
     });
 
-    const playedActiveTrack = playbackApplied.deviceReachable ? activeTrack : (session?.activeTrack ?? activeTrack);
+    const playedActiveTrack = playbackApplied.deviceReachable
+      ? activeTrack
+      : (session?.activeTrack ?? activeTrack);
     const status = playbackApplied.deviceReachable
       ? playbackApplied.rateLimited
         ? "degraded"
@@ -385,7 +493,7 @@ export class JourneyService {
       queuedTrackIds,
       playedTrackIds: session?.playedTrackIds ?? [],
       targetBufferSize: 5,
-      lastHeartbeatAt: new Date().toISOString()
+      lastHeartbeatAt: new Date().toISOString(),
     });
 
     if (playbackApplied.rateLimited) {
@@ -393,7 +501,7 @@ export class JourneyService {
         journeyId,
         "spotify.rate_limited",
         "Spotify rate limit hit while syncing playback; try Play audio again in a few seconds.",
-        { deviceId }
+        { deviceId },
       );
     }
 
@@ -403,7 +511,7 @@ export class JourneyService {
   async skipSpotifyTrack(
     journeyId: string,
     direction: "next" | "previous",
-    deviceId?: string
+    deviceId?: string,
   ): Promise<PlaybackSession> {
     const journey = this.getJourneyOrThrow(journeyId);
     if (journey.provider !== "spotify") {
@@ -414,30 +522,42 @@ export class JourneyService {
     }
 
     const session = this.store.getPlaybackSession(journeyId);
-    const stored = this.store.listResolvedTracks(journeyId).filter((track) => track.provider === "spotify");
+    const stored = this.store
+      .listResolvedTracks(journeyId)
+      .filter((track) => track.provider === "spotify");
     const playedIds = session?.playedTrackIds ?? [];
-    const { activeTrack, queueTracks } = this.pickSpotifyPlaybackTracks(stored, session);
-    const effectiveDeviceId = deviceId ?? journey.spotifyDeviceId ?? session?.deviceId;
+    const { activeTrack, queueTracks } = this.pickSpotifyPlaybackTracks(
+      stored,
+      session,
+    );
+    const effectiveDeviceId =
+      deviceId ?? journey.spotifyDeviceId ?? session?.deviceId;
     const accessToken = await this.spotifyAuth.getAccessToken();
 
     if (direction === "next") {
       if (queueTracks.length === 0) {
         await this.analyzeJourney(journeyId, "skip-next");
         const refreshed = this.store.getPlaybackSession(journeyId);
-        const refreshedStored = this.store.listResolvedTracks(journeyId).filter((track) => track.provider === "spotify");
-        const picked = this.pickSpotifyPlaybackTracks(refreshedStored, refreshed);
+        const refreshedStored = this.store
+          .listResolvedTracks(journeyId)
+          .filter((track) => track.provider === "spotify");
+        const picked = this.pickSpotifyPlaybackTracks(
+          refreshedStored,
+          refreshed,
+        );
         if (effectiveDeviceId && picked.activeTrack) {
-          const resolvedDeviceId = await this.spotifyAdapter.resolvePlaybackDeviceId({
-            accessToken,
-            preferredDeviceId: effectiveDeviceId
-          });
+          const resolvedDeviceId =
+            await this.spotifyAdapter.resolvePlaybackDeviceId({
+              accessToken,
+              preferredDeviceId: effectiveDeviceId,
+            });
           await this.syncSpotifyPlayback({
             journeyId,
             accessToken,
             deviceId: resolvedDeviceId,
             activeTrack: picked.activeTrack,
             queueTracks: picked.queueTracks,
-            shouldStart: true
+            shouldStart: true,
           });
         }
         return this.store.getPlaybackSession(journeyId) as PlaybackSession;
@@ -445,7 +565,9 @@ export class JourneyService {
 
       const newActive = queueTracks[0];
       const newQueue = queueTracks.slice(1);
-      const newPlayed = activeTrack?.id ? [...playedIds, activeTrack.id] : playedIds;
+      const newPlayed = activeTrack?.id
+        ? [...playedIds, activeTrack.id]
+        : playedIds;
 
       if (effectiveDeviceId && newActive) {
         // Single source of truth: command Spotify to play THIS exact track and reset its context to
@@ -456,7 +578,7 @@ export class JourneyService {
           accessToken,
           deviceId: effectiveDeviceId,
           activeTrack: newActive,
-          queueTracks: newQueue
+          queueTracks: newQueue,
         });
         if (!applied.deviceReachable) {
           throw new Error("Could not skip to the next track on Spotify.");
@@ -472,11 +594,13 @@ export class JourneyService {
         queuedTrackIds: newQueue.map((track) => track.id),
         playedTrackIds: newPlayed,
         targetBufferSize: 5,
-        lastHeartbeatAt: new Date().toISOString()
+        lastHeartbeatAt: new Date().toISOString(),
       });
 
       if (newQueue.length < 4) {
-        void this.analyzeJourney(journeyId, "low-buffer").catch(() => undefined);
+        void this.analyzeJourney(journeyId, "low-buffer").catch(
+          () => undefined,
+        );
       }
     } else {
       if (playedIds.length === 0) {
@@ -490,12 +614,21 @@ export class JourneyService {
       }
 
       const newPlayed = playedIds.slice(0, -1);
-      const newQueueIds = [activeTrack?.id, ...queueTracks.map((track) => track.id)].filter(
-        (id): id is string => Boolean(id)
-      );
+      const newQueueIds = [
+        activeTrack?.id,
+        ...queueTracks.map((track) => track.id),
+      ].filter((id): id is string => Boolean(id));
       const newQueueTracks = newQueueIds
         .map((id) => stored.find((track) => track.id === id))
-        .filter((track): track is ResolvedTrack & { id: string; addedToPlaylist: boolean; savedToPlaylist: boolean } => Boolean(track));
+        .filter(
+          (
+            track,
+          ): track is ResolvedTrack & {
+            id: string;
+            addedToPlaylist: boolean;
+            savedToPlaylist: boolean;
+          } => Boolean(track),
+        );
 
       if (effectiveDeviceId) {
         // Single source of truth: play the exact previous track and reset Spotify's context to our
@@ -505,7 +638,7 @@ export class JourneyService {
           accessToken,
           deviceId: effectiveDeviceId,
           activeTrack: newActive,
-          queueTracks: newQueueTracks
+          queueTracks: newQueueTracks,
         });
         if (!applied.deviceReachable) {
           throw new Error("Could not skip to the previous track on Spotify.");
@@ -521,11 +654,13 @@ export class JourneyService {
         queuedTrackIds: newQueueIds.slice(0, 5),
         playedTrackIds: newPlayed,
         targetBufferSize: 5,
-        lastHeartbeatAt: new Date().toISOString()
+        lastHeartbeatAt: new Date().toISOString(),
       });
     }
 
-    this.store.audit(journeyId, "spotify.skip", `Skipped ${direction} track.`, { direction });
+    this.store.audit(journeyId, "spotify.skip", `Skipped ${direction} track.`, {
+      direction,
+    });
     return this.store.getPlaybackSession(journeyId) as PlaybackSession;
   }
 
@@ -535,7 +670,10 @@ export class JourneyService {
       const accessToken = await this.spotifyAuth.getAccessToken();
       return await this.spotifyAdapter.listDevices({ accessToken });
     } catch (error) {
-      this.logger.warn({ err: error instanceof Error ? error.message : String(error) }, "spotify.devices.failed");
+      this.logger.warn(
+        { err: error instanceof Error ? error.message : String(error) },
+        "spotify.devices.failed",
+      );
       return [];
     }
   }
@@ -543,30 +681,47 @@ export class JourneyService {
   async setSpotifyTransport(
     journeyId: string,
     action: "pause" | "resume",
-    deviceId?: string
+    deviceId?: string,
   ): Promise<PlaybackSession> {
     const journey = this.getJourneyOrThrow(journeyId);
     if (journey.provider !== "spotify") {
-      throw new Error("Transport control is only supported for Spotify journeys.");
+      throw new Error(
+        "Transport control is only supported for Spotify journeys.",
+      );
     }
     const session = this.store.getPlaybackSession(journeyId);
-    const effectiveDeviceId = deviceId ?? journey.spotifyDeviceId ?? session?.deviceId;
+    const effectiveDeviceId =
+      deviceId ?? journey.spotifyDeviceId ?? session?.deviceId;
     if (effectiveDeviceId) {
       try {
         const accessToken = await this.spotifyAuth.getAccessToken();
         const resolved = await this.spotifyAdapter.resolvePlaybackDeviceId({
           accessToken,
-          preferredDeviceId: effectiveDeviceId
+          preferredDeviceId: effectiveDeviceId,
         });
         if (action === "pause") {
-          await this.spotifyAdapter.pausePlayback?.({ accessToken, deviceId: resolved });
+          await this.spotifyAdapter.pausePlayback?.({
+            accessToken,
+            deviceId: resolved,
+          });
         } else {
-          await this.spotifyAdapter.resumePlayback?.({ accessToken, deviceId: resolved });
+          await this.spotifyAdapter.resumePlayback?.({
+            accessToken,
+            deviceId: resolved,
+          });
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        this.logger.warn({ journeyId, action, err: message }, "spotify.transport.degraded");
-        this.store.audit(journeyId, "spotify.playback_error", `Spotify ${action} command failed.`, { error: message });
+        this.logger.warn(
+          { journeyId, action, err: message },
+          "spotify.transport.degraded",
+        );
+        this.store.audit(
+          journeyId,
+          "spotify.playback_error",
+          `Spotify ${action} command failed.`,
+          { error: message },
+        );
       }
     }
     return this.store.getPlaybackSession(journeyId) as PlaybackSession;
@@ -582,48 +737,94 @@ export class JourneyService {
       status: "fallback",
       queuedTrackIds: [],
       targetBufferSize: 5,
-      lastHeartbeatAt: new Date().toISOString()
+      lastHeartbeatAt: new Date().toISOString(),
     });
-    this.store.audit(journeyId, "tidal.fallback_enabled", "Journey switched to TIDAL fallback mode.");
+    this.store.audit(
+      journeyId,
+      "tidal.fallback_enabled",
+      "Journey switched to TIDAL fallback mode.",
+    );
     await this.analyzeJourney(journeyId, "tidal-fallback");
     return this.getJourneyOrThrow(journeyId);
   }
 
-  private async analyzeTidalJourney(journey: JourneyRecord, reason: string): Promise<PlaylistUpdate> {
+  private async analyzeTidalJourney(
+    journey: JourneyRecord,
+    reason: string,
+  ): Promise<PlaylistUpdate> {
     const journeyId = journey.id;
     const telemetry = this.store.latestTelemetry(journeyId);
-    const context = contextFromJourney(journey, telemetry, this.store.recentTelemetry(journeyId));
-    const candidates = await this.generateAndStoreCandidates(journeyId, context, 12);
+    const context = contextFromJourney(
+      journey,
+      telemetry,
+      this.store.recentTelemetry(journeyId),
+    );
+    const policy = buildRecommendationPolicy(context);
+    const candidates = await this.generateAndStoreCandidateSet(
+      journeyId,
+      context,
+      policy,
+      12,
+    );
     const accessToken = await this.tidalAuth.getAccessToken();
     const resolver = new TidalResolver(this.tidalAdapter, {
       accessToken,
-      countryCode: this.config.TIDAL_COUNTRY_CODE
+      countryCode: this.config.TIDAL_COUNTRY_CODE,
     });
     const resolved = await resolver.resolveCandidates(candidates);
     const resolvedIds = this.storeResolved(journeyId, candidates, resolved);
-    const stored = this.store.listResolvedTracks(journeyId).filter((track) => track.provider === "tidal");
-    const alreadyAdded = new Set(stored.filter((track) => track.addedToPlaylist).map((track) => track.providerTrackId));
+    const stored = this.store
+      .listResolvedTracks(journeyId)
+      .filter((track) => track.provider === "tidal");
+    const alreadyAdded = new Set(
+      stored
+        .filter((track) => track.addedToPlaylist)
+        .map((track) => track.providerTrackId),
+    );
     let selected = selectRollingBatch(stored, alreadyAdded, 5);
 
     if (selected.length < 5) {
-      this.store.audit(journeyId, "recommendation.fallback", "Initial analysis resolved fewer than 5 tracks; running fallback.");
-      const fallbackCandidates = await this.generateAndStoreCandidates(journeyId, context, 8);
-      const fallbackResolved = await resolver.resolveCandidates(fallbackCandidates);
+      this.store.audit(
+        journeyId,
+        "recommendation.fallback",
+        "Initial analysis resolved fewer than 5 tracks; running fallback.",
+      );
+      const fallbackCandidates = await this.generateAndStoreCandidateSet(
+        journeyId,
+        context,
+        policy,
+        8,
+      );
+      const fallbackResolved =
+        await resolver.resolveCandidates(fallbackCandidates);
       this.storeResolved(journeyId, fallbackCandidates, fallbackResolved);
-      selected = selectRollingBatch(this.store.listResolvedTracks(journeyId).filter((track) => track.provider === "tidal"), alreadyAdded, 5);
+      selected = selectRollingBatch(
+        this.store
+          .listResolvedTracks(journeyId)
+          .filter((track) => track.provider === "tidal"),
+        alreadyAdded,
+        5,
+      );
     }
 
-    const status = selected.length === 5 ? "success" : selected.length > 0 ? "degraded" : "failed";
+    const status =
+      selected.length === 5
+        ? "success"
+        : selected.length > 0
+          ? "degraded"
+          : "failed";
     const update: PlaylistUpdate = {
       id: crypto.randomUUID(),
       journeyId,
       provider: "tidal",
       batchSize: selected.length,
-      candidateIds: candidates.map((candidate) => candidate.id).filter(Boolean) as string[],
+      candidateIds: candidates
+        .map((candidate) => candidate.id)
+        .filter(Boolean) as string[],
       resolvedTrackIds: selected.map((track) => track.id),
       idempotencyKey: `journey-${journeyId}-${Date.now()}`,
       status,
-      createdAtIso: new Date().toISOString()
+      createdAtIso: new Date().toISOString(),
     };
 
     if (selected.length > 0 && journey.tidalPlaylistId) {
@@ -632,24 +833,36 @@ export class JourneyService {
         playlistId: journey.tidalPlaylistId,
         trackIds: selected.map((track) => track.providerTrackId),
         countryCode: this.config.TIDAL_COUNTRY_CODE,
-        idempotencyKey: update.idempotencyKey
+        idempotencyKey: update.idempotencyKey,
       });
       this.store.markTracksAdded(selected.map((track) => track.id));
     }
 
     this.store.savePlaylistUpdate(update);
-    this.store.audit(journeyId, "playlist.updated", `Playlist update ${status}: ${selected.length} tracks added.`, {
-      reason,
-      trackIds: selected.map((track) => track.providerTrackId),
-      resolvedIds
-    });
+    this.store.audit(
+      journeyId,
+      "playlist.updated",
+      `Playlist update ${status}: ${selected.length} tracks added.`,
+      {
+        reason,
+        trackIds: selected.map((track) => track.providerTrackId),
+        resolvedIds,
+      },
+    );
     return update;
   }
 
-  private async analyzeSpotifyJourney(journey: JourneyRecord, reason: string): Promise<PlaylistUpdate> {
+  private async analyzeSpotifyJourney(
+    journey: JourneyRecord,
+    reason: string,
+  ): Promise<PlaylistUpdate> {
     const journeyId = journey.id;
     const telemetry = this.store.latestTelemetry(journeyId);
-    const context = contextFromJourney(journey, telemetry, this.store.recentTelemetry(journeyId));
+    const context = contextFromJourney(
+      journey,
+      telemetry,
+      this.store.recentTelemetry(journeyId),
+    );
 
     // Cost control: only the LLM lenses cost tokens. Run them when the vibe actually changes;
     // for routine top-ups, reuse the already-generated candidate pool if it can refill the buffer.
@@ -659,126 +872,222 @@ export class JourneyService {
       "phase-override",
       "taste-override",
       "manual",
-      "recovery"
+      "recovery",
     ]);
     const priorSession = this.store.getPlaybackSession(journeyId);
-    const storedForGate = this.store.listResolvedTracks(journeyId).filter((track) => track.provider === "spotify");
+    const storedForGate = this.store
+      .listResolvedTracks(journeyId)
+      .filter((track) => track.provider === "spotify");
 
     // "Consumed" = every track already surfaced this journey (active, queued, played, or ever added
     // to the buffer). Selection and generation must never resurface these — neither the exact
     // recording (provider id) nor another version of the same song (song key).
     const consumedTrackIds = new Set<string>();
-    for (const id of priorSession?.queuedTrackIds ?? []) consumedTrackIds.add(id);
-    for (const id of priorSession?.playedTrackIds ?? []) consumedTrackIds.add(id);
-    if (priorSession?.activeTrack?.id) consumedTrackIds.add(priorSession.activeTrack.id);
+    for (const id of priorSession?.queuedTrackIds ?? [])
+      consumedTrackIds.add(id);
+    for (const id of priorSession?.playedTrackIds ?? [])
+      consumedTrackIds.add(id);
+    if (priorSession?.activeTrack?.id)
+      consumedTrackIds.add(priorSession.activeTrack.id);
     for (const track of storedForGate) {
       if (track.addedToPlaylist) consumedTrackIds.add(track.id);
     }
-    const consumedTracks = storedForGate.filter((track) => consumedTrackIds.has(track.id));
-    const consumedProviderIds = new Set(consumedTracks.map((track) => track.providerTrackId));
-    const consumedSongKeys = new Set(consumedTracks.map((track) => songKey(track.artist, track.title)));
+    const consumedTracks = storedForGate.filter((track) =>
+      consumedTrackIds.has(track.id),
+    );
+    const consumedProviderIds = new Set(
+      consumedTracks.map((track) => track.providerTrackId),
+    );
+    const consumedSongKeys = new Set(
+      consumedTracks.map((track) => songKey(track.artist, track.title)),
+    );
 
     const unusedPool = storedForGate.filter(
       (track) =>
         track.providerUri &&
         track.isPlayable !== false &&
         !consumedTrackIds.has(track.id) &&
-        !consumedSongKeys.has(songKey(track.artist, track.title))
+        !consumedSongKeys.has(songKey(track.artist, track.title)),
     );
-    const neededNow = Math.max(0, 5 - (priorSession?.queuedTrackIds?.length ?? 0));
+    const neededNow = Math.max(
+      0,
+      5 - (priorSession?.queuedTrackIds?.length ?? 0),
+    );
     const mustGenerate =
-      vibeChangingReasons.has(reason) || reason.startsWith("drive-state:") || unusedPool.length < neededNow;
+      vibeChangingReasons.has(reason) ||
+      reason.startsWith("drive-state:") ||
+      unusedPool.length < neededNow;
 
     const tokenStartedAt = Date.now();
     const accessToken = await this.spotifyAuth.getAccessToken();
-    this.logger.info({ journeyId, ms: Date.now() - tokenStartedAt }, "spotify.token.done");
+    this.logger.info(
+      { journeyId, ms: Date.now() - tokenStartedAt },
+      "spotify.token.done",
+    );
 
     // Personalize the brief with the listener's taste (cached ~24h). Built once and reused for any
     // fallback regeneration below so the whole drive shares one taste signal.
     let scoutContext: JourneyContext = context;
+    let policy = buildRecommendationPolicy(context);
     let candidates: SongCandidate[] = [];
     if (mustGenerate) {
       const tasteProfile = await this.loadTasteProfile(accessToken);
       scoutContext = {
         ...context,
         tasteProfile,
-        tasteWeight: journey.tasteWeight ?? DEFAULT_TASTE_WEIGHT
+        tasteWeight: journey.tasteWeight ?? DEFAULT_TASTE_WEIGHT,
       };
-      candidates = (await this.generateAndStoreCandidates(journeyId, scoutContext, 8)).filter(
-        (candidate) => !consumedSongKeys.has(songKey(candidate.artist, candidate.title))
+      policy = buildRecommendationPolicy(scoutContext);
+      candidates = this.filterFreshCandidates(
+        await this.generateAndStoreCandidateSet(
+          journeyId,
+          scoutContext,
+          policy,
+          8,
+        ),
+        consumedSongKeys,
       );
     } else {
-      this.logger.info({ journeyId, reason, poolSize: unusedPool.length, needed: neededNow }, "scout.pool_reuse");
+      this.logger.info(
+        { journeyId, reason, poolSize: unusedPool.length, needed: neededNow },
+        "scout.pool_reuse",
+      );
       this.store.audit(
         journeyId,
         "recommendation.pool_reuse",
         `Reused ${unusedPool.length} already-generated candidates; skipped AI generation.`,
-        { reason }
+        { reason },
       );
     }
     const resolver = new SpotifyResolver(this.spotifyAdapter, {
       accessToken,
       market: this.config.SPOTIFY_MARKET,
       searchTimeoutMs: 8_000,
-      targetResolveCount: 5,
+      targetResolveCount: policy.cleanRequired ? 12 : 10,
       // Persistent cache: each song is searched on Spotify at most once across the whole drive.
       cache: {
         get: (key) => this.store.getCachedSpotifySearch(key),
-        set: (key, value) => this.store.saveCachedSpotifySearch(key, value)
-      }
+        set: (key, value) => this.store.saveCachedSpotifySearch(key, value),
+      },
     });
     const resolveStartedAt = Date.now();
     const resolved = await resolver.resolveCandidates(candidates);
     this.logger.info(
-      { journeyId, candidates: candidates.length, resolved: resolved.length, ms: Date.now() - resolveStartedAt },
-      "spotify.resolve.done"
+      {
+        journeyId,
+        candidates: candidates.length,
+        resolved: resolved.length,
+        ms: Date.now() - resolveStartedAt,
+      },
+      "spotify.resolve.done",
     );
     const resolvedIds = this.storeResolved(journeyId, candidates, resolved);
 
-    let stored = this.store.listResolvedTracks(journeyId).filter((track) => track.provider === "spotify");
+    let stored = this.store
+      .listResolvedTracks(journeyId)
+      .filter((track) => track.provider === "spotify");
     let session = this.store.getPlaybackSession(journeyId);
+    const consumedArtistKeys = new Set(
+      consumedTracks.map((track) => normalizeText(track.artist)),
+    );
+    const rankedStored = rankResolvedTracksForPolicy(
+      stored,
+      {
+        ...policy,
+        avoidArtists: [...consumedArtistKeys],
+        avoidSongKeys: [...consumedSongKeys],
+      },
+      { consumedArtists: consumedTracks.map((track) => track.artist) },
+    );
     let activeTrack =
       session?.activeTrack && session.activeTrack.provider === "spotify"
         ? stored.find((track) => track.id === session?.activeTrack?.id)
         : undefined;
 
     if (!activeTrack) {
-      activeTrack = stored.find((track) => track.providerUri && track.isPlayable !== false);
+      activeTrack = rankedStored.find(
+        (track) => track.providerUri && track.isPlayable !== false,
+      );
     }
 
     const currentQueued = (session?.queuedTrackIds ?? [])
       .map((id) => stored.find((track) => track.id === id))
-      .filter((track): track is ResolvedTrack & { id: string; addedToPlaylist: boolean; savedToPlaylist: boolean } => Boolean(track));
+      .filter(
+        (
+          track,
+        ): track is ResolvedTrack & {
+          id: string;
+          addedToPlaylist: boolean;
+          savedToPlaylist: boolean;
+        } => Boolean(track),
+      );
     const needed = Math.max(0, 5 - currentQueued.length);
-    const selected = queueTracksForBuffer(stored, {
+    const selected = queueTracksForBuffer(rankedStored, {
       activeProviderTrackId: activeTrack?.providerTrackId,
-      alreadyQueuedProviderIds: new Set(currentQueued.map((track) => track.providerTrackId)),
+      alreadyQueuedProviderIds: new Set(
+        currentQueued.map((track) => track.providerTrackId),
+      ),
       excludeProviderTrackIds: consumedProviderIds,
       excludeSongKeys: consumedSongKeys,
-      targetBufferSize: needed
+      excludeArtistKeys: consumedArtistKeys,
+      preferDistinctArtists: policy.preferDistinctArtists,
+      cleanRequired: policy.cleanRequired,
+      targetBufferSize: needed,
     });
 
     if (currentQueued.length + selected.length < 5) {
-      this.store.audit(journeyId, "recommendation.fallback", "Spotify analysis resolved fewer than 5 future tracks; running fallback.");
-      const fallbackCandidates = (await this.generateAndStoreCandidates(journeyId, scoutContext, 8)).filter(
-        (candidate) => !consumedSongKeys.has(songKey(candidate.artist, candidate.title))
+      this.store.audit(
+        journeyId,
+        "recommendation.fallback",
+        "Spotify analysis resolved fewer than 5 future tracks; running fallback.",
       );
-      const fallbackResolved = await resolver.resolveCandidates(fallbackCandidates);
+      const fallbackCandidates = this.filterFreshCandidates(
+        await this.generateAndStoreCandidateSet(
+          journeyId,
+          scoutContext,
+          policy,
+          8,
+        ),
+        consumedSongKeys,
+      );
+      const fallbackResolved =
+        await resolver.resolveCandidates(fallbackCandidates);
       this.storeResolved(journeyId, fallbackCandidates, fallbackResolved);
-      stored = this.store.listResolvedTracks(journeyId).filter((track) => track.provider === "spotify");
+      stored = this.store
+        .listResolvedTracks(journeyId)
+        .filter((track) => track.provider === "spotify");
+      const rankedFallbackStored = rankResolvedTracksForPolicy(
+        stored,
+        {
+          ...policy,
+          avoidArtists: [...consumedArtistKeys],
+          avoidSongKeys: [...consumedSongKeys],
+        },
+        { consumedArtists: consumedTracks.map((track) => track.artist) },
+      );
       const alreadyQueued = new Set([
         ...currentQueued.map((track) => track.providerTrackId),
-        ...selected.map((track) => track.providerTrackId)
+        ...selected.map((track) => track.providerTrackId),
       ]);
-      const additional = queueTracksForBuffer(stored, {
+      const additional = queueTracksForBuffer(rankedFallbackStored, {
         activeProviderTrackId: activeTrack?.providerTrackId,
         alreadyQueuedProviderIds: alreadyQueued,
         excludeProviderTrackIds: consumedProviderIds,
         excludeSongKeys: consumedSongKeys,
-        targetBufferSize: Math.max(0, 5 - currentQueued.length - selected.length)
+        excludeArtistKeys: consumedArtistKeys,
+        preferDistinctArtists: policy.preferDistinctArtists,
+        cleanRequired: policy.cleanRequired,
+        targetBufferSize: Math.max(
+          0,
+          5 - currentQueued.length - selected.length,
+        ),
       });
       for (const track of additional) {
-        if (!selected.some((item) => item.providerTrackId === track.providerTrackId)) {
+        if (
+          !selected.some(
+            (item) => item.providerTrackId === track.providerTrackId,
+          )
+        ) {
           selected.push(track);
         }
         if (currentQueued.length + selected.length >= 5) {
@@ -797,15 +1106,20 @@ export class JourneyService {
           activeTrack,
           queueTracks: selected,
           shouldStart: Boolean(
-            activeTrack?.providerUri && (!session?.activeTrack || session.status !== "playing")
-          )
+            activeTrack?.providerUri &&
+            (!session?.activeTrack || session.status !== "playing"),
+          ),
         })
       : { deviceReachable: false };
 
-    const playedActiveTrack = playbackApplied.deviceReachable ? activeTrack : (session?.activeTrack ?? activeTrack);
+    const playedActiveTrack = playbackApplied.deviceReachable
+      ? activeTrack
+      : (session?.activeTrack ?? activeTrack);
     const queuedTracks = [...currentQueued, ...selected].slice(0, 5);
     const status =
-      queuedTracks.length === 5 && playbackApplied.deviceReachable && !playbackApplied.rateLimited
+      queuedTracks.length === 5 &&
+      playbackApplied.deviceReachable &&
+      !playbackApplied.rateLimited
         ? "success"
         : queuedTracks.length > 0
           ? "degraded"
@@ -815,14 +1129,20 @@ export class JourneyService {
       journeyId,
       provider: "spotify",
       batchSize: selected.length,
-      candidateIds: candidates.map((candidate) => candidate.id).filter(Boolean) as string[],
+      candidateIds: candidates
+        .map((candidate) => candidate.id)
+        .filter(Boolean) as string[],
       resolvedTrackIds: queuedTracks.map((track) => track.id),
       idempotencyKey: `journey-${journeyId}-${Date.now()}`,
       status,
-      createdAtIso: new Date().toISOString()
+      createdAtIso: new Date().toISOString(),
     };
 
-    this.store.markTracksAdded([activeTrack?.id, ...queuedTracks.map((track) => track.id)].filter(Boolean) as string[]);
+    this.store.markTracksAdded(
+      [activeTrack?.id, ...queuedTracks.map((track) => track.id)].filter(
+        Boolean,
+      ) as string[],
+    );
     this.store.savePlaylistUpdate(update);
     this.saveSession({
       journeyId,
@@ -834,39 +1154,73 @@ export class JourneyService {
       // Preserve skip-back history across refreshes/refills (was dropped → wiped played on every analyze).
       playedTrackIds: session?.playedTrackIds ?? [],
       targetBufferSize: 5,
-      lastHeartbeatAt: new Date().toISOString()
+      lastHeartbeatAt: new Date().toISOString(),
     });
-    this.store.audit(journeyId, "spotify.queue_updated", `Spotify queue update ${status}: ${queuedTracks.length}/5 future tracks.`, {
-      reason,
-      activeTrackId: activeTrack?.providerTrackId,
-      queuedTrackIds: queuedTracks.map((track) => track.providerTrackId),
-      resolvedIds
-    });
+    this.store.audit(
+      journeyId,
+      "spotify.queue_updated",
+      `Spotify queue update ${status}: ${queuedTracks.length}/5 future tracks.`,
+      {
+        reason,
+        activeTrackId: activeTrack?.providerTrackId,
+        queuedTrackIds: queuedTracks.map((track) => track.providerTrackId),
+        resolvedIds,
+      },
+    );
     // Mirror the curated set into the saved journey playlist (best-effort; never blocks the journey).
     await this.syncJourneyPlaylist(journey, accessToken);
     return update;
   }
 
   private pickSpotifyPlaybackTracks(
-    stored: Array<ResolvedTrack & { id: string; addedToPlaylist: boolean; savedToPlaylist: boolean }>,
-    session?: PlaybackSession
+    stored: Array<
+      ResolvedTrack & {
+        id: string;
+        addedToPlaylist: boolean;
+        savedToPlaylist: boolean;
+      }
+    >,
+    session?: PlaybackSession,
   ): {
-    activeTrack?: ResolvedTrack & { id: string; addedToPlaylist: boolean; savedToPlaylist: boolean };
-    queueTracks: Array<ResolvedTrack & { id: string; addedToPlaylist: boolean; savedToPlaylist: boolean }>;
+    activeTrack?: ResolvedTrack & {
+      id: string;
+      addedToPlaylist: boolean;
+      savedToPlaylist: boolean;
+    };
+    queueTracks: Array<
+      ResolvedTrack & {
+        id: string;
+        addedToPlaylist: boolean;
+        savedToPlaylist: boolean;
+      }
+    >;
     queuedTrackIds: string[];
   } {
     const queued = (session?.queuedTrackIds ?? [])
       .map((id) => stored.find((track) => track.id === id))
-      .filter((track): track is ResolvedTrack & { id: string; addedToPlaylist: boolean; savedToPlaylist: boolean } => Boolean(track));
+      .filter(
+        (
+          track,
+        ): track is ResolvedTrack & {
+          id: string;
+          addedToPlaylist: boolean;
+          savedToPlaylist: boolean;
+        } => Boolean(track),
+      );
 
     if (session?.activeTrack) {
-      const active = stored.find((track) => track.id === session.activeTrack?.id);
+      const active = stored.find(
+        (track) => track.id === session.activeTrack?.id,
+      );
       if (active) {
         const queueTracks = queued.filter((track) => track.id !== active.id);
         return {
           activeTrack: active,
           queueTracks,
-          queuedTrackIds: [active.id, ...queueTracks.map((track) => track.id)].slice(0, 5)
+          queuedTrackIds: [
+            active.id,
+            ...queueTracks.map((track) => track.id),
+          ].slice(0, 5),
         };
       }
     }
@@ -876,18 +1230,19 @@ export class JourneyService {
       return {
         activeTrack: head,
         queueTracks: tail,
-        queuedTrackIds: queued.map((track) => track.id).slice(0, 5)
+        queuedTrackIds: queued.map((track) => track.id).slice(0, 5),
       };
     }
 
-    const fallback = stored.find((track) => track.providerUri && track.isPlayable !== false);
+    const fallback = stored.find(
+      (track) => track.providerUri && track.isPlayable !== false,
+    );
     return {
       activeTrack: fallback,
       queueTracks: [],
-      queuedTrackIds: fallback ? [fallback.id] : []
+      queuedTrackIds: fallback ? [fallback.id] : [],
     };
   }
-
 
   /**
    * Plays an EXACT track list on the already-active device via a single absolute `startPlayback`
@@ -903,7 +1258,9 @@ export class JourneyService {
   }): Promise<{ deviceReachable: boolean; rateLimited?: boolean }> {
     const uris = [
       ...(args.activeTrack?.providerUri ? [args.activeTrack.providerUri] : []),
-      ...args.queueTracks.map((track) => track.providerUri).filter((uri): uri is string => Boolean(uri))
+      ...args.queueTracks
+        .map((track) => track.providerUri)
+        .filter((uri): uri is string => Boolean(uri)),
     ];
     const uniqueUris = [...new Set(uris)];
     if (uniqueUris.length === 0) {
@@ -912,11 +1269,15 @@ export class JourneyService {
 
     const deviceId = await this.spotifyAdapter.resolvePlaybackDeviceId({
       accessToken: args.accessToken,
-      preferredDeviceId: args.deviceId
+      preferredDeviceId: args.deviceId,
     });
 
     try {
-      await this.spotifyAdapter.startPlayback({ accessToken: args.accessToken, deviceId, uris: uniqueUris });
+      await this.spotifyAdapter.startPlayback({
+        accessToken: args.accessToken,
+        deviceId,
+        uris: uniqueUris,
+      });
       if (args.activeTrack?.providerUri) {
         this.store.saveQueueOperation({
           id: crypto.randomUUID(),
@@ -927,7 +1288,7 @@ export class JourneyService {
           operation: "start",
           status: "success",
           deviceId,
-          createdAtIso: new Date().toISOString()
+          createdAtIso: new Date().toISOString(),
         });
       }
       return { deviceReachable: true };
@@ -940,18 +1301,26 @@ export class JourneyService {
           deviceId,
           activeTrack: args.activeTrack,
           queueTracks: args.queueTracks,
-          shouldStart: true
+          shouldStart: true,
         });
       }
       if (isSpotifyRateLimitError(error)) {
         return { deviceReachable: true, rateLimited: true };
       }
       const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn({ journeyId: args.journeyId, deviceId, err: message }, "spotify.play.degraded");
-      this.store.audit(args.journeyId, "spotify.playback_error", "Spotify play failed; queue saved, playback degraded.", {
-        deviceId,
-        error: message
-      });
+      this.logger.warn(
+        { journeyId: args.journeyId, deviceId, err: message },
+        "spotify.play.degraded",
+      );
+      this.store.audit(
+        args.journeyId,
+        "spotify.playback_error",
+        "Spotify play failed; queue saved, playback degraded.",
+        {
+          deviceId,
+          error: message,
+        },
+      );
       return { deviceReachable: false };
     }
   }
@@ -966,40 +1335,57 @@ export class JourneyService {
   }): Promise<{ deviceReachable: boolean; rateLimited?: boolean }> {
     const deviceId = await this.spotifyAdapter.resolvePlaybackDeviceId({
       accessToken: args.accessToken,
-      preferredDeviceId: args.deviceId
+      preferredDeviceId: args.deviceId,
     });
 
     let transferFailed = false;
     try {
       await this.spotifyAdapter.transferPlayback({
         accessToken: args.accessToken,
-        deviceId
+        deviceId,
       });
       await new Promise((resolve) => setTimeout(resolve, 600));
     } catch (error) {
       if (isSpotifyDeviceNotFoundError(error)) {
         transferFailed = true;
-        this.store.audit(args.journeyId, "spotify.device_missing", "Spotify Webplayer not active yet; will retry play.", {
-          deviceId
-        });
+        this.store.audit(
+          args.journeyId,
+          "spotify.device_missing",
+          "Spotify Webplayer not active yet; will retry play.",
+          {
+            deviceId,
+          },
+        );
       } else if (isSpotifyRateLimitError(error)) {
         return { deviceReachable: true, rateLimited: true };
       } else {
         // Playback is best-effort: a transient Spotify error (e.g. 500) must not fail the
         // journey. The queue is already saved; degrade and let the user retry playback.
         const message = error instanceof Error ? error.message : String(error);
-        this.logger.warn({ journeyId: args.journeyId, deviceId, err: message }, "spotify.transfer.degraded");
-        this.store.audit(args.journeyId, "spotify.playback_error", "Spotify transfer failed; queue saved, playback degraded.", {
-          deviceId,
-          error: message
-        });
+        this.logger.warn(
+          { journeyId: args.journeyId, deviceId, err: message },
+          "spotify.transfer.degraded",
+        );
+        this.store.audit(
+          args.journeyId,
+          "spotify.playback_error",
+          "Spotify transfer failed; queue saved, playback degraded.",
+          {
+            deviceId,
+            error: message,
+          },
+        );
         return { deviceReachable: false };
       }
     }
 
     const playUris = [
-      ...(args.shouldStart && args.activeTrack?.providerUri ? [args.activeTrack.providerUri] : []),
-      ...args.queueTracks.map((track) => track.providerUri).filter((uri): uri is string => Boolean(uri))
+      ...(args.shouldStart && args.activeTrack?.providerUri
+        ? [args.activeTrack.providerUri]
+        : []),
+      ...args.queueTracks
+        .map((track) => track.providerUri)
+        .filter((uri): uri is string => Boolean(uri)),
     ];
     const uniquePlayUris = [...new Set(playUris)];
 
@@ -1008,7 +1394,7 @@ export class JourneyService {
         await this.spotifyAdapter.startPlayback({
           accessToken: args.accessToken,
           deviceId,
-          uris: uniquePlayUris
+          uris: uniquePlayUris,
         });
         if (args.activeTrack?.providerUri) {
           this.store.saveQueueOperation({
@@ -1020,7 +1406,7 @@ export class JourneyService {
             operation: "start",
             status: "success",
             deviceId,
-            createdAtIso: new Date().toISOString()
+            createdAtIso: new Date().toISOString(),
           });
         }
         return { deviceReachable: true };
@@ -1032,11 +1418,19 @@ export class JourneyService {
           return { deviceReachable: true, rateLimited: true };
         }
         const message = error instanceof Error ? error.message : String(error);
-        this.logger.warn({ journeyId: args.journeyId, deviceId, err: message }, "spotify.start.degraded");
-        this.store.audit(args.journeyId, "spotify.playback_error", "Spotify start playback failed; queue saved, playback degraded.", {
-          deviceId,
-          error: message
-        });
+        this.logger.warn(
+          { journeyId: args.journeyId, deviceId, err: message },
+          "spotify.start.degraded",
+        );
+        this.store.audit(
+          args.journeyId,
+          "spotify.playback_error",
+          "Spotify start playback failed; queue saved, playback degraded.",
+          {
+            deviceId,
+            error: message,
+          },
+        );
         return { deviceReachable: false };
       }
     }
@@ -1048,7 +1442,7 @@ export class JourneyService {
         await this.spotifyAdapter.addToQueue({
           accessToken: args.accessToken,
           deviceId,
-          uri: track.providerUri
+          uri: track.providerUri,
         });
         this.store.saveQueueOperation({
           id: crypto.randomUUID(),
@@ -1059,7 +1453,7 @@ export class JourneyService {
           operation: "queue",
           status: "success",
           deviceId,
-          createdAtIso: new Date().toISOString()
+          createdAtIso: new Date().toISOString(),
         });
         await new Promise((resolve) => setTimeout(resolve, 400));
       } catch (error) {
@@ -1071,11 +1465,19 @@ export class JourneyService {
           break;
         }
         const message = error instanceof Error ? error.message : String(error);
-        this.logger.warn({ journeyId: args.journeyId, deviceId, err: message }, "spotify.queue.degraded");
-        this.store.audit(args.journeyId, "spotify.playback_error", "Spotify queue add failed; remaining tracks saved, playback degraded.", {
-          deviceId,
-          error: message
-        });
+        this.logger.warn(
+          { journeyId: args.journeyId, deviceId, err: message },
+          "spotify.queue.degraded",
+        );
+        this.store.audit(
+          args.journeyId,
+          "spotify.playback_error",
+          "Spotify queue add failed; remaining tracks saved, playback degraded.",
+          {
+            deviceId,
+            error: message,
+          },
+        );
         return { deviceReachable: false };
       }
     }
@@ -1100,11 +1502,19 @@ export class JourneyService {
 
       const ageMs = Date.now() - new Date(latest.createdAtIso).getTime();
       const session = this.store.getPlaybackSession(journey.id);
-      const unresolvedBuffer = journey.provider === "spotify"
-        ? session?.queuedTrackIds.length ?? 0
-        : this.store.listResolvedTracks(journey.id).filter((track) => track.provider === "tidal" && !track.addedToPlaylist).length;
+      const unresolvedBuffer =
+        journey.provider === "spotify"
+          ? (session?.queuedTrackIds.length ?? 0)
+          : this.store
+              .listResolvedTracks(journey.id)
+              .filter(
+                (track) => track.provider === "tidal" && !track.addedToPlaylist,
+              ).length;
       if (ageMs > this.config.journeyRefreshMs || unresolvedBuffer < 5) {
-        await this.analyzeJourney(journey.id, ageMs > this.config.journeyRefreshMs ? "time-window" : "low-buffer");
+        await this.analyzeJourney(
+          journey.id,
+          ageMs > this.config.journeyRefreshMs ? "time-window" : "low-buffer",
+        );
       }
     }
   }
@@ -1116,9 +1526,15 @@ export class JourneyService {
    *
    * @returns the playback outcome, used by the poller to pick its next (adaptive) interval.
    */
-  async reconcileSpotifyPlayback(journeyId: string): Promise<"playing" | "idle" | "external"> {
+  async reconcileSpotifyPlayback(
+    journeyId: string,
+  ): Promise<"playing" | "idle" | "external"> {
     const journey = this.store.getJourney(journeyId);
-    if (!journey || journey.provider !== "spotify" || journey.status !== "active") {
+    if (
+      !journey ||
+      journey.provider !== "spotify" ||
+      journey.status !== "active"
+    ) {
       return "idle";
     }
     const session = this.store.getPlaybackSession(journeyId);
@@ -1130,11 +1546,17 @@ export class JourneyService {
     let state: Awaited<ReturnType<SpotifyAdapter["getPlaybackState"]>>;
     try {
       accessToken = await this.spotifyAuth.getAccessToken();
-      state = await this.spotifyAdapter.getPlaybackState({ accessToken, market: this.config.SPOTIFY_MARKET });
+      state = await this.spotifyAdapter.getPlaybackState({
+        accessToken,
+        market: this.config.SPOTIFY_MARKET,
+      });
     } catch (error) {
       this.logger.warn(
-        { journeyId, err: error instanceof Error ? error.message : String(error) },
-        "spotify.reconcile_error"
+        {
+          journeyId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        "spotify.reconcile_error",
       );
       return "idle";
     }
@@ -1146,23 +1568,42 @@ export class JourneyService {
       return "idle";
     }
 
-    const stored = this.store.listResolvedTracks(journeyId).filter((track) => track.provider === "spotify");
-    const { activeTrack, queueTracks } = this.pickSpotifyPlaybackTracks(stored, session);
+    const stored = this.store
+      .listResolvedTracks(journeyId)
+      .filter((track) => track.provider === "spotify");
+    const { activeTrack, queueTracks } = this.pickSpotifyPlaybackTracks(
+      stored,
+      session,
+    );
     const model = [activeTrack, ...queueTracks].filter(
-      (track): track is ResolvedTrack & { id: string; addedToPlaylist: boolean; savedToPlaylist: boolean } =>
-        Boolean(track)
+      (
+        track,
+      ): track is ResolvedTrack & {
+        id: string;
+        addedToPlaylist: boolean;
+        savedToPlaylist: boolean;
+      } => Boolean(track),
     );
     const result = reconcilePlaybackModel(
       model.map((track) => track.providerTrackId),
-      state.activeProviderTrackId
+      state.activeProviderTrackId,
     );
 
     if (result.kind === "external") {
       if (session.status !== "external") {
-        this.saveSession({ ...session, status: "external", lastHeartbeatAt: now });
-        this.store.audit(journeyId, "spotify.playback_external", "External track playing; DJ curation paused.", {
-          activeProviderTrackId: state.activeProviderTrackId
+        this.saveSession({
+          ...session,
+          status: "external",
+          lastHeartbeatAt: now,
         });
+        this.store.audit(
+          journeyId,
+          "spotify.playback_external",
+          "External track playing; DJ curation paused.",
+          {
+            activeProviderTrackId: state.activeProviderTrackId,
+          },
+        );
       }
       return "external";
     }
@@ -1171,7 +1612,11 @@ export class JourneyService {
       // Same curated track still playing (or nothing to reconcile). If we were paused for an external
       // track, this means we're back on a journey track → resume curation.
       if (session.status !== "playing") {
-        this.saveSession({ ...session, status: "playing", lastHeartbeatAt: now });
+        this.saveSession({
+          ...session,
+          status: "playing",
+          lastHeartbeatAt: now,
+        });
       }
       return "playing";
     }
@@ -1191,18 +1636,24 @@ export class JourneyService {
       queuedTrackIds: newQueue.map((track) => track.id),
       playedTrackIds: [...(session.playedTrackIds ?? []), ...newlyPlayed],
       targetBufferSize: 5,
-      lastHeartbeatAt: now
+      lastHeartbeatAt: now,
     });
-    this.store.audit(journeyId, "spotify.playback_reconciled", `Reconciled external skip: advanced ${idx} track(s).`, {
-      advanced: idx,
-      activeTrackId: newActive?.providerTrackId,
-      remainingQueue: newQueue.length
-    });
+    this.store.audit(
+      journeyId,
+      "spotify.playback_reconciled",
+      `Reconciled external skip: advanced ${idx} track(s).`,
+      {
+        advanced: idx,
+        activeTrackId: newActive?.providerTrackId,
+        remainingQueue: newQueue.length,
+      },
+    );
 
     // Refill curated tracks when the buffer runs low — throttled to bound AI/overhead cost.
     if (newQueue.length < this.config.SPOTIFY_REFILL_THRESHOLD) {
       const last = this.store.latestPlaylistUpdate(journeyId);
-      const minIntervalMs = this.config.SPOTIFY_REFILL_MIN_INTERVAL_SECONDS * 1000;
+      const minIntervalMs =
+        this.config.SPOTIFY_REFILL_MIN_INTERVAL_SECONDS * 1000;
       if (shouldRegenerate(last?.createdAtIso, Date.now(), minIntervalMs)) {
         try {
           // "skip-refill" is not a vibe-changing reason → analyzeJourney recycles the existing
@@ -1210,8 +1661,11 @@ export class JourneyService {
           await this.analyzeJourney(journeyId, "skip-refill");
         } catch (error) {
           this.logger.warn(
-            { journeyId, err: error instanceof Error ? error.message : String(error) },
-            "spotify.reconcile_refill_error"
+            {
+              journeyId,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            "spotify.reconcile_refill_error",
           );
         }
       }
@@ -1221,7 +1675,10 @@ export class JourneyService {
   }
 
   /** Lazily creates the private per-journey Spotify playlist; returns its id (or existing/undefined). */
-  private async ensureJourneySpotifyPlaylist(journey: JourneyRecord, accessToken: string): Promise<string | undefined> {
+  private async ensureJourneySpotifyPlaylist(
+    journey: JourneyRecord,
+    accessToken: string,
+  ): Promise<string | undefined> {
     if (journey.provider !== "spotify" || !this.spotifyAdapter.createPlaylist) {
       return journey.spotifyPlaylistId;
     }
@@ -1232,58 +1689,102 @@ export class JourneyService {
     const playlist = await this.spotifyAdapter.createPlaylist({
       accessToken,
       name: `AI Journey DJ — ${journey.destination} · ${date}`,
-      description: `Telemetry-aware soundtrack generated for ${journey.destination}.`
+      description: `Telemetry-aware soundtrack generated for ${journey.destination}.`,
     });
-    this.store.updateJourneySpotifyPlaylist(journey.id, playlist.id, playlist.url);
-    this.store.audit(journey.id, "spotify.playlist_created", "Journey playlist created.", { playlistId: playlist.id });
+    this.store.updateJourneySpotifyPlaylist(
+      journey.id,
+      playlist.id,
+      playlist.url,
+    );
+    this.store.audit(
+      journey.id,
+      "spotify.playlist_created",
+      "Journey playlist created.",
+      { playlistId: playlist.id },
+    );
     return playlist.id;
   }
 
   /** Mirrors newly-curated tracks into the journey playlist. Best-effort: never throws. */
-  private async syncJourneyPlaylist(journey: JourneyRecord, accessToken: string): Promise<void> {
-    if (journey.provider !== "spotify" || !this.spotifyAdapter.addTracksToPlaylist) {
+  private async syncJourneyPlaylist(
+    journey: JourneyRecord,
+    accessToken: string,
+  ): Promise<void> {
+    if (
+      journey.provider !== "spotify" ||
+      !this.spotifyAdapter.addTracksToPlaylist
+    ) {
       return;
     }
     try {
       const pending = this.store
         .listResolvedTracks(journey.id)
         .filter(
-          (track) => track.provider === "spotify" && track.addedToPlaylist && !track.savedToPlaylist && track.providerUri
+          (track) =>
+            track.provider === "spotify" &&
+            track.addedToPlaylist &&
+            !track.savedToPlaylist &&
+            track.providerUri,
         );
       if (pending.length === 0) {
         return;
       }
-      const playlistId = await this.ensureJourneySpotifyPlaylist(journey, accessToken);
+      const playlistId = await this.ensureJourneySpotifyPlaylist(
+        journey,
+        accessToken,
+      );
       if (!playlistId) {
         return;
       }
       const uris = pending.map((track) => track.providerUri as string);
       for (let i = 0; i < uris.length; i += 100) {
-        await this.spotifyAdapter.addTracksToPlaylist({ accessToken, playlistId, uris: uris.slice(i, i + 100) });
+        await this.spotifyAdapter.addTracksToPlaylist({
+          accessToken,
+          playlistId,
+          uris: uris.slice(i, i + 100),
+        });
       }
       this.store.markTracksSavedToPlaylist(pending.map((track) => track.id));
-      this.store.audit(journey.id, "spotify.playlist_extended", `Added ${pending.length} tracks to the journey playlist.`, {
-        count: pending.length
-      });
+      this.store.audit(
+        journey.id,
+        "spotify.playlist_extended",
+        `Added ${pending.length} tracks to the journey playlist.`,
+        {
+          count: pending.length,
+        },
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn({ journeyId: journey.id, err: message }, "spotify.playlist.degraded");
-      this.store.audit(journey.id, "spotify.playlist_error", "Could not update the journey playlist; will retry next analysis.", {
-        error: message
-      });
+      this.logger.warn(
+        { journeyId: journey.id, err: message },
+        "spotify.playlist.degraded",
+      );
+      this.store.audit(
+        journey.id,
+        "spotify.playlist_error",
+        "Could not update the journey playlist; will retry next analysis.",
+        {
+          error: message,
+        },
+      );
     }
   }
 
   private async generateAndStoreCandidates(
     journeyId: string,
     context: Parameters<SongScout["generateCandidates"]>[0],
-    targetCount: number
+    targetCount: number,
+    policy = buildRecommendationPolicy(context),
   ): Promise<SongCandidate[]> {
     let generated: SongCandidate[];
     const scoutStartedAt = Date.now();
     this.logger.info({ journeyId, targetCount }, "scout.generate.start");
     try {
-      generated = await this.songScout.generateCandidates(context, targetCount);
+      generated = await this.songScout.generateCandidates(
+        context,
+        targetCount,
+        policy,
+      );
     } catch (error) {
       if (!isRecoverableScoutError(error)) {
         throw error;
@@ -1291,38 +1792,158 @@ export class JourneyService {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(
         { journeyId, ms: Date.now() - scoutStartedAt, err: message },
-        "scout.generate.fallback"
+        "scout.generate.fallback",
       );
       this.store.audit(
         journeyId,
         "recommendation.scout_failed",
         "Song scout returned unusable output; using deterministic fallback candidates.",
-        { error: message }
+        { error: message },
       );
       generated = fallbackCandidates(context, targetCount);
     }
     this.logger.info(
-      { journeyId, count: generated.length, source: generated[0]?.source, ms: Date.now() - scoutStartedAt },
-      "scout.generate.done"
+      {
+        journeyId,
+        count: generated.length,
+        source: generated[0]?.source,
+        ms: Date.now() - scoutStartedAt,
+      },
+      "scout.generate.done",
     );
 
+    return this.enrichAndStoreCandidates(journeyId, generated);
+  }
+
+  private async generateAndStoreCandidateSet(
+    journeyId: string,
+    context: JourneyContext,
+    policy: RecommendationPolicy,
+    targetCount: number,
+  ): Promise<SongCandidate[]> {
+    const [chartCandidates, aiCandidates] = await Promise.all([
+      this.generateAndStoreLastfmCandidates(
+        journeyId,
+        context,
+        policy,
+        targetCount + 8,
+      ),
+      this.generateAndStoreCandidates(journeyId, context, targetCount, policy),
+    ]);
+    const seen = new Set<string>();
+    return [...chartCandidates, ...aiCandidates].filter((candidate) => {
+      const key = songKey(candidate.artist, candidate.title);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  private filterFreshCandidates(
+    candidates: SongCandidate[],
+    consumedSongKeys: Set<string>,
+  ): SongCandidate[] {
+    const seen = new Set(consumedSongKeys);
+    return candidates.filter((candidate) => {
+      const key = songKey(candidate.artist, candidate.title);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  private async generateAndStoreLastfmCandidates(
+    journeyId: string,
+    context: JourneyContext,
+    policy: RecommendationPolicy,
+    targetCount: number,
+  ): Promise<SongCandidate[]> {
+    if (!this.lastfmCharts) return [];
+    const country = this.countryNameForCharts(context);
+    const tags = policy.moodTags.slice(0, policy.familyMode ? 5 : 3);
+    const [geoTracks, tagTracks] = await Promise.all([
+      this.lastfmCharts.getGeoTopTracks(country, Math.max(targetCount, 30)),
+      Promise.all(
+        tags.map((tag) => this.lastfmCharts!.getTagTopTracks(tag, 12)),
+      ),
+    ]);
+    const candidates = lastfmTracksToCandidates(
+      [...geoTracks, ...tagTracks.flat()],
+      context,
+      policy.moodTags,
+    ).slice(0, targetCount);
+    if (candidates.length === 0) return [];
+    this.logger.info(
+      { journeyId, country, tags, count: candidates.length },
+      "lastfm.candidates.done",
+    );
+    this.store.audit(
+      journeyId,
+      "recommendation.lastfm",
+      `Loaded ${candidates.length} Last.fm chart/tag candidates.`,
+      {
+        country,
+        tags,
+      },
+    );
+    return this.enrichAndStoreCandidates(journeyId, candidates);
+  }
+
+  private countryNameForCharts(context: JourneyContext): string | undefined {
+    if (context.countryName) return context.countryName;
+    if (
+      context.countryCode &&
+      COUNTRY_NAME_BY_CODE[context.countryCode.toUpperCase()]
+    ) {
+      return COUNTRY_NAME_BY_CODE[context.countryCode.toUpperCase()];
+    }
+    const regionCountry = context.coarseRegion
+      ?.split(",")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .at(-1);
+    if (regionCountry) return regionCountry;
+    return (
+      COUNTRY_NAME_BY_CODE[this.config.SPOTIFY_MARKET.toUpperCase()] ??
+      COUNTRY_NAME_BY_CODE[this.config.TIDAL_COUNTRY_CODE.toUpperCase()]
+    );
+  }
+
+  private async enrichAndStoreCandidates(
+    journeyId: string,
+    generated: SongCandidate[],
+  ): Promise<SongCandidate[]> {
     const enrichStartedAt = Date.now();
-    const enriched = await Promise.all(generated.map((candidate) => this.openMusic.enrichCandidate(candidate)));
-    this.logger.info({ journeyId, count: enriched.length, ms: Date.now() - enrichStartedAt }, "scout.enrich.done");
+    const enriched = await Promise.all(
+      generated.map((candidate) => this.openMusic.enrichCandidate(candidate)),
+    );
+    this.logger.info(
+      { journeyId, count: enriched.length, ms: Date.now() - enrichStartedAt },
+      "scout.enrich.done",
+    );
     return enriched.map((candidate) => {
       const id = this.store.saveCandidate(journeyId, candidate);
       return { ...candidate, id };
     });
   }
 
-  private storeResolved(journeyId: string, candidates: SongCandidate[], resolved: ResolvedTrack[]): string[] {
+  private storeResolved(
+    journeyId: string,
+    candidates: SongCandidate[],
+    resolved: ResolvedTrack[],
+  ): string[] {
     return resolved.map((track) => {
-      const candidate = candidates.find((item) => item.artist === track.artist || item.title === track.title);
+      const candidate = candidates.find(
+        (item) => item.artist === track.artist || item.title === track.title,
+      );
       return this.store.saveResolvedTrack(journeyId, candidate?.id, track);
     });
   }
 
-  private async ensureTidalPlaylist(journeyId: string, destination: string): Promise<void> {
+  private async ensureTidalPlaylist(
+    journeyId: string,
+    destination: string,
+  ): Promise<void> {
     const journey = this.getJourneyOrThrow(journeyId);
     if (journey.tidalPlaylistId) {
       return;
@@ -1334,17 +1955,26 @@ export class JourneyService {
       name: `AI Journey DJ - ${destination}`,
       description: `Generated for ${destination}. Updated in 5-track rolling batches.`,
       countryCode: this.config.TIDAL_COUNTRY_CODE,
-      idempotencyKey: `playlist-${journeyId}`
+      idempotencyKey: `playlist-${journeyId}`,
     });
 
-    this.store.updateJourneyPlaylist(journeyId, playlist.id, playlist.url ?? undefined);
-    this.store.audit(journeyId, "tidal.playlist_created", "TIDAL playlist created.", { playlistId: playlist.id });
+    this.store.updateJourneyPlaylist(
+      journeyId,
+      playlist.id,
+      playlist.url ?? undefined,
+    );
+    this.store.audit(
+      journeyId,
+      "tidal.playlist_created",
+      "TIDAL playlist created.",
+      { playlistId: playlist.id },
+    );
   }
 
   private saveSession(session: PlaybackSession): void {
     this.store.savePlaybackSession({
       ...session,
-      targetBufferSize: 5
+      targetBufferSize: 5,
     });
   }
 }

@@ -5,7 +5,7 @@ import type { AppConfig } from "../config/env.js";
 import type { TeslaAuthService } from "../auth/teslaAuth.js";
 import type { JourneyService } from "../journeys/journeyService.js";
 import type { Store } from "../db/store.js";
-import { makeGeocoder } from "./geocoder.js";
+import { makeGeocodeResolver, type GeocodeResult } from "./geocoder.js";
 import type { StreamLiveness } from "./streamSource.js";
 import { shouldPollRest } from "./streamSource.js";
 
@@ -18,7 +18,10 @@ export interface PollDeps {
   /** When provided and true, streaming is live → the REST tick stands down (no API call). */
   streamingIsFresh?: () => boolean;
   ingest: (event: NormalizedTelemetryEvent) => Promise<void>;
-  geocode: (lat: number, lon: number) => Promise<string | undefined>;
+  geocode: (
+    lat: number,
+    lon: number,
+  ) => Promise<string | GeocodeResult | undefined>;
   appSecret: string;
   fetchImpl: typeof fetch;
 }
@@ -40,16 +43,34 @@ export async function pollTeslaOnce(deps: PollDeps): Promise<void> {
 
   const auth = { Authorization: `Bearer ${deps.accessToken}` };
   const base = deps.apiBaseUrl.replace(/\/$/, "");
-  const endpoints = encodeURIComponent("drive_state;charge_state;climate_state");
-  const dataResponse = await deps.fetchImpl(`${base}/api/1/vehicles/${id}/vehicle_data?endpoints=${endpoints}`, {
-    headers: auth
-  });
+  const endpoints = encodeURIComponent(
+    "drive_state;charge_state;climate_state",
+  );
+  const dataResponse = await deps.fetchImpl(
+    `${base}/api/1/vehicles/${id}/vehicle_data?endpoints=${endpoints}`,
+    {
+      headers: auth,
+    },
+  );
   if (!dataResponse.ok) return; // 408 asleep/offline (does not wake the car) → skip
 
-  const payload = (await dataResponse.json()) as { response?: Record<string, unknown> };
-  const { coordinates, ...event } = normalizeFleetVehicleData(payload.response ?? {}, deps.appSecret);
+  const payload = (await dataResponse.json()) as {
+    response?: Record<string, unknown>;
+  };
+  const { coordinates, ...event } = normalizeFleetVehicleData(
+    payload.response ?? {},
+    deps.appSecret,
+  );
   if (coordinates) {
-    event.coarseRegion = await deps.geocode(coordinates.lat, coordinates.lon);
+    const geocoded = await deps.geocode(coordinates.lat, coordinates.lon);
+    if (typeof geocoded === "string") {
+      event.coarseRegion = geocoded;
+    } else if (geocoded) {
+      event.coarseRegion = geocoded.coarseRegion;
+      event.countryName = geocoded.countryName;
+      event.countryCode = geocoded.countryCode;
+      event.geoSource = geocoded.geoSource;
+    }
   }
   await deps.ingest(event);
 }
@@ -70,11 +91,16 @@ export function makeVehicleIdResolver(opts: {
     if (cached) return cached;
     const base = opts.apiBaseUrl.replace(/\/$/, "");
     const token = await opts.getAccessToken();
-    const res = await opts.fetchImpl(`${base}/api/1/vehicles`, { headers: { Authorization: `Bearer ${token}` } });
+    const res = await opts.fetchImpl(`${base}/api/1/vehicles`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
     if (!res.ok) return undefined;
-    const list = (await res.json()) as { response?: Array<{ id_s?: string; id?: number }> };
+    const list = (await res.json()) as {
+      response?: Array<{ id_s?: string; id?: number }>;
+    };
     const vehicle = (list.response ?? [])[0];
-    cached = vehicle?.id_s ?? (vehicle?.id != null ? String(vehicle.id) : undefined);
+    cached =
+      vehicle?.id_s ?? (vehicle?.id != null ? String(vehicle.id) : undefined);
     return cached;
   };
 }
@@ -85,16 +111,16 @@ export function startTeslaFleetPoller(
   teslaAuth: TeslaAuthService,
   journeyService: JourneyService,
   liveness: StreamLiveness,
-  logger: { warn: (obj: Record<string, unknown>, msg?: string) => void }
+  logger: { warn: (obj: Record<string, unknown>, msg?: string) => void },
 ): NodeJS.Timeout | undefined {
   if (!config.TESLA_FLEET_ENABLED) return undefined;
-  const geocode = makeGeocoder({ baseUrl: config.GEOCODER_URL });
+  const geocode = makeGeocodeResolver({ baseUrl: config.GEOCODER_URL });
   // Resolver persists across ticks so the vehicle id is discovered at most once.
   const resolveVehicleId = makeVehicleIdResolver({
     apiBaseUrl: config.TESLA_API_BASE_URL,
     configuredVehicleId: config.TESLA_VEHICLE_ID,
     getAccessToken: () => teslaAuth.getAccessToken(),
-    fetchImpl: fetch
+    fetchImpl: fetch,
   });
 
   const tick = async () => {
@@ -107,14 +133,21 @@ export function startTeslaFleetPoller(
         resolveVehicleId,
         hasActiveJourney: () => store.listActiveJourneys().length > 0,
         streamingIsFresh: () =>
-          !shouldPollRest(liveness.lastIso(), Date.now(), config.STREAM_FRESH_WINDOW_SECONDS * 1000),
+          !shouldPollRest(
+            liveness.lastIso(),
+            Date.now(),
+            config.STREAM_FRESH_WINDOW_SECONDS * 1000,
+          ),
         ingest: (event) => journeyService.ingestTelemetry(event),
         geocode,
         appSecret: config.APP_SECRET,
-        fetchImpl: fetch
+        fetchImpl: fetch,
       });
     } catch (error) {
-      logger.warn({ err: error instanceof Error ? error.message : String(error) }, "tesla.poll_error");
+      logger.warn(
+        { err: error instanceof Error ? error.message : String(error) },
+        "tesla.poll_error",
+      );
     }
   };
 

@@ -10,9 +10,19 @@ export type PassengerMode = "solo" | "couple" | "family" | "friends";
 
 export type SpeedBucket = "parked" | "city" | "country" | "highway" | "unknown";
 
-export type TemperatureBucket = "cold" | "cool" | "mild" | "warm" | "hot" | "unknown";
+export type TemperatureBucket =
+  | "cold"
+  | "cool"
+  | "mild"
+  | "warm"
+  | "hot"
+  | "unknown";
 
-export type PlaylistUpdateStatus = "success" | "degraded" | "failed" | "pending";
+export type PlaylistUpdateStatus =
+  | "success"
+  | "degraded"
+  | "failed"
+  | "pending";
 
 export type StreamingProvider = "spotify" | "tidal";
 
@@ -43,6 +53,9 @@ export interface TasteProfile {
 export interface JourneyContext {
   destination: string;
   coarseRegion?: string;
+  countryName?: string;
+  countryCode?: string;
+  geoSource?: "reverse-geocode" | "manual" | "simulated";
   localTimeIso: string;
   weatherFeel?: string;
   etaMinutes?: number;
@@ -65,7 +78,12 @@ export interface JourneyContext {
   telemetrySource?: "streaming" | "polling";
 }
 
-export type SongCandidateRole = "anchor" | "momentum" | "bridge" | "surprise" | "resolution";
+export type SongCandidateRole =
+  | "anchor"
+  | "momentum"
+  | "bridge"
+  | "surprise"
+  | "resolution";
 
 export interface SongCandidateScores {
   contextFit: number;
@@ -94,8 +112,22 @@ export interface SongCandidate {
   scores?: SongCandidateScores;
   /** Privacy-safe drive signals that influenced this pick. */
   telemetrySignals?: string[];
+  popularity?: number;
+  explicit?: boolean;
+  releaseDate?: string;
+  chartRank?: number;
+  chartPlaycount?: number;
+  chartCountry?: string;
+  chartSource?: string;
+  moodTags?: string[];
   reason: string;
-  source: "grok" | "gemini" | "fallback" | "musicbrainz" | "listenbrainz";
+  source:
+    | "grok"
+    | "gemini"
+    | "fallback"
+    | "musicbrainz"
+    | "listenbrainz"
+    | "lastfm";
   confidence: number;
 }
 
@@ -110,6 +142,14 @@ export interface ResolvedTrack {
   artist: string;
   title: string;
   isrc?: string;
+  popularity?: number;
+  explicit?: boolean;
+  releaseDate?: string;
+  chartRank?: number;
+  chartPlaycount?: number;
+  chartCountry?: string;
+  chartSource?: string;
+  moodTags?: string[];
   matchConfidence: number;
   matchReason: string;
 }
@@ -131,6 +171,9 @@ export interface NormalizedTelemetryEvent {
   journeyId?: string;
   timestampIso: string;
   coarseRegion?: string;
+  countryName?: string;
+  countryCode?: string;
+  geoSource?: "reverse-geocode" | "manual" | "simulated";
   destination?: string;
   etaMinutes?: number;
   speedKph?: number;
@@ -230,7 +273,8 @@ export function clampConfidence(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
-const VERSION_QUALIFIER = /\b(live|remaster(?:ed)?|extended|radio edit|mono|stereo|deluxe|acoustic|version|intro)\b/i;
+const VERSION_QUALIFIER =
+  /\b(live|remaster(?:ed)?|extended|radio edit|mono|stereo|deluxe|acoustic|version|intro)\b/i;
 
 /**
  * Reduces a track title to its "base song" form for de-duplication: drops bracketed segments

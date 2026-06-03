@@ -4,20 +4,27 @@ export interface Db {
   execute(sql: string): void;
   get<T>(sql: string, params?: any[]): T | undefined;
   all<T>(sql: string, params?: any[]): T[];
-  run(sql: string, params?: any[]): { lastInsertRowid: number | bigint; changes: number | bigint };
+  run(
+    sql: string,
+    params?: any[],
+  ): { lastInsertRowid: number | bigint; changes: number | bigint };
 }
 
 export function openDatabase(path: string): Db {
   const db = new DatabaseSync(path);
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA foreign_keys = ON;");
-  const bind = (params: any[]) => params.map((value) => (value === undefined ? null : value));
+  const bind = (params: any[]) =>
+    params.map((value) => (value === undefined ? null : value));
 
   return {
     execute: (sql) => db.exec(sql),
-    get: <T>(sql: string, params: any[] = []) => db.prepare(sql).get(...bind(params)) as T | undefined,
-    all: <T>(sql: string, params: any[] = []) => db.prepare(sql).all(...bind(params)) as T[],
-    run: (sql: string, params: any[] = []) => db.prepare(sql).run(...bind(params))
+    get: <T>(sql: string, params: any[] = []) =>
+      db.prepare(sql).get(...bind(params)) as T | undefined,
+    all: <T>(sql: string, params: any[] = []) =>
+      db.prepare(sql).all(...bind(params)) as T[],
+    run: (sql: string, params: any[] = []) =>
+      db.prepare(sql).run(...bind(params)),
   };
 }
 
@@ -64,9 +71,12 @@ export function migrate(db: Db): void {
     CREATE TABLE IF NOT EXISTS telemetry_snapshots (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       journey_id TEXT,
-      timestamp TEXT NOT NULL,
-      coarse_region TEXT,
-      destination TEXT,
+	      timestamp TEXT NOT NULL,
+	      coarse_region TEXT,
+	      country_name TEXT,
+	      country_code TEXT,
+	      geo_source TEXT,
+	      destination TEXT,
       eta_minutes INTEGER,
       speed_kph REAL,
       outside_temp_c REAL,
@@ -91,9 +101,17 @@ export function migrate(db: Db): void {
       isrc TEXT,
       genre TEXT,
       lens TEXT,
-      role TEXT,
-      scores_json TEXT,
-      reason TEXT NOT NULL,
+	      role TEXT,
+	      scores_json TEXT,
+	      popularity INTEGER,
+	      explicit INTEGER,
+	      release_date TEXT,
+	      chart_rank INTEGER,
+	      chart_playcount INTEGER,
+	      chart_country TEXT,
+	      chart_source TEXT,
+	      mood_tags_json TEXT,
+	      reason TEXT NOT NULL,
       source TEXT NOT NULL,
       confidence REAL NOT NULL,
       created_at TEXT NOT NULL
@@ -111,9 +129,17 @@ export function migrate(db: Db): void {
       market TEXT,
       album_art_url TEXT,
       artist TEXT NOT NULL,
-      title TEXT NOT NULL,
-      isrc TEXT,
-      match_confidence REAL NOT NULL,
+	      title TEXT NOT NULL,
+	      isrc TEXT,
+	      popularity INTEGER,
+	      explicit INTEGER,
+	      release_date TEXT,
+	      chart_rank INTEGER,
+	      chart_playcount INTEGER,
+	      chart_country TEXT,
+	      chart_source TEXT,
+	      mood_tags_json TEXT,
+	      match_confidence REAL NOT NULL,
       match_reason TEXT NOT NULL,
       added_to_playlist INTEGER NOT NULL DEFAULT 0,
       saved_to_playlist INTEGER NOT NULL DEFAULT 0,
@@ -183,15 +209,28 @@ export function migrate(db: Db): void {
   tryAddColumn(db, "journeys", "taste_weight", "REAL");
   tryAddColumn(db, "journeys", "spotify_playlist_id", "TEXT");
   tryAddColumn(db, "journeys", "spotify_playlist_url", "TEXT");
-  tryAddColumn(db, "resolved_tracks", "saved_to_playlist", "INTEGER NOT NULL DEFAULT 0");
+  tryAddColumn(
+    db,
+    "resolved_tracks",
+    "saved_to_playlist",
+    "INTEGER NOT NULL DEFAULT 0",
+  );
   tryAddColumn(db, "resolved_tracks", "provider_uri", "TEXT");
   tryAddColumn(db, "resolved_tracks", "external_url", "TEXT");
   tryAddColumn(db, "resolved_tracks", "is_playable", "INTEGER");
   tryAddColumn(db, "resolved_tracks", "market", "TEXT");
   tryAddColumn(db, "resolved_tracks", "album_art_url", "TEXT");
   tryAddColumn(db, "playlist_updates", "provider", "TEXT");
-  tryAddColumn(db, "playback_sessions", "played_track_ids", "TEXT NOT NULL DEFAULT '[]'");
+  tryAddColumn(
+    db,
+    "playback_sessions",
+    "played_track_ids",
+    "TEXT NOT NULL DEFAULT '[]'",
+  );
   tryAddColumn(db, "telemetry_snapshots", "received_at", "TEXT");
+  tryAddColumn(db, "telemetry_snapshots", "country_name", "TEXT");
+  tryAddColumn(db, "telemetry_snapshots", "country_code", "TEXT");
+  tryAddColumn(db, "telemetry_snapshots", "geo_source", "TEXT");
   tryAddColumn(db, "telemetry_snapshots", "speed_kph", "REAL");
   tryAddColumn(db, "telemetry_snapshots", "outside_temp_c", "REAL");
   tryAddColumn(db, "telemetry_snapshots", "traffic_delay_minutes", "REAL");
@@ -201,20 +240,52 @@ export function migrate(db: Db): void {
   tryAddColumn(db, "telemetry_snapshots", "brake_pedal", "INTEGER");
   tryAddColumn(db, "telemetry_snapshots", "hazards_active", "INTEGER");
   tryAddColumn(db, "journeys", "drive_mode", "TEXT");
-  tryAddColumn(db, "journeys", "adaptive_mode_enabled", "INTEGER NOT NULL DEFAULT 1");
+  tryAddColumn(
+    db,
+    "journeys",
+    "adaptive_mode_enabled",
+    "INTEGER NOT NULL DEFAULT 1",
+  );
   tryAddColumn(db, "song_candidates", "genre", "TEXT");
   tryAddColumn(db, "song_candidates", "lens", "TEXT");
   tryAddColumn(db, "song_candidates", "role", "TEXT");
   tryAddColumn(db, "song_candidates", "scores_json", "TEXT");
+  tryAddColumn(db, "song_candidates", "popularity", "INTEGER");
+  tryAddColumn(db, "song_candidates", "explicit", "INTEGER");
+  tryAddColumn(db, "song_candidates", "release_date", "TEXT");
+  tryAddColumn(db, "song_candidates", "chart_rank", "INTEGER");
+  tryAddColumn(db, "song_candidates", "chart_playcount", "INTEGER");
+  tryAddColumn(db, "song_candidates", "chart_country", "TEXT");
+  tryAddColumn(db, "song_candidates", "chart_source", "TEXT");
+  tryAddColumn(db, "song_candidates", "mood_tags_json", "TEXT");
+  tryAddColumn(db, "resolved_tracks", "popularity", "INTEGER");
+  tryAddColumn(db, "resolved_tracks", "explicit", "INTEGER");
+  tryAddColumn(db, "resolved_tracks", "release_date", "TEXT");
+  tryAddColumn(db, "resolved_tracks", "chart_rank", "INTEGER");
+  tryAddColumn(db, "resolved_tracks", "chart_playcount", "INTEGER");
+  tryAddColumn(db, "resolved_tracks", "chart_country", "TEXT");
+  tryAddColumn(db, "resolved_tracks", "chart_source", "TEXT");
+  tryAddColumn(db, "resolved_tracks", "mood_tags_json", "TEXT");
 
-  db.run("INSERT OR IGNORE INTO users (id, created_at) VALUES (?, ?)", ["local", new Date().toISOString()]);
+  db.run("INSERT OR IGNORE INTO users (id, created_at) VALUES (?, ?)", [
+    "local",
+    new Date().toISOString(),
+  ]);
 }
 
-function tryAddColumn(db: Db, table: string, column: string, definition: string): void {
+function tryAddColumn(
+  db: Db,
+  table: string,
+  column: string,
+  definition: string,
+): void {
   try {
     db.execute(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
   } catch (error) {
-    if (error instanceof Error && error.message.toLowerCase().includes("duplicate column")) {
+    if (
+      error instanceof Error &&
+      error.message.toLowerCase().includes("duplicate column")
+    ) {
       return;
     }
     throw error;
