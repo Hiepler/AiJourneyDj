@@ -5,23 +5,35 @@ import type { AppConfig } from "../config/env.js";
 import type { TidalAuthService } from "../auth/tidalAuth.js";
 import type { SpotifyAuthService } from "../auth/spotifyAuth.js";
 import { contextFromJourney, type Store } from "../db/store.js";
-import { shouldPollRest, type StreamLiveness } from "../telemetry/streamSource.js";
+import {
+  shouldPollRest,
+  type StreamLiveness,
+} from "../telemetry/streamSource.js";
 import type { JourneyService } from "./journeyService.js";
 
 const startSchema = z.object({
   destination: z.string().min(2),
   userPrompt: z.string().min(1).default("balanced road-trip energy"),
-  passengerMode: z.enum(["solo", "couple", "family", "friends"]).default("solo"),
+  passengerMode: z
+    .enum(["solo", "couple", "family", "friends"])
+    .default("solo"),
   provider: z.enum(["spotify", "tidal"]).default("spotify"),
-  deviceId: z.string().min(1).optional()
+  deviceId: z.string().min(1).optional(),
 });
 
 const deviceSchema = z.object({
   deviceId: z.string().min(1),
   status: z
-    .enum(["ready", "not_ready", "account_error", "authentication_error", "playback_error", "autoplay_failed"])
+    .enum([
+      "ready",
+      "not_ready",
+      "account_error",
+      "authentication_error",
+      "playback_error",
+      "autoplay_failed",
+    ])
     .default("ready"),
-  syncOnly: z.boolean().optional()
+  syncOnly: z.boolean().optional(),
 });
 
 export async function registerJourneyRoutes(
@@ -31,7 +43,7 @@ export async function registerJourneyRoutes(
   tidalAuth: TidalAuthService,
   spotifyAuth: SpotifyAuthService,
   config: AppConfig,
-  streamLiveness: StreamLiveness
+  streamLiveness: StreamLiveness,
 ): Promise<void> {
   app.post("/journeys", async (request, reply) => {
     const input = startSchema.parse(request.body);
@@ -39,14 +51,14 @@ export async function registerJourneyRoutes(
     if (input.provider === "tidal" && !tidalAuth.isConnected()) {
       return reply.code(401).send({
         error: "TIDAL is not connected.",
-        hint: "Click the TIDAL button in the app to log in before starting a journey."
+        hint: "Click the TIDAL button in the app to log in before starting a journey.",
       });
     }
 
     if (input.provider === "spotify" && !spotifyAuth.isConnected()) {
       return reply.code(401).send({
         error: "Spotify is not connected.",
-        hint: "Click the Spotify button in the app to log in before starting a journey."
+        hint: "Click the Spotify button in the app to log in before starting a journey.",
       });
     }
 
@@ -63,17 +75,24 @@ export async function registerJourneyRoutes(
     const analysisFailed = store.latestAuditEvent(id, "analysis.failed");
     const lastUpdateFailed = latestUpdate?.status === "failed";
     const failureIsFresh = Boolean(
-      analysisFailed && (!latestUpdate || analysisFailed.createdAtIso > latestUpdate.createdAtIso)
+      analysisFailed &&
+      (!latestUpdate ||
+        analysisFailed.createdAtIso > latestUpdate.createdAtIso),
     );
 
     const telemetrySource = shouldPollRest(
       streamLiveness.lastIso(),
       Date.now(),
-      config.STREAM_FRESH_WINDOW_SECONDS * 1000
+      config.STREAM_FRESH_WINDOW_SECONDS * 1000,
     )
       ? "polling"
       : "streaming";
-    const ctx = contextFromJourney(journey, store.latestTelemetry(id), store.recentTelemetry(id), telemetrySource);
+    const ctx = contextFromJourney(
+      journey,
+      store.latestTelemetry(id),
+      store.recentTelemetry(id),
+      telemetrySource,
+    );
     const taste = store.getCachedTasteProfile("local");
 
     return {
@@ -85,7 +104,8 @@ export async function registerJourneyRoutes(
         journey.status === "active" &&
         !hasTracks &&
         (!latestUpdate || lastUpdateFailed),
-      analysisError: !hasTracks && failureIsFresh ? analysisFailed!.message : undefined,
+      analysisError:
+        !hasTracks && failureIsFresh ? analysisFailed!.message : undefined,
       // Privacy-safe glanceable drive context (no raw GPS/VIN).
       context: {
         phase: ctx.phase,
@@ -97,6 +117,9 @@ export async function registerJourneyRoutes(
         autopilotState: ctx.autopilotState,
         batteryPercent: ctx.batteryPercent,
         coarseRegion: ctx.coarseRegion,
+        countryName: ctx.countryName,
+        countryCode: ctx.countryCode,
+        geoSource: ctx.geoSource,
         localTimeIso: ctx.localTimeIso,
         // Server-side ingest time of the latest telemetry → powers the "Live · vor Xs" badge.
         lastTelemetryAt: store.latestTelemetryReceivedAt(id),
@@ -105,10 +128,10 @@ export async function registerJourneyRoutes(
         driveModeReason: ctx.driveState?.reason,
         driveModeSignals: ctx.driveState?.signals,
         adaptiveModeEnabled: journey.adaptiveModeEnabled !== false,
-        telemetrySource: ctx.telemetrySource
+        telemetrySource: ctx.telemetrySource,
       },
       // Personalization readout from the 24h taste cache (only top genres exposed).
-      taste: taste ? { topGenres: taste.topGenres } : undefined
+      taste: taste ? { topGenres: taste.topGenres } : undefined,
     };
   });
 
@@ -132,7 +155,14 @@ export async function registerJourneyRoutes(
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const { phase } = z
       .object({
-        phase: z.enum(["departure", "cruise", "golden_hour", "focus", "arrival", "rest"])
+        phase: z.enum([
+          "departure",
+          "cruise",
+          "golden_hour",
+          "focus",
+          "arrival",
+          "rest",
+        ]),
       })
       .parse(request.body);
     return service.setPhase(id, phase);
@@ -140,7 +170,9 @@ export async function registerJourneyRoutes(
 
   app.post("/journeys/:id/taste", async (request) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
-    const { weight } = z.object({ weight: z.number().min(0).max(1) }).parse(request.body);
+    const { weight } = z
+      .object({ weight: z.number().min(0).max(1) })
+      .parse(request.body);
     return service.setTasteWeight(id, weight);
   });
 
@@ -149,7 +181,7 @@ export async function registerJourneyRoutes(
     const payload = z
       .object({
         direction: z.enum(["next", "previous"]),
-        deviceId: z.string().min(1).optional()
+        deviceId: z.string().min(1).optional(),
       })
       .parse(request.body);
     return service.skipSpotifyTrack(id, payload.direction, payload.deviceId);
@@ -159,7 +191,7 @@ export async function registerJourneyRoutes(
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const payload = deviceSchema.parse(request.body);
     return service.registerSpotifyDevice(id, payload.deviceId, payload.status, {
-      syncOnly: payload.syncOnly
+      syncOnly: payload.syncOnly,
     });
   });
 
@@ -171,7 +203,10 @@ export async function registerJourneyRoutes(
   app.post("/journeys/:id/playback/transport", async (request) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const payload = z
-      .object({ action: z.enum(["pause", "resume"]), deviceId: z.string().min(1).optional() })
+      .object({
+        action: z.enum(["pause", "resume"]),
+        deviceId: z.string().min(1).optional(),
+      })
       .parse(request.body);
     return service.setSpotifyTransport(id, payload.action, payload.deviceId);
   });
@@ -186,7 +221,7 @@ export async function registerJourneyRoutes(
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
-      Connection: "keep-alive"
+      Connection: "keep-alive",
     });
 
     let lastId = 0;
@@ -206,7 +241,7 @@ export async function registerJourneyRoutes(
   });
 
   app.get("/history", async () => ({
-    journeys: store.listJourneys()
+    journeys: store.listJourneys(),
   }));
 
   app.get("/history/:id", async (request) => {
@@ -216,7 +251,7 @@ export async function registerJourneyRoutes(
       latestUpdate: store.latestPlaylistUpdate(id),
       tracks: store.listResolvedTracks(id),
       playbackSession: store.getPlaybackSession(id),
-      events: store.auditEvents(id)
+      events: store.auditEvents(id),
     };
   });
 }

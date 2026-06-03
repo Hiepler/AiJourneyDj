@@ -11,7 +11,7 @@ import type {
   SongCandidate,
   SpeedBucket,
   TasteProfile,
-  TemperatureBucket
+  TemperatureBucket,
 } from "@ai-journey-dj/core";
 import { speedBucket, temperatureBucket } from "@ai-journey-dj/telemetry";
 import { assessDriveState } from "@ai-journey-dj/recommendation";
@@ -44,17 +44,17 @@ export class Store {
   constructor(private readonly db: Db) {}
 
   saveOauthState(state: string, codeVerifier: string): void {
-    this.db.run("INSERT INTO oauth_states (state, code_verifier, created_at) VALUES (?, ?, ?)", [
-      state,
-      codeVerifier,
-      now()
-    ]);
+    this.db.run(
+      "INSERT INTO oauth_states (state, code_verifier, created_at) VALUES (?, ?, ?)",
+      [state, codeVerifier, now()],
+    );
   }
 
   consumeOauthState(state: string): string | undefined {
-    const row = this.db.get<{ code_verifier: string }>("SELECT code_verifier FROM oauth_states WHERE state = ?", [
-      state
-    ]);
+    const row = this.db.get<{ code_verifier: string }>(
+      "SELECT code_verifier FROM oauth_states WHERE state = ?",
+      [state],
+    );
     this.db.run("DELETE FROM oauth_states WHERE state = ?", [state]);
     return row?.code_verifier;
   }
@@ -64,19 +64,22 @@ export class Store {
       `INSERT INTO provider_credentials (user_id, provider, encrypted_payload, updated_at)
        VALUES ('local', ?, ?, ?)
        ON CONFLICT(user_id, provider) DO UPDATE SET encrypted_payload = excluded.encrypted_payload, updated_at = excluded.updated_at`,
-      [provider, encryptedPayload, now()]
+      [provider, encryptedPayload, now()],
     );
   }
 
   getEncryptedCredentials(provider: string): string | undefined {
     return this.db.get<{ encrypted_payload: string }>(
       "SELECT encrypted_payload FROM provider_credentials WHERE user_id = 'local' AND provider = ?",
-      [provider]
+      [provider],
     )?.encrypted_payload;
   }
 
   deleteCredentials(provider: string): void {
-    this.db.run("DELETE FROM provider_credentials WHERE user_id = 'local' AND provider = ?", [provider]);
+    this.db.run(
+      "DELETE FROM provider_credentials WHERE user_id = 'local' AND provider = ?",
+      [provider],
+    );
   }
 
   createJourney(record: JourneyRecord): void {
@@ -99,79 +102,127 @@ export class Store {
         record.tidalPlaylistId,
         record.tidalPlaylistUrl,
         record.createdAtIso,
-        record.stoppedAtIso
-      ]
+        record.stoppedAtIso,
+      ],
     );
   }
 
-  updateJourneySpotifyPlaylist(journeyId: string, playlistId: string, playlistUrl?: string): void {
-    this.db.run("UPDATE journeys SET spotify_playlist_id = ?, spotify_playlist_url = ? WHERE id = ?", [
-      playlistId,
-      playlistUrl ?? null,
-      journeyId
-    ]);
+  updateJourneySpotifyPlaylist(
+    journeyId: string,
+    playlistId: string,
+    playlistUrl?: string,
+  ): void {
+    this.db.run(
+      "UPDATE journeys SET spotify_playlist_id = ?, spotify_playlist_url = ? WHERE id = ?",
+      [playlistId, playlistUrl ?? null, journeyId],
+    );
   }
 
   updateJourneyTasteWeight(journeyId: string, tasteWeight: number): void {
-    this.db.run("UPDATE journeys SET taste_weight = ? WHERE id = ?", [tasteWeight, journeyId]);
-  }
-
-  updateJourneyDriveMode(journeyId: string, mode: DriveMode): void {
-    this.db.run("UPDATE journeys SET drive_mode = ? WHERE id = ?", [mode, journeyId]);
-  }
-
-  setAdaptiveModeEnabled(journeyId: string, enabled: boolean): void {
-    this.db.run("UPDATE journeys SET adaptive_mode_enabled = ? WHERE id = ?", [enabled ? 1 : 0, journeyId]);
-  }
-
-  updateJourneyProvider(journeyId: string, provider: "spotify" | "tidal"): void {
-    this.db.run("UPDATE journeys SET provider = ? WHERE id = ?", [provider, journeyId]);
-  }
-
-  updateJourneySpotifyDevice(journeyId: string, deviceId: string | undefined): void {
-    this.db.run("UPDATE journeys SET spotify_device_id = ? WHERE id = ?", [deviceId, journeyId]);
-  }
-
-  updateJourneyPlaylist(journeyId: string, playlistId: string, playlistUrl?: string): void {
-    this.db.run("UPDATE journeys SET tidal_playlist_id = ?, tidal_playlist_url = ? WHERE id = ?", [
-      playlistId,
-      playlistUrl ?? null,
-      journeyId
+    this.db.run("UPDATE journeys SET taste_weight = ? WHERE id = ?", [
+      tasteWeight,
+      journeyId,
     ]);
   }
 
+  updateJourneyDriveMode(journeyId: string, mode: DriveMode): void {
+    this.db.run("UPDATE journeys SET drive_mode = ? WHERE id = ?", [
+      mode,
+      journeyId,
+    ]);
+  }
+
+  setAdaptiveModeEnabled(journeyId: string, enabled: boolean): void {
+    this.db.run("UPDATE journeys SET adaptive_mode_enabled = ? WHERE id = ?", [
+      enabled ? 1 : 0,
+      journeyId,
+    ]);
+  }
+
+  updateJourneyProvider(
+    journeyId: string,
+    provider: "spotify" | "tidal",
+  ): void {
+    this.db.run("UPDATE journeys SET provider = ? WHERE id = ?", [
+      provider,
+      journeyId,
+    ]);
+  }
+
+  updateJourneySpotifyDevice(
+    journeyId: string,
+    deviceId: string | undefined,
+  ): void {
+    this.db.run("UPDATE journeys SET spotify_device_id = ? WHERE id = ?", [
+      deviceId,
+      journeyId,
+    ]);
+  }
+
+  updateJourneyPlaylist(
+    journeyId: string,
+    playlistId: string,
+    playlistUrl?: string,
+  ): void {
+    this.db.run(
+      "UPDATE journeys SET tidal_playlist_id = ?, tidal_playlist_url = ? WHERE id = ?",
+      [playlistId, playlistUrl ?? null, journeyId],
+    );
+  }
+
   updateJourneyPhase(journeyId: string, phase: string): void {
-    this.db.run("UPDATE journeys SET phase = ? WHERE id = ?", [phase, journeyId]);
+    this.db.run("UPDATE journeys SET phase = ? WHERE id = ?", [
+      phase,
+      journeyId,
+    ]);
   }
 
   stopJourney(journeyId: string): void {
-    this.db.run("UPDATE journeys SET status = 'stopped', stopped_at = ? WHERE id = ?", [now(), journeyId]);
+    this.db.run(
+      "UPDATE journeys SET status = 'stopped', stopped_at = ? WHERE id = ?",
+      [now(), journeyId],
+    );
   }
 
   getJourney(journeyId: string): JourneyRecord | undefined {
-    const row = this.db.get<any>("SELECT * FROM journeys WHERE id = ?", [journeyId]);
+    const row = this.db.get<any>("SELECT * FROM journeys WHERE id = ?", [
+      journeyId,
+    ]);
     return row ? mapJourney(row) : undefined;
   }
 
   listJourneys(limit = 30): JourneyRecord[] {
     return this.db
-      .all<any>("SELECT * FROM journeys ORDER BY created_at DESC LIMIT ?", [limit])
+      .all<any>("SELECT * FROM journeys ORDER BY created_at DESC LIMIT ?", [
+        limit,
+      ])
       .map(mapJourney);
   }
 
   listActiveJourneys(): JourneyRecord[] {
-    return this.db.all<any>("SELECT * FROM journeys WHERE status = 'active' ORDER BY created_at ASC").map(mapJourney);
+    return this.db
+      .all<any>(
+        "SELECT * FROM journeys WHERE status = 'active' ORDER BY created_at ASC",
+      )
+      .map(mapJourney);
   }
 
-  saveTelemetry(journeyId: string | undefined, event: NormalizedTelemetryEvent, phase: string): void {
+  saveTelemetry(
+    journeyId: string | undefined,
+    event: NormalizedTelemetryEvent,
+    phase: string,
+  ): void {
     this.db.run(
       `INSERT INTO telemetry_snapshots
-       (journey_id, timestamp, coarse_region, destination, eta_minutes, speed_kph, outside_temp_c, speed_bucket, temperature_bucket, phase, autopilot_state, battery_percent, traffic_delay_minutes, energy_percent_at_arrival, audio_volume, longitudinal_accel_mps2, brake_pedal, hazards_active, received_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (journey_id, timestamp, coarse_region, country_name, country_code, geo_source, destination, eta_minutes, speed_kph, outside_temp_c, speed_bucket, temperature_bucket, phase, autopilot_state, battery_percent, traffic_delay_minutes, energy_percent_at_arrival, audio_volume, longitudinal_accel_mps2, brake_pedal, hazards_active, received_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         journeyId,
         event.timestampIso,
         event.coarseRegion,
+        event.countryName,
+        event.countryCode,
+        event.geoSource,
         event.destination,
         event.etaMinutes,
         event.speedKph,
@@ -187,8 +238,8 @@ export class Store {
         event.longitudinalAccelMps2 ?? null,
         event.brakePedal === undefined ? null : event.brakePedal ? 1 : 0,
         event.hazardsActive === undefined ? null : event.hazardsActive ? 1 : 0,
-        new Date().toISOString()
-      ]
+        new Date().toISOString(),
+      ],
     );
   }
 
@@ -196,7 +247,7 @@ export class Store {
   latestTelemetryReceivedAt(journeyId: string): string | undefined {
     const row = this.db.get<{ received_at: string | null }>(
       "SELECT received_at FROM telemetry_snapshots WHERE journey_id = ? ORDER BY timestamp DESC LIMIT 1",
-      [journeyId]
+      [journeyId],
     );
     return row?.received_at ?? undefined;
   }
@@ -204,7 +255,7 @@ export class Store {
   latestTelemetry(journeyId: string): TelemetrySnapshotReadModel | undefined {
     const row = this.db.get<any>(
       "SELECT * FROM telemetry_snapshots WHERE journey_id = ? ORDER BY timestamp DESC LIMIT 1",
-      [journeyId]
+      [journeyId],
     );
 
     if (!row) return undefined;
@@ -213,10 +264,10 @@ export class Store {
 
   recentTelemetry(journeyId: string, limit = 5): TelemetrySnapshotReadModel[] {
     return this.db
-      .all<any>("SELECT * FROM telemetry_snapshots WHERE journey_id = ? ORDER BY timestamp DESC LIMIT ?", [
-        journeyId,
-        limit
-      ])
+      .all<any>(
+        "SELECT * FROM telemetry_snapshots WHERE journey_id = ? ORDER BY timestamp DESC LIMIT ?",
+        [journeyId, limit],
+      )
       .map(mapTelemetrySnapshot);
   }
 
@@ -224,8 +275,8 @@ export class Store {
     const id = candidate.id ?? crypto.randomUUID();
     this.db.run(
       `INSERT OR IGNORE INTO song_candidates
-       (id, journey_id, artist, title, album, year, isrc, genre, lens, role, scores_json, reason, source, confidence, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, journey_id, artist, title, album, year, isrc, genre, lens, role, scores_json, popularity, explicit, release_date, chart_rank, chart_playcount, chart_country, chart_source, mood_tags_json, reason, source, confidence, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         journeyId,
@@ -238,21 +289,37 @@ export class Store {
         candidate.lens,
         candidate.role,
         candidate.scores ? JSON.stringify(candidate.scores) : undefined,
+        candidate.popularity,
+        candidate.explicit === undefined
+          ? undefined
+          : candidate.explicit
+            ? 1
+            : 0,
+        candidate.releaseDate,
+        candidate.chartRank,
+        candidate.chartPlaycount,
+        candidate.chartCountry,
+        candidate.chartSource,
+        candidate.moodTags ? JSON.stringify(candidate.moodTags) : undefined,
         candidate.reason,
         candidate.source,
         candidate.confidence,
-        now()
-      ]
+        now(),
+      ],
     );
     return id;
   }
 
-  saveResolvedTrack(journeyId: string, candidateId: string | undefined, track: ResolvedTrack): string {
+  saveResolvedTrack(
+    journeyId: string,
+    candidateId: string | undefined,
+    track: ResolvedTrack,
+  ): string {
     const id = crypto.randomUUID();
     this.db.run(
       `INSERT OR IGNORE INTO resolved_tracks
-       (id, journey_id, candidate_id, provider, provider_track_id, provider_uri, external_url, is_playable, market, album_art_url, artist, title, isrc, match_confidence, match_reason, added_to_playlist, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+       (id, journey_id, candidate_id, provider, provider_track_id, provider_uri, external_url, is_playable, market, album_art_url, artist, title, isrc, popularity, explicit, release_date, chart_rank, chart_playcount, chart_country, chart_source, mood_tags_json, match_confidence, match_reason, added_to_playlist, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
       [
         id,
         journeyId,
@@ -267,15 +334,23 @@ export class Store {
         track.artist,
         track.title,
         track.isrc,
+        track.popularity,
+        track.explicit === undefined ? undefined : track.explicit ? 1 : 0,
+        track.releaseDate,
+        track.chartRank,
+        track.chartPlaycount,
+        track.chartCountry,
+        track.chartSource,
+        track.moodTags ? JSON.stringify(track.moodTags) : undefined,
         track.matchConfidence,
         track.matchReason,
-        now()
-      ]
+        now(),
+      ],
     );
     return (
       this.db.get<{ id: string }>(
         "SELECT id FROM resolved_tracks WHERE journey_id = ? AND provider = ? AND provider_track_id = ?",
-        [journeyId, track.provider, track.providerTrackId]
+        [journeyId, track.provider, track.providerTrackId],
       )?.id ?? id
     );
   }
@@ -287,22 +362,29 @@ export class Store {
   getCachedSpotifySearch(cacheKey: string): ResolvedTrack | null | undefined {
     const row = this.db.get<{ track_json: string | null; created_at: string }>(
       "SELECT track_json, created_at FROM spotify_search_cache WHERE cache_key = ?",
-      [cacheKey]
+      [cacheKey],
     );
     if (!row) {
       return undefined;
     }
-    if (Date.now() - new Date(row.created_at).getTime() > SPOTIFY_SEARCH_CACHE_TTL_MS) {
-      this.db.run("DELETE FROM spotify_search_cache WHERE cache_key = ?", [cacheKey]);
+    if (
+      Date.now() - new Date(row.created_at).getTime() >
+      SPOTIFY_SEARCH_CACHE_TTL_MS
+    ) {
+      this.db.run("DELETE FROM spotify_search_cache WHERE cache_key = ?", [
+        cacheKey,
+      ]);
       return undefined;
     }
-    return row.track_json ? (JSON.parse(row.track_json) as ResolvedTrack) : null;
+    return row.track_json
+      ? (JSON.parse(row.track_json) as ResolvedTrack)
+      : null;
   }
 
   saveCachedSpotifySearch(cacheKey: string, track: ResolvedTrack | null): void {
     this.db.run(
       "INSERT OR REPLACE INTO spotify_search_cache (cache_key, track_json, created_at) VALUES (?, ?, ?)",
-      [cacheKey, track ? JSON.stringify(track) : null, now()]
+      [cacheKey, track ? JSON.stringify(track) : null, now()],
     );
   }
 
@@ -313,13 +395,18 @@ export class Store {
   getCachedTasteProfile(userId: string): TasteProfile | undefined {
     const row = this.db.get<{ profile_json: string; created_at: string }>(
       "SELECT profile_json, created_at FROM taste_profile_cache WHERE user_id = ?",
-      [userId]
+      [userId],
     );
     if (!row) {
       return undefined;
     }
-    if (Date.now() - new Date(row.created_at).getTime() > TASTE_PROFILE_CACHE_TTL_MS) {
-      this.db.run("DELETE FROM taste_profile_cache WHERE user_id = ?", [userId]);
+    if (
+      Date.now() - new Date(row.created_at).getTime() >
+      TASTE_PROFILE_CACHE_TTL_MS
+    ) {
+      this.db.run("DELETE FROM taste_profile_cache WHERE user_id = ?", [
+        userId,
+      ]);
       return undefined;
     }
     return JSON.parse(row.profile_json) as TasteProfile;
@@ -328,43 +415,74 @@ export class Store {
   saveCachedTasteProfile(userId: string, profile: TasteProfile): void {
     this.db.run(
       "INSERT OR REPLACE INTO taste_profile_cache (user_id, profile_json, created_at) VALUES (?, ?, ?)",
-      [userId, JSON.stringify(profile), now()]
+      [userId, JSON.stringify(profile), now()],
     );
   }
 
   listResolvedTracks(
-    journeyId: string
-  ): Array<ResolvedTrack & { id: string; addedToPlaylist: boolean; savedToPlaylist: boolean }> {
+    journeyId: string,
+  ): Array<
+    ResolvedTrack & {
+      id: string;
+      addedToPlaylist: boolean;
+      savedToPlaylist: boolean;
+    }
+  > {
     return this.db
-      .all<any>("SELECT * FROM resolved_tracks WHERE journey_id = ? ORDER BY created_at ASC", [journeyId])
+      .all<any>(
+        "SELECT * FROM resolved_tracks WHERE journey_id = ? ORDER BY created_at ASC",
+        [journeyId],
+      )
       .map((row) => ({
         id: row.id,
         provider: row.provider,
         providerTrackId: row.provider_track_id,
         providerUri: row.provider_uri ?? undefined,
         externalUrl: row.external_url ?? undefined,
-        isPlayable: row.is_playable === null || row.is_playable === undefined ? undefined : row.is_playable === 1,
+        isPlayable:
+          row.is_playable === null || row.is_playable === undefined
+            ? undefined
+            : row.is_playable === 1,
         market: row.market ?? undefined,
         albumArtUrl: row.album_art_url ?? undefined,
         artist: row.artist,
         title: row.title,
         isrc: row.isrc,
+        popularity: row.popularity ?? undefined,
+        explicit:
+          row.explicit === null || row.explicit === undefined
+            ? undefined
+            : row.explicit === 1,
+        releaseDate: row.release_date ?? undefined,
+        chartRank: row.chart_rank ?? undefined,
+        chartPlaycount: row.chart_playcount ?? undefined,
+        chartCountry: row.chart_country ?? undefined,
+        chartSource: row.chart_source ?? undefined,
+        moodTags: row.mood_tags_json
+          ? (JSON.parse(row.mood_tags_json) as string[])
+          : undefined,
         matchConfidence: row.match_confidence,
         matchReason: row.match_reason,
         addedToPlaylist: row.added_to_playlist === 1,
-        savedToPlaylist: row.saved_to_playlist === 1
+        savedToPlaylist: row.saved_to_playlist === 1,
       }));
   }
 
   markTracksAdded(ids: string[]): void {
     for (const id of ids) {
-      this.db.run("UPDATE resolved_tracks SET added_to_playlist = 1 WHERE id = ?", [id]);
+      this.db.run(
+        "UPDATE resolved_tracks SET added_to_playlist = 1 WHERE id = ?",
+        [id],
+      );
     }
   }
 
   markTracksSavedToPlaylist(ids: string[]): void {
     for (const id of ids) {
-      this.db.run("UPDATE resolved_tracks SET saved_to_playlist = 1 WHERE id = ?", [id]);
+      this.db.run(
+        "UPDATE resolved_tracks SET saved_to_playlist = 1 WHERE id = ?",
+        [id],
+      );
     }
   }
 
@@ -382,15 +500,15 @@ export class Store {
         JSON.stringify(update.resolvedTrackIds),
         update.idempotencyKey,
         update.status,
-        update.createdAtIso
-      ]
+        update.createdAtIso,
+      ],
     );
   }
 
   latestPlaylistUpdate(journeyId: string): PlaylistUpdate | undefined {
     const row = this.db.get<any>(
       "SELECT * FROM playlist_updates WHERE journey_id = ? ORDER BY created_at DESC LIMIT 1",
-      [journeyId]
+      [journeyId],
     );
     return row
       ? {
@@ -402,7 +520,7 @@ export class Store {
           resolvedTrackIds: JSON.parse(row.resolved_track_ids),
           idempotencyKey: row.idempotency_key,
           status: row.status,
-          createdAtIso: row.created_at
+          createdAtIso: row.created_at,
         }
       : undefined;
   }
@@ -430,16 +548,21 @@ export class Store {
         JSON.stringify(session.queuedTrackIds),
         JSON.stringify(session.playedTrackIds ?? []),
         session.targetBufferSize,
-        session.lastHeartbeatAt
-      ]
+        session.lastHeartbeatAt,
+      ],
     );
   }
 
   getPlaybackSession(journeyId: string): PlaybackSession | undefined {
-    const row = this.db.get<any>("SELECT * FROM playback_sessions WHERE journey_id = ?", [journeyId]);
+    const row = this.db.get<any>(
+      "SELECT * FROM playback_sessions WHERE journey_id = ?",
+      [journeyId],
+    );
     if (!row) return undefined;
     const activeTrack = row.active_track_id
-      ? this.listResolvedTracks(journeyId).find((track) => track.id === row.active_track_id)
+      ? this.listResolvedTracks(journeyId).find(
+          (track) => track.id === row.active_track_id,
+        )
       : undefined;
     return {
       journeyId: row.journey_id,
@@ -450,7 +573,7 @@ export class Store {
       queuedTrackIds: JSON.parse(row.queued_track_ids),
       playedTrackIds: JSON.parse(row.played_track_ids ?? "[]"),
       targetBufferSize: 5,
-      lastHeartbeatAt: row.last_heartbeat_at
+      lastHeartbeatAt: row.last_heartbeat_at,
     };
   }
 
@@ -468,14 +591,17 @@ export class Store {
         operation.operation,
         operation.status,
         operation.deviceId,
-        operation.createdAtIso
-      ]
+        operation.createdAtIso,
+      ],
     );
   }
 
   listQueueOperations(journeyId: string): QueueOperation[] {
     return this.db
-      .all<any>("SELECT * FROM queue_operations WHERE journey_id = ? ORDER BY created_at ASC", [journeyId])
+      .all<any>(
+        "SELECT * FROM queue_operations WHERE journey_id = ? ORDER BY created_at ASC",
+        [journeyId],
+      )
       .map((row) => ({
         id: row.id,
         journeyId: row.journey_id,
@@ -485,39 +611,68 @@ export class Store {
         operation: row.operation,
         status: row.status,
         deviceId: row.device_id ?? undefined,
-        createdAtIso: row.created_at
+        createdAtIso: row.created_at,
       }));
   }
 
-  audit(journeyId: string | undefined, type: string, message: string, payload?: unknown): void {
+  audit(
+    journeyId: string | undefined,
+    type: string,
+    message: string,
+    payload?: unknown,
+  ): void {
     this.db.run(
       "INSERT INTO audit_events (journey_id, type, message, payload_json, created_at) VALUES (?, ?, ?, ?, ?)",
-      [journeyId, type, message, payload ? JSON.stringify(payload) : undefined, now()]
+      [
+        journeyId,
+        type,
+        message,
+        payload ? JSON.stringify(payload) : undefined,
+        now(),
+      ],
     );
   }
 
-  latestAuditEvent(journeyId: string, type: string): { message: string; createdAtIso: string } | undefined {
+  latestAuditEvent(
+    journeyId: string,
+    type: string,
+  ): { message: string; createdAtIso: string } | undefined {
     const row = this.db.get<{ message: string; created_at: string }>(
       "SELECT message, created_at FROM audit_events WHERE journey_id = ? AND type = ? ORDER BY id DESC LIMIT 1",
-      [journeyId, type]
+      [journeyId, type],
     );
-    return row ? { message: row.message, createdAtIso: row.created_at } : undefined;
+    return row
+      ? { message: row.message, createdAtIso: row.created_at }
+      : undefined;
   }
 
   clearAuditEvents(journeyId: string, type: string): void {
-    this.db.run("DELETE FROM audit_events WHERE journey_id = ? AND type = ?", [journeyId, type]);
+    this.db.run("DELETE FROM audit_events WHERE journey_id = ? AND type = ?", [
+      journeyId,
+      type,
+    ]);
   }
 
-  auditEvents(journeyId: string, sinceId = 0): Array<{ id: number; type: string; message: string; createdAtIso: string }> {
-    return this.db.all<any>(
-      "SELECT id, type, message, created_at FROM audit_events WHERE journey_id = ? AND id > ? ORDER BY id ASC LIMIT 50",
-      [journeyId, sinceId]
-    ).map((row) => ({
-      id: row.id,
-      type: row.type,
-      message: row.message,
-      createdAtIso: row.created_at
-    }));
+  auditEvents(
+    journeyId: string,
+    sinceId = 0,
+  ): Array<{
+    id: number;
+    type: string;
+    message: string;
+    createdAtIso: string;
+  }> {
+    return this.db
+      .all<any>(
+        "SELECT id, type, message, created_at FROM audit_events WHERE journey_id = ? AND id > ? ORDER BY id ASC LIMIT 50",
+        [journeyId, sinceId],
+      )
+      .map((row) => ({
+        id: row.id,
+        type: row.type,
+        message: row.message,
+        createdAtIso: row.created_at,
+      }));
   }
 }
 
@@ -537,9 +692,12 @@ function mapJourney(row: any): JourneyRecord {
     tidalPlaylistId: row.tidal_playlist_id ?? undefined,
     tidalPlaylistUrl: row.tidal_playlist_url ?? undefined,
     driveMode: (row.drive_mode as DriveMode | null) ?? undefined,
-    adaptiveModeEnabled: row.adaptive_mode_enabled === undefined ? undefined : row.adaptive_mode_enabled !== 0,
+    adaptiveModeEnabled:
+      row.adaptive_mode_enabled === undefined
+        ? undefined
+        : row.adaptive_mode_enabled !== 0,
     createdAtIso: row.created_at,
-    stoppedAtIso: row.stopped_at
+    stoppedAtIso: row.stopped_at,
   };
 }
 
@@ -547,6 +705,9 @@ function mapTelemetrySnapshot(row: any): TelemetrySnapshotReadModel {
   return {
     timestampIso: row.timestamp,
     coarseRegion: row.coarse_region ?? undefined,
+    countryName: row.country_name ?? undefined,
+    countryCode: row.country_code ?? undefined,
+    geoSource: row.geo_source ?? undefined,
     destination: row.destination ?? undefined,
     etaMinutes: row.eta_minutes ?? undefined,
     speedKph: row.speed_kph ?? undefined,
@@ -560,13 +721,21 @@ function mapTelemetrySnapshot(row: any): TelemetrySnapshotReadModel {
     energyPercentAtArrival: row.energy_percent_at_arrival ?? undefined,
     audioVolume: row.audio_volume ?? undefined,
     longitudinalAccelMps2: row.longitudinal_accel_mps2 ?? undefined,
-    brakePedal: row.brake_pedal === null || row.brake_pedal === undefined ? undefined : row.brake_pedal !== 0,
-    hazardsActive: row.hazards_active === null || row.hazards_active === undefined ? undefined : row.hazards_active !== 0,
-    receivedAtIso: row.received_at ?? undefined
+    brakePedal:
+      row.brake_pedal === null || row.brake_pedal === undefined
+        ? undefined
+        : row.brake_pedal !== 0,
+    hazardsActive:
+      row.hazards_active === null || row.hazards_active === undefined
+        ? undefined
+        : row.hazards_active !== 0,
+    receivedAtIso: row.received_at ?? undefined,
   };
 }
 
-function derivePaceTrend(history: TelemetrySnapshotReadModel[]): JourneyContext["paceTrend"] {
+function derivePaceTrend(
+  history: TelemetrySnapshotReadModel[],
+): JourneyContext["paceTrend"] {
   const ordered = [...history]
     .filter((item) => typeof item.speedKph === "number")
     .sort((a, b) => Date.parse(a.timestampIso) - Date.parse(b.timestampIso));
@@ -579,7 +748,9 @@ function derivePaceTrend(history: TelemetrySnapshotReadModel[]): JourneyContext[
   return "steady";
 }
 
-function deriveEtaTrend(history: TelemetrySnapshotReadModel[]): JourneyContext["etaTrend"] {
+function deriveEtaTrend(
+  history: TelemetrySnapshotReadModel[],
+): JourneyContext["etaTrend"] {
   const ordered = [...history]
     .filter((item) => typeof item.etaMinutes === "number")
     .sort((a, b) => Date.parse(a.timestampIso) - Date.parse(b.timestampIso));
@@ -595,13 +766,17 @@ export function contextFromJourney(
   journey: JourneyRecord,
   telemetry?: TelemetrySnapshotReadModel,
   recentTelemetry: TelemetrySnapshotReadModel[] = telemetry ? [telemetry] : [],
-  telemetrySource?: "streaming" | "polling"
+  telemetrySource?: "streaming" | "polling",
 ): JourneyContext {
   const speed = telemetry?.speedBucket ?? speedBucket(telemetry?.speedKph);
-  const temp = telemetry?.temperatureBucket ?? temperatureBucket(telemetry?.outsideTempC);
+  const temp =
+    telemetry?.temperatureBucket ?? temperatureBucket(telemetry?.outsideTempC);
   return {
     destination: telemetry?.destination ?? journey.destination,
     coarseRegion: telemetry?.coarseRegion,
+    countryName: telemetry?.countryName,
+    countryCode: telemetry?.countryCode,
+    geoSource: telemetry?.geoSource,
     localTimeIso: telemetry?.timestampIso ?? new Date().toISOString(),
     etaMinutes: telemetry?.etaMinutes,
     speedBucket: speed,
@@ -614,7 +789,7 @@ export function contextFromJourney(
     userPrompt: journey.userPrompt,
     passengerMode: journey.passengerMode,
     driveState: driveStateForBrief(journey, recentTelemetry),
-    telemetrySource
+    telemetrySource,
   };
 }
 
@@ -625,13 +800,23 @@ export function contextFromJourney(
  */
 function driveStateForBrief(
   journey: JourneyRecord,
-  recentTelemetry: TelemetrySnapshotReadModel[]
+  recentTelemetry: TelemetrySnapshotReadModel[],
 ): JourneyContext["driveState"] {
   if (journey.adaptiveModeEnabled === false) return undefined;
   const engaged = journey.driveMode ?? "neutral";
   if (engaged === "neutral") return undefined;
-  const ordered = [...recentTelemetry].sort((a, b) => Date.parse(a.timestampIso) - Date.parse(b.timestampIso));
-  const raw = assessDriveState(ordered, ordered[ordered.length - 1]?.timestampIso ?? new Date().toISOString());
+  const ordered = [...recentTelemetry].sort(
+    (a, b) => Date.parse(a.timestampIso) - Date.parse(b.timestampIso),
+  );
+  const raw = assessDriveState(
+    ordered,
+    ordered[ordered.length - 1]?.timestampIso ?? new Date().toISOString(),
+  );
   if (raw.mode === engaged) return raw;
-  return { mode: engaged, reason: engaged === "calm" ? "calmer driving" : "long drive", intensity: 0.4, signals: [] };
+  return {
+    mode: engaged,
+    reason: engaged === "calm" ? "calmer driving" : "long drive",
+    intensity: 0.4,
+    signals: [],
+  };
 }

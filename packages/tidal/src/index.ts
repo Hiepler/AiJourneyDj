@@ -47,7 +47,10 @@ export interface TidalAdapter {
     countryCode: string;
     idempotencyKey: string;
   }): Promise<void>;
-  sharingLink(args: { accessToken: string; playlistId: string }): Promise<string>;
+  sharingLink(args: {
+    accessToken: string;
+    playlistId: string;
+  }): Promise<string>;
 }
 
 interface TidalApiOptions {
@@ -58,9 +61,9 @@ interface TidalApiOptions {
 function clientFor(accessToken: string, baseUrl: string) {
   return createAPIClient(
     {
-      getCredentials: async () => ({ token: accessToken })
+      getCredentials: async () => ({ token: accessToken }),
     } as never,
-    baseUrl
+    baseUrl,
   );
 }
 
@@ -78,11 +81,11 @@ export class OfficialTidalAdapter implements TidalAdapter {
     const response = await client.POST("/playlists", {
       params: {
         query: {
-          countryCode: args.countryCode
-        }
+          countryCode: args.countryCode,
+        },
       },
       headers: {
-        "Idempotency-Key": args.idempotencyKey
+        "Idempotency-Key": args.idempotencyKey,
       },
       body: {
         data: {
@@ -90,10 +93,10 @@ export class OfficialTidalAdapter implements TidalAdapter {
           attributes: {
             accessType: "UNLISTED",
             name: args.name,
-            description: args.description
-          }
-        }
-      }
+            description: args.description,
+          },
+        },
+      },
     });
 
     if (response.error || !response.data?.data?.id) {
@@ -104,7 +107,7 @@ export class OfficialTidalAdapter implements TidalAdapter {
     return {
       id,
       name: args.name,
-      url: `https://tidal.com/playlist/${id}`
+      url: `https://tidal.com/playlist/${id}`,
     };
   }
 
@@ -115,34 +118,42 @@ export class OfficialTidalAdapter implements TidalAdapter {
     limit: number;
   }): Promise<TidalTrackSearchResult[]> {
     const client = clientFor(args.accessToken, this.options.baseUrl);
-    const response = await client.GET("/searchResults/{id}/relationships/tracks", {
-      params: {
-        path: { id: args.query },
-        query: {
-          countryCode: args.countryCode,
-          include: ["tracks"]
-        }
-      }
-    });
+    const response = await client.GET(
+      "/searchResults/{id}/relationships/tracks",
+      {
+        params: {
+          path: { id: args.query },
+          query: {
+            countryCode: args.countryCode,
+            include: ["tracks"],
+          },
+        },
+      },
+    );
 
     if (response.error) {
       throw new Error("TIDAL track search failed.");
     }
 
-    const included = Array.isArray(response.data?.included) ? response.data.included : [];
+    const included = Array.isArray(response.data?.included)
+      ? response.data.included
+      : [];
     return included
       .filter((item: any) => item?.type === "tracks" && item?.id)
       .slice(0, args.limit)
       .map((item: any) => ({
         id: item.id,
-        title: item.attributes?.title ?? item.attributes?.name ?? "Unknown title",
+        title:
+          item.attributes?.title ?? item.attributes?.name ?? "Unknown title",
         artist:
           item.attributes?.artistName ??
-          item.attributes?.artists?.map((artist: { name: string }) => artist.name).join(", ") ??
+          item.attributes?.artists
+            ?.map((artist: { name: string }) => artist.name)
+            .join(", ") ??
           "Unknown artist",
         isrc: item.attributes?.isrc,
         album: item.attributes?.album?.title,
-        explicit: item.attributes?.explicit
+        explicit: item.attributes?.explicit,
       }));
   }
 
@@ -161,20 +172,20 @@ export class OfficialTidalAdapter implements TidalAdapter {
     const response = await client.POST("/playlists/{id}/relationships/items", {
       params: {
         path: { id: args.playlistId },
-        query: { countryCode: args.countryCode }
+        query: { countryCode: args.countryCode },
       },
       headers: {
-        "Idempotency-Key": args.idempotencyKey
+        "Idempotency-Key": args.idempotencyKey,
       },
       body: {
         data: args.trackIds.map((id) => ({
           id,
           type: "tracks" as const,
           meta: {
-            addedAt: new Date().toISOString()
-          }
-        }))
-      }
+            addedAt: new Date().toISOString(),
+          },
+        })),
+      },
     });
 
     if (response.error) {
@@ -182,7 +193,10 @@ export class OfficialTidalAdapter implements TidalAdapter {
     }
   }
 
-  async sharingLink(args: { accessToken: string; playlistId: string }): Promise<string> {
+  async sharingLink(args: {
+    accessToken: string;
+    playlistId: string;
+  }): Promise<string> {
     return `https://tidal.com/playlist/${args.playlistId}`;
   }
 }
@@ -201,7 +215,7 @@ export class MockTidalAdapter implements TidalAdapter {
     this.playlists.set(id, []);
     return {
       id,
-      name: args.name
+      name: args.name,
     };
   }
 
@@ -211,12 +225,16 @@ export class MockTidalAdapter implements TidalAdapter {
     countryCode: string;
     limit: number;
   }): Promise<TidalTrackSearchResult[]> {
-    const [artist = "Unknown Artist", title = args.query] = args.query.split(" - ");
+    const [artist = "Unknown Artist", title = args.query] =
+      args.query.split(" - ");
     return Array.from({ length: args.limit }, (_, index) => ({
       id: `mock-track-${normalizeText(args.query)}-${index}`,
       title: index === 0 ? title.trim() : `${title.trim()} (${index + 1})`,
       artist: artist.trim(),
-      isrc: index === 0 ? `MOCK${normalizeText(args.query).slice(0, 8).toUpperCase()}` : undefined
+      isrc:
+        index === 0
+          ? `MOCK${normalizeText(args.query).slice(0, 8).toUpperCase()}`
+          : undefined,
     }));
   }
 
@@ -242,10 +260,12 @@ export class MockTidalAdapter implements TidalAdapter {
 export class TidalResolver {
   constructor(
     private readonly adapter: TidalAdapter,
-    private readonly options: { accessToken: string; countryCode: string }
+    private readonly options: { accessToken: string; countryCode: string },
   ) {}
 
-  async resolveCandidates(candidates: SongCandidate[]): Promise<ResolvedTrack[]> {
+  async resolveCandidates(
+    candidates: SongCandidate[],
+  ): Promise<ResolvedTrack[]> {
     const resolved: ResolvedTrack[] = [];
 
     for (const candidate of candidates) {
@@ -254,7 +274,7 @@ export class TidalResolver {
         accessToken: this.options.accessToken,
         query,
         countryCode: this.options.countryCode,
-        limit: 5
+        limit: 5,
       });
       const best = bestMatch(candidate, results);
       if (best && best.confidence >= 0.7) {
@@ -264,8 +284,16 @@ export class TidalResolver {
           artist: best.track.artist,
           title: best.track.title,
           isrc: best.track.isrc,
+          popularity: candidate.popularity,
+          explicit: candidate.explicit,
+          releaseDate: candidate.releaseDate,
+          chartRank: candidate.chartRank,
+          chartPlaycount: candidate.chartPlaycount,
+          chartCountry: candidate.chartCountry,
+          chartSource: candidate.chartSource,
+          moodTags: candidate.moodTags,
           matchConfidence: best.confidence,
-          matchReason: best.reason
+          matchReason: best.reason,
         });
       }
     }
@@ -276,8 +304,10 @@ export class TidalResolver {
 
 export function bestMatch(
   candidate: SongCandidate,
-  results: TidalTrackSearchResult[]
-): { track: TidalTrackSearchResult; confidence: number; reason: string } | undefined {
+  results: TidalTrackSearchResult[],
+):
+  | { track: TidalTrackSearchResult; confidence: number; reason: string }
+  | undefined {
   const candidateArtist = normalizeText(candidate.artist);
   const candidateTitle = normalizeText(candidate.title);
 
@@ -290,13 +320,32 @@ export function bestMatch(
     | undefined;
 
   for (const track of results) {
-    const artistMatch = normalizeText(track.artist).includes(candidateArtist) || candidateArtist.includes(normalizeText(track.artist));
+    const artistMatch =
+      normalizeText(track.artist).includes(candidateArtist) ||
+      candidateArtist.includes(normalizeText(track.artist));
     const titleMatch = normalizeText(track.title) === candidateTitle;
-    const titleContains = normalizeText(track.title).includes(candidateTitle) || candidateTitle.includes(normalizeText(track.title));
-    const isrcMatch = candidate.isrc && track.isrc && candidate.isrc === track.isrc;
+    const titleContains =
+      normalizeText(track.title).includes(candidateTitle) ||
+      candidateTitle.includes(normalizeText(track.title));
+    const isrcMatch =
+      candidate.isrc && track.isrc && candidate.isrc === track.isrc;
 
-    const confidence = isrcMatch ? 0.98 : artistMatch && titleMatch ? 0.94 : artistMatch && titleContains ? 0.82 : titleMatch ? 0.72 : 0.45;
-    const reason = isrcMatch ? "isrc match" : artistMatch && titleMatch ? "artist and title match" : artistMatch && titleContains ? "artist and fuzzy title match" : "low-confidence fuzzy match";
+    const confidence = isrcMatch
+      ? 0.98
+      : artistMatch && titleMatch
+        ? 0.94
+        : artistMatch && titleContains
+          ? 0.82
+          : titleMatch
+            ? 0.72
+            : 0.45;
+    const reason = isrcMatch
+      ? "isrc match"
+      : artistMatch && titleMatch
+        ? "artist and title match"
+        : artistMatch && titleContains
+          ? "artist and fuzzy title match"
+          : "low-confidence fuzzy match";
 
     if (!best || confidence > best.confidence) {
       best = { track, confidence, reason };
