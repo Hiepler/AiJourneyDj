@@ -2283,3 +2283,15 @@ export function selectRollingBatch<T extends ResolvedTrack>(
 
   return selected;
 }
+
+export {
+  avoidSongKeysForWish,
+  directSongKeysForWish,
+  musicWishSummary,
+  parseMusicWish,
+  roleTagsForWish,
+  type MusicWishIntent,
+  type MusicWishSource,
+  type MusicWishStatus,
+  type ParsedMusicWish,
+} from "./musicWish.js";
