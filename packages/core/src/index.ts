@@ -80,6 +80,8 @@ export interface JourneyContext {
   plannedDurationMinutes?: number;
   /** Minutes elapsed since the journey started (now − createdAt). */
   elapsedMinutes?: number;
+  /** Active music-wish layers steering this journey. */
+  activeMusicWishes?: MusicWish[];
 }
 
 export type SongCandidateRole =
@@ -97,6 +99,49 @@ export interface SongCandidateScores {
   novelty: number;
   fatiguePenalty: number;
   total: number;
+}
+
+export type MusicWishSource = "text" | "voice" | "chip";
+
+export type MusicWishStatus =
+  | "pending_confirmation"
+  | "active"
+  | "soft_applied"
+  | "expired"
+  | "undone"
+  | "failed";
+
+export type MusicWishIntent =
+  | { type: "song"; artist?: string; title: string; immediate: boolean }
+  | { type: "artist"; artist: string; strength: number }
+  | { type: "genre"; genre: string; strength: number }
+  | { type: "mood"; moodTags: string[]; strength: number }
+  | {
+      type: "avoid";
+      artists?: string[];
+      songKeys?: string[];
+      moodTags?: string[];
+    }
+  | {
+      type: "role";
+      role: "singalong" | "wake_up" | "kids" | "calm_down";
+      strength: number;
+    };
+
+export interface MusicWish {
+  id: string;
+  journeyId: string;
+  rawText: string;
+  source: MusicWishSource;
+  intents: MusicWishIntent[];
+  status: MusicWishStatus;
+  confidence: number;
+  summary: string;
+  pinned: boolean;
+  expiresAfterTracks: number;
+  remainingTracks: number;
+  createdAtIso: string;
+  updatedAtIso: string;
 }
 
 export interface SongCandidate {
@@ -131,7 +176,8 @@ export interface SongCandidate {
     | "fallback"
     | "musicbrainz"
     | "listenbrainz"
-    | "lastfm";
+    | "lastfm"
+    | "music-wish";
   confidence: number;
 }
 

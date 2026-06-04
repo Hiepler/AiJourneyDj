@@ -6,6 +6,8 @@ import type {
   SongCandidate,
 } from "@ai-journey-dj/core";
 
+import type { RecommendationPolicy } from "./index.js";
+
 import {
   assertJourneyContextIsPrivacySafe,
   assertPromptIsPrivacySafe,
@@ -513,6 +515,90 @@ describe("recommendation", () => {
       "chart",
       "tired",
     ]);
+  });
+
+  it("rankResolvedTracksForPolicy lifts a wished artist above an otherwise-stronger peer", () => {
+    const policy: RecommendationPolicy = {
+      ...buildRecommendationPolicy(context),
+      artistBoosts: [{ artist: "Wished Artist", strength: 0.9 }],
+    };
+    const tracks: ResolvedTrack[] = [
+      {
+        provider: "spotify",
+        providerTrackId: "strong",
+        providerUri: "spotify:track:strong",
+        artist: "Strong Artist",
+        title: "Big Hit",
+        explicit: false,
+        popularity: 95,
+        chartRank: 1,
+        releaseDate: "2024-01-01",
+        matchConfidence: 0.95,
+        matchReason: "artist and title match",
+      },
+      {
+        provider: "spotify",
+        providerTrackId: "wished",
+        providerUri: "spotify:track:wished",
+        artist: "Wished Artist",
+        title: "Modest Song",
+        explicit: false,
+        popularity: 55,
+        matchConfidence: 0.7,
+        matchReason: "artist and title match",
+      },
+    ];
+
+    const withoutWish = rankResolvedTracksForPolicy(
+      tracks,
+      buildRecommendationPolicy(context),
+      { now: new Date("2026-06-03") },
+    );
+    expect(withoutWish[0].providerTrackId).toBe("strong");
+
+    const ranked = rankResolvedTracksForPolicy(tracks, policy, {
+      now: new Date("2026-06-03"),
+    });
+    expect(ranked[0].providerTrackId).toBe("wished");
+  });
+
+  it("rankResolvedTracksForPolicy demotes tracks carrying an avoided mood tag", () => {
+    const policy: RecommendationPolicy = {
+      ...buildRecommendationPolicy(context),
+      avoidMoodTags: ["mellow"],
+    };
+    const tracks: ResolvedTrack[] = [
+      {
+        provider: "spotify",
+        providerTrackId: "mellow",
+        providerUri: "spotify:track:mellow",
+        artist: "Calm Artist",
+        title: "Slow One",
+        explicit: false,
+        popularity: 90,
+        chartRank: 1,
+        releaseDate: "2024-01-01",
+        moodTags: ["mellow"],
+        matchConfidence: 0.95,
+        matchReason: "artist and title match",
+      },
+      {
+        provider: "spotify",
+        providerTrackId: "neutral",
+        providerUri: "spotify:track:neutral",
+        artist: "Other Artist",
+        title: "Bright One",
+        explicit: false,
+        popularity: 70,
+        matchConfidence: 0.75,
+        matchReason: "artist and title match",
+      },
+    ];
+
+    const ranked = rankResolvedTracksForPolicy(tracks, policy, {
+      now: new Date("2026-06-03"),
+    });
+    expect(ranked[0].providerTrackId).toBe("neutral");
   });
 
   it("buildJourneySet creates a five-track cinematic set with roles and diversity", () => {

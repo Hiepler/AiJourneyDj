@@ -202,6 +202,22 @@ export function migrate(db: Db): void {
       profile_json TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS music_wishes (
+      id TEXT PRIMARY KEY,
+      journey_id TEXT NOT NULL,
+      raw_text TEXT NOT NULL,
+      source TEXT NOT NULL,
+      parsed_intents_json TEXT NOT NULL,
+      status TEXT NOT NULL,
+      confidence REAL NOT NULL,
+      summary TEXT NOT NULL,
+      pinned INTEGER NOT NULL DEFAULT 0,
+      expires_after_tracks INTEGER NOT NULL,
+      remaining_tracks INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
 
   tryAddColumn(db, "journeys", "provider", "TEXT NOT NULL DEFAULT 'tidal'");

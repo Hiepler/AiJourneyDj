@@ -530,13 +530,16 @@ export class MockSpotifyAdapter implements SpotifyAdapter {
   }): Promise<SpotifyTrackSearchResult[]> {
     const [artist = "Unknown Artist", title = args.query] =
       args.query.split(" - ");
+    const cleanTitle = title.trim().endsWith(" radio")
+      ? title.trim().replace(/\s+radio$/i, "")
+      : title.trim();
     return Array.from({ length: args.limit }, (_, index) => {
       const normalized = normalizeText(`${artist}-${title}-${index}`);
       const id = `mock-spotify-${normalized}`;
       return {
         id,
         uri: `spotify:track:${id}`,
-        title: index === 0 ? title.trim() : `${title.trim()} (${index + 1})`,
+        title: index === 0 ? cleanTitle : `${cleanTitle} (${index + 1})`,
         artist: artist.trim(),
         isrc:
           index === 0

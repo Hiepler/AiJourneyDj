@@ -3,6 +3,8 @@ import type {
   JourneyContext,
   JourneyPhase,
   JourneyRecord,
+  MusicWish,
+  MusicWishStatus,
   NormalizedTelemetryEvent,
   PlaybackSession,
   PlaylistUpdate,
@@ -430,6 +432,94 @@ export class Store {
     );
   }
 
+  saveMusicWish(wish: MusicWish): void {
+    this.db.run(
+      `INSERT INTO music_wishes
+       (id, journey_id, raw_text, source, parsed_intents_json, status, confidence, summary, pinned, expires_after_tracks, remaining_tracks, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         raw_text = excluded.raw_text,
+         source = excluded.source,
+         parsed_intents_json = excluded.parsed_intents_json,
+         status = excluded.status,
+         confidence = excluded.confidence,
+         summary = excluded.summary,
+         pinned = excluded.pinned,
+         expires_after_tracks = excluded.expires_after_tracks,
+         remaining_tracks = excluded.remaining_tracks,
+         updated_at = excluded.updated_at`,
+      [
+        wish.id,
+        wish.journeyId,
+        wish.rawText,
+        wish.source,
+        JSON.stringify(wish.intents),
+        wish.status,
+        wish.confidence,
+        wish.summary,
+        wish.pinned ? 1 : 0,
+        wish.expiresAfterTracks,
+        wish.remainingTracks,
+        wish.createdAtIso,
+        wish.updatedAtIso,
+      ],
+    );
+  }
+
+  getMusicWish(journeyId: string, wishId: string): MusicWish | undefined {
+    const row = this.db.get<any>(
+      "SELECT * FROM music_wishes WHERE journey_id = ? AND id = ?",
+      [journeyId, wishId],
+    );
+    return row ? mapMusicWish(row) : undefined;
+  }
+
+  listActiveMusicWishes(journeyId: string): MusicWish[] {
+    return this.db
+      .all<any>(
+        "SELECT * FROM music_wishes WHERE journey_id = ? AND status IN ('active', 'soft_applied') ORDER BY created_at DESC",
+        [journeyId],
+      )
+      .map(mapMusicWish);
+  }
+
+  listRecentMusicWishes(journeyId: string, limit = 10): MusicWish[] {
+    return this.db
+      .all<any>(
+        "SELECT * FROM music_wishes WHERE journey_id = ? ORDER BY created_at DESC LIMIT ?",
+        [journeyId, limit],
+      )
+      .map(mapMusicWish);
+  }
+
+  updateMusicWish(
+    journeyId: string,
+    wishId: string,
+    patch: { pinned?: boolean; status?: MusicWishStatus; remainingTracks?: number },
+  ): void {
+    const existing = this.getMusicWish(journeyId, wishId);
+    if (!existing) return;
+    this.saveMusicWish({
+      ...existing,
+      pinned: patch.pinned ?? existing.pinned,
+      status: patch.status ?? existing.status,
+      remainingTracks: patch.remainingTracks ?? existing.remainingTracks,
+      updatedAtIso: now(),
+    });
+  }
+
+  decayActiveMusicWishes(journeyId: string, surfacedTrackCount: number): void {
+    if (surfacedTrackCount <= 0) return;
+    for (const wish of this.listActiveMusicWishes(journeyId)) {
+      if (wish.pinned) continue;
+      const remaining = Math.max(0, wish.remainingTracks - surfacedTrackCount);
+      this.updateMusicWish(journeyId, wish.id, {
+        remainingTracks: remaining,
+        status: remaining === 0 ? "expired" : wish.status,
+      });
+    }
+  }
+
   listResolvedTracks(
     journeyId: string,
   ): Array<
@@ -710,6 +800,24 @@ function mapJourney(row: any): JourneyRecord {
     plannedDurationMinutes: row.planned_duration_minutes ?? undefined,
     createdAtIso: row.created_at,
     stoppedAtIso: row.stopped_at,
+  };
+}
+
+function mapMusicWish(row: any): MusicWish {
+  return {
+    id: row.id,
+    journeyId: row.journey_id,
+    rawText: row.raw_text,
+    source: row.source,
+    intents: JSON.parse(row.parsed_intents_json),
+    status: row.status,
+    confidence: row.confidence,
+    summary: row.summary,
+    pinned: row.pinned === 1,
+    expiresAfterTracks: row.expires_after_tracks,
+    remainingTracks: row.remaining_tracks,
+    createdAtIso: row.created_at,
+    updatedAtIso: row.updated_at,
   };
 }
 
