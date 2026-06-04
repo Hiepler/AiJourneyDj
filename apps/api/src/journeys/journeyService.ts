@@ -310,7 +310,11 @@ export class JourneyService {
 
   async undoMusicWish(journeyId: string, wishId: string): Promise<MusicWish> {
     const wish = await this.updateMusicWish(journeyId, wishId, { status: "undone" });
-    await this.analyzeJourney(journeyId, "music-wish-undo");
+    // Re-curate only while the journey is still running; the undo itself is
+    // already persisted, so a stopped journey must not surface as a failed undo.
+    if (this.getJourneyOrThrow(journeyId).status === "active") {
+      await this.analyzeJourney(journeyId, "music-wish-undo");
+    }
     return wish;
   }
 
@@ -944,6 +948,8 @@ export class JourneyService {
       "taste-override",
       "manual",
       "recovery",
+      "music-wish",
+      "music-wish-undo",
     ]);
     const priorSession = this.store.getPlaybackSession(journeyId);
     const storedForGate = this.store

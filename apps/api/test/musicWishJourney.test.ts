@@ -92,4 +92,51 @@ describe("music wish routes", () => {
 
     await app.close();
   });
+
+  it("rejects wishes on a stopped journey", async () => {
+    const { app } = await buildApp(testConfig());
+    const journey = (await app.inject({
+      method: "POST",
+      url: "/journeys",
+      payload: { destination: "Dijon", userPrompt: "drive", passengerMode: "solo", provider: "spotify" },
+    })).json<{ id: string }>();
+
+    await app.inject({ method: "POST", url: `/journeys/${journey.id}/stop` });
+
+    const rejected = await app.inject({
+      method: "POST",
+      url: `/journeys/${journey.id}/music-wishes`,
+      payload: { text: "mehr Taylor Swift", source: "text" },
+    });
+    expect(rejected.statusCode).toBeGreaterThanOrEqual(400);
+
+    const detail = await app.inject({ method: "GET", url: `/journeys/${journey.id}` });
+    expect(detail.json().activeMusicWishes).toEqual([]);
+
+    await app.close();
+  });
+
+  it("does not auto-apply an ambiguous pending-confirmation wish", async () => {
+    const { app } = await buildApp(testConfig());
+    const journey = (await app.inject({
+      method: "POST",
+      url: "/journeys",
+      payload: { destination: "Dijon", userPrompt: "drive", passengerMode: "solo", provider: "spotify", deviceId: "mock-webplayer" },
+    })).json<{ id: string }>();
+
+    const wishResponse = await app.inject({
+      method: "POST",
+      url: `/journeys/${journey.id}/music-wishes`,
+      payload: { text: "irgendwie anders", source: "text" },
+    });
+    expect(wishResponse.json()).toMatchObject({
+      wish: { status: "pending_confirmation" },
+    });
+    expect(wishResponse.json().update).toBeUndefined();
+
+    const detail = await app.inject({ method: "GET", url: `/journeys/${journey.id}` });
+    expect(detail.json().activeMusicWishes).toEqual([]);
+
+    await app.close();
+  });
 });
