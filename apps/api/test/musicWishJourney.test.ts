@@ -139,6 +139,68 @@ describe("music wish routes", () => {
 
     await app.close();
   });
+
+  it("activates a short bare artist wish so the frontend can show a chip", async () => {
+    const { app } = await buildApp(testConfig());
+    const journey = (await app.inject({
+      method: "POST",
+      url: "/journeys",
+      payload: { destination: "Dijon", userPrompt: "drive", passengerMode: "solo", provider: "spotify", deviceId: "mock-webplayer" },
+    })).json<{ id: string }>();
+
+    const wishResponse = await app.inject({
+      method: "POST",
+      url: `/journeys/${journey.id}/music-wishes`,
+      payload: { text: "Nina Chuba", source: "text" },
+    });
+    expect(wishResponse.statusCode).toBe(201);
+    expect(wishResponse.json()).toMatchObject({
+      wish: {
+        status: "active",
+        summary: "Mehr Nina Chuba",
+        intents: [{ type: "artist", artist: "Nina Chuba" }],
+      },
+    });
+
+    const detail = (await app.inject({ method: "GET", url: `/journeys/${journey.id}` })).json();
+    expect(detail.activeMusicWishes).toEqual([
+      expect.objectContaining({ summary: "Mehr Nina Chuba", status: "active" }),
+    ]);
+    const queuedTracks = detail.playbackSession.queuedTrackIds.map((id: string) =>
+      detail.tracks.find((track: { id: string }) => track.id === id),
+    );
+    expect(queuedTracks.some((track: { artist: string } | undefined) => track?.artist === "Nina Chuba")).toBe(true);
+
+    await app.close();
+  });
+
+  it("manual refresh with an active wish rebuilds the visible future queue", async () => {
+    const { app } = await buildApp(testConfig());
+    const journey = (await app.inject({
+      method: "POST",
+      url: "/journeys",
+      payload: { destination: "Dijon", userPrompt: "drive", passengerMode: "solo", provider: "spotify", deviceId: "mock-webplayer" },
+    })).json<{ id: string }>();
+
+    await app.inject({
+      method: "POST",
+      url: `/journeys/${journey.id}/music-wishes`,
+      payload: { text: "Nina Chuba", source: "text", apply: false },
+    });
+
+    const before = (await app.inject({ method: "GET", url: `/journeys/${journey.id}` })).json();
+    expect(before.playbackSession.queuedTrackIds).toHaveLength(5);
+
+    await app.inject({ method: "POST", url: `/journeys/${journey.id}/analyze` });
+
+    const detail = (await app.inject({ method: "GET", url: `/journeys/${journey.id}` })).json();
+    const queuedTracks = detail.playbackSession.queuedTrackIds.map((id: string) =>
+      detail.tracks.find((track: { id: string }) => track.id === id),
+    );
+    expect(queuedTracks.some((track: { artist: string } | undefined) => track?.artist === "Nina Chuba")).toBe(true);
+
+    await app.close();
+  });
 });
 
 describe("music wish journey application", () => {
