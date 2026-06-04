@@ -185,4 +185,34 @@ describe("music wish journey application", () => {
 
     await app.close();
   });
+
+  it("keeps a fresh wish active with its full track budget once the buffer is full", async () => {
+    const { app } = await buildApp(testConfig());
+    const journey = (await app.inject({
+      method: "POST",
+      url: "/journeys",
+      payload: { destination: "Dijon", userPrompt: "drive", passengerMode: "solo", provider: "spotify", deviceId: "mock-webplayer" },
+    })).json<{ id: string }>();
+
+    // Let the initial curation fill the forward buffer to 5 before wishing.
+    const before = (await app.inject({ method: "GET", url: `/journeys/${journey.id}` })).json();
+    expect(before.playbackSession.queuedTrackIds.length).toBe(5);
+
+    const created = (await app.inject({
+      method: "POST",
+      url: `/journeys/${journey.id}/music-wishes`,
+      payload: { text: "mehr Taylor Swift", source: "text" },
+    })).json<{ wish: { remainingTracks: number; expiresAfterTracks: number; status: string } }>();
+
+    // The wish has not steered any played track yet, so it must start at full budget
+    // and stay active — it must NOT be decayed by the size of the re-curation batch.
+    expect(created.wish.status).toBe("active");
+    expect(created.wish.remainingTracks).toBe(created.wish.expiresAfterTracks);
+
+    const active = (await app.inject({ method: "GET", url: `/journeys/${journey.id}/music-wishes` })).json();
+    expect(active.active).toHaveLength(1);
+    expect(active.active[0].remainingTracks).toBe(5);
+
+    await app.close();
+  });
 });
