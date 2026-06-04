@@ -1002,6 +1002,31 @@ describe("overnight vacation drive — mood transitions", () => {
   });
 });
 
+describe("scout grounding", () => {
+  it("buildMusicalBrief surfaces weather, exploration angle and recently-played avoids", () => {
+    const brief = buildMusicalBrief({
+      ...context,
+      weatherFeel: "warm and clear",
+      varietyAngle: "favor a different era than the most obvious one",
+      recentlyPlayedArtists: ["Dua Lipa", "The Weeknd"],
+    });
+    expect(brief.weatherFeel).toBe("warm and clear");
+    expect(brief.explorationAngle).toBe("favor a different era than the most obvious one");
+    expect(brief.avoidRecentArtists).toEqual(["Dua Lipa", "The Weeknd"]);
+  });
+
+  it("buildLensPrompt mentions the exploration angle and avoid list", () => {
+    const brief = buildMusicalBrief({
+      ...context,
+      varietyAngle: "surface a less-obvious facet of the mood",
+      recentlyPlayedArtists: ["Dua Lipa"],
+    });
+    const prompt = buildLensPrompt(DEFAULT_LENSES[0], brief, 5);
+    expect(prompt).toContain("surface a less-obvious facet of the mood");
+    expect(prompt).toContain("Dua Lipa");
+  });
+});
+
 describe("variety-aware ranking", () => {
   function trackOf(id: string, artist: string, title: string, pop: number) {
     return {
