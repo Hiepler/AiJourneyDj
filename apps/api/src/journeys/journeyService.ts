@@ -2,6 +2,9 @@ import type {
   JourneyContext,
   JourneyPhase,
   JourneyRecord,
+  MusicWish,
+  MusicWishSource,
+  MusicWishStatus,
   NormalizedTelemetryEvent,
   PlaybackSession,
   PlaylistUpdate,
@@ -36,6 +39,7 @@ import {
   deriveTasteProfile,
   fallbackCandidates,
   lastfmTracksToCandidates,
+  parseMusicWish,
   rankResolvedTracksForPolicy,
   selectRollingBatch,
   stabilizeDriveMode,
@@ -248,6 +252,66 @@ export class JourneyService {
         "drive_mode.recurate_error",
       );
     }
+  }
+
+  async createMusicWish(
+    journeyId: string,
+    input: { text: string; source: MusicWishSource; apply?: boolean },
+  ): Promise<{ wish: MusicWish; update?: PlaylistUpdate }> {
+    const journey = this.getJourneyOrThrow(journeyId);
+    if (journey.status !== "active") {
+      throw new Error("Cannot add a music wish to a stopped journey.");
+    }
+    const parsed = parseMusicWish(input.text);
+    const createdAtIso = new Date().toISOString();
+    const wish: MusicWish = {
+      id: crypto.randomUUID(),
+      journeyId,
+      rawText: parsed.rawText,
+      source: input.source,
+      intents: parsed.intents,
+      status: parsed.status,
+      confidence: parsed.confidence,
+      summary: parsed.summary,
+      pinned: false,
+      expiresAfterTracks: 5,
+      remainingTracks: 5,
+      createdAtIso,
+      updatedAtIso: createdAtIso,
+    };
+    this.store.saveMusicWish(wish);
+    this.store.audit(journeyId, "music_wish.created", wish.summary, {
+      wishId: wish.id,
+      status: wish.status,
+    });
+    const update =
+      wish.status === "active" && input.apply !== false
+        ? await this.analyzeJourney(journeyId, "music-wish")
+        : undefined;
+    return { wish: this.store.getMusicWish(journeyId, wish.id) ?? wish, update };
+  }
+
+  async updateMusicWish(
+    journeyId: string,
+    wishId: string,
+    patch: { pinned?: boolean; status?: MusicWishStatus },
+  ): Promise<MusicWish> {
+    this.getJourneyOrThrow(journeyId);
+    this.store.updateMusicWish(journeyId, wishId, patch);
+    const wish = this.store.getMusicWish(journeyId, wishId);
+    if (!wish) throw new Error("Music wish not found.");
+    this.store.audit(journeyId, "music_wish.updated", wish.summary, {
+      wishId,
+      pinned: wish.pinned,
+      status: wish.status,
+    });
+    return wish;
+  }
+
+  async undoMusicWish(journeyId: string, wishId: string): Promise<MusicWish> {
+    const wish = await this.updateMusicWish(journeyId, wishId, { status: "undone" });
+    await this.analyzeJourney(journeyId, "music-wish-undo");
+    return wish;
   }
 
   async analyzeJourney(
