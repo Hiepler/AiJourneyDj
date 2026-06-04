@@ -10,9 +10,23 @@ import type {
 } from "@ai-journey-dj/core";
 import { clampConfidence, normalizeText, songKey } from "@ai-journey-dj/core";
 import type { LastfmChartTrack } from "./lastfm.js";
+import type { TimeBand, TripSegment } from "./context-signals.js";
+import { timeOfDayBand, tripArc, alertnessFloor, ALERTNESS_FLOOR_BASE, ALERTNESS_FLOOR_SLOPE } from "./context-signals.js";
+import type { MoodKey } from "./moods.js";
+import { MOODS, resolveMood } from "./moods.js";
 
 export { assessDriveState, stabilizeDriveMode } from "./driveState.js";
 export { LastfmChartClient, type LastfmChartTrack } from "./lastfm.js";
+export {
+  timeOfDayBand,
+  tripArc,
+  alertnessFloor,
+  ALERTNESS_FLOOR_BASE,
+  ALERTNESS_FLOOR_SLOPE,
+} from "./context-signals.js";
+export type { TimeBand, TripSegment, TripArc, PaceTrend } from "./context-signals.js";
+export { MOODS, resolveMood } from "./moods.js";
+export type { MoodKey, MoodDefinition, ResolvedMood } from "./moods.js";
 
 const FALLBACK_CANDIDATES: SongCandidate[] = [
   {
@@ -1044,6 +1058,16 @@ export interface MusicalBrief {
   favoredGenres: string[];
   /** A few representative artists that exemplify the listener's taste. */
   representativeArtists: string[];
+  /** -1 dark … +1 bright. Steers lens prompts and candidate-pool valence. */
+  valence: number;
+  /** Time-of-day band used to derive this brief. */
+  timeBand: TimeBand;
+  /** Trip-arc segment used to shape the energy curve. */
+  tripSegment: TripSegment;
+  /** Resolved primary mood key. */
+  moodKey: MoodKey;
+  /** 0..1 fatigue-aware floor that was applied to target energy (0 = none). */
+  fatigueRisk: number;
 }
 
 /**
@@ -1113,47 +1137,17 @@ function uniqueNormalizedTags(tags: string[]): string[] {
 }
 
 export function moodTagsForContext(context: JourneyContext): string[] {
-  const prompt = normalizeText(context.userPrompt);
-  const tags = ["road trip"];
-
-  if (context.passengerMode === "family") {
-    tags.push("pop", "dance-pop", "feelgood", "summer", "disco");
-  }
-  if (
-    prompt.includes("euphoric") ||
-    prompt.includes("uplifting") ||
-    prompt.includes("feel good")
-  ) {
-    tags.push("pop", "dance-pop", "feelgood", "party");
-  }
-  if (
-    prompt.includes("mellow") ||
-    prompt.includes("relaxed") ||
-    prompt.includes("easygoing")
-  ) {
-    tags.push("mellow", "chillout", "acoustic");
-  }
-  if (
-    prompt.includes("nostalgic") ||
-    prompt.includes("throwback") ||
-    prompt.includes("timeless")
-  ) {
-    tags.push("classic pop", "80s", "90s");
-  }
-  if (
-    prompt.includes("focused") ||
-    prompt.includes("low distraction") ||
-    context.phase === "focus"
-  ) {
-    tags.push("indie pop", "electropop");
-  }
-  if (prompt.includes("adventure") || prompt.includes("bold")) {
-    tags.push("pop rock", "indie rock", "dance");
-  }
-  if (prompt.includes("cinematic")) {
-    tags.push("pop", "indie pop", "soundtrack");
-  }
-
+  const band = timeOfDayBand(
+    context.localTimeIso ? new Date(context.localTimeIso).getHours() : 12,
+  );
+  const arc = tripArc(
+    context.elapsedMinutes ?? 0,
+    context.plannedDurationMinutes,
+    context.etaMinutes,
+  );
+  const mood = resolveMood(context, { band, arc });
+  const tags = [...MOODS[mood.primary].lastfmTags];
+  if (mood.secondary) tags.push(...MOODS[mood.secondary].lastfmTags);
   return uniqueNormalizedTags(tags).slice(0, 6);
 }
 
@@ -1341,6 +1335,16 @@ const PHASE_PROFILE: Record<
   rest: { delta: -0.25, intensity: "winding-down", mood: ["calm", "mellow"] },
 };
 
+const BAND_ENERGY_BIAS: Record<TimeBand, number> = {
+  deep_night: -0.1,
+  dawn: -0.02,
+  morning: 0.05,
+  midday: 0.04,
+  afternoon: 0.02,
+  golden: -0.04,
+  night: -0.08,
+};
+
 function deriveGenres(targetEnergy: number): string[] {
   const broad = [
     "indie",
@@ -1379,7 +1383,16 @@ export function buildMusicalBrief(
   const hour = context.localTimeIso
     ? new Date(context.localTimeIso).getHours()
     : 12;
-  const isNight = Number.isFinite(hour) && (hour >= 22 || hour < 6);
+  const band = timeOfDayBand(hour);
+  const arc = tripArc(
+    context.elapsedMinutes ?? 0,
+    context.plannedDurationMinutes,
+    context.etaMinutes,
+  );
+  const mood = resolveMood(context, { band, arc });
+  const primaryMood = MOODS[mood.primary];
+  const secondaryMood = mood.secondary ? MOODS[mood.secondary] : undefined;
+
   const trendDelta =
     context.paceTrend === "accelerating"
       ? 0.05
@@ -1396,23 +1409,43 @@ export function buildMusicalBrief(
       : typeof context.etaMinutes === "number" && context.etaMinutes > 90
         ? 0.04
         : 0;
+
+  // Pull the band-biased energy toward the resolved mood's energy band.
+  const moodMid = (primaryMood.energy[0] + primaryMood.energy[1]) / 2;
   let targetEnergy = clamp01(
-    baseEnergy +
+    (baseEnergy +
       profile.delta +
       trendDelta +
       focusDelta +
       etaDelta +
-      (isNight ? -0.1 : 0),
+      BAND_ENERGY_BIAS[band]) *
+      0.6 +
+      moodMid * 0.4,
   );
 
-  const moodWords = [...profile.mood];
+  // Blend valence from the mood(s) — linear interpolation in [-1, 1] space.
+  const valence = Math.max(
+    -1,
+    Math.min(
+      1,
+      primaryMood.valence +
+        (secondaryMood
+          ? (secondaryMood.valence - primaryMood.valence) * mood.blendWeight
+          : 0),
+    ),
+  );
+
+  const moodWords = [
+    ...primaryMood.characterWords,
+    ...(secondaryMood ? secondaryMood.characterWords.slice(0, 2) : []),
+    ...profile.mood,
+  ];
   if (
     context.temperatureBucket === "warm" ||
     context.temperatureBucket === "hot"
   )
     moodWords.push("sunlit");
   if (context.temperatureBucket === "cold") moodWords.push("moody");
-  if (isNight) moodWords.push("nocturnal");
   if (context.paceTrend === "accelerating") moodWords.push("lifting");
   if (context.paceTrend === "slowing") moodWords.push("easing");
   if (context.autopilotState === "active") moodWords.push("low-distraction");
@@ -1439,6 +1472,18 @@ export function buildMusicalBrief(
     moodWords.push("clean", "upbeat", "singalong", "good-mood", "current-pop");
   }
 
+  // Fatigue-aware floor — applied last so it wins on the energy lower bound,
+  // even after Adaptive Drive Mode "calm" lowered the character.
+  const energyFloor = alertnessFloor(
+    band,
+    context.elapsedMinutes ?? 0,
+    context.paceTrend,
+    context.speedBucket,
+  );
+  const fatigueRisk = energyFloor > 0 ? clamp01((energyFloor - ALERTNESS_FLOOR_BASE) / ALERTNESS_FLOOR_SLOPE) : 0;
+  targetEnergy = Math.max(targetEnergy, energyFloor);
+  if (energyFloor > 0) moodWords.push("alert", "wakeful");
+
   const focusLevel = clamp01(
     (context.phase === "focus" ? 0.75 : 0.35) +
       (context.autopilotState === "active" ? 0.15 : 0),
@@ -1451,30 +1496,42 @@ export function buildMusicalBrief(
         : context.passengerMode === "friends"
           ? "social"
           : "solo";
+  // Each curve point is clamped to [energyFloor, 1] so the alertness floor
+  // propagates across the whole five-track set, not just the target.
+  const curvePoint = (delta: number): number =>
+    Math.min(1, Math.max(energyFloor, targetEnergy + delta));
   const energyCurve =
-    context.phase === "arrival" || context.etaTrend === "approaching"
+    arc.segment === "closing"
       ? [
-          targetEnergy,
-          clamp01(targetEnergy + 0.05),
-          targetEnergy,
-          clamp01(targetEnergy - 0.08),
-          clamp01(targetEnergy - 0.16),
+          curvePoint(0),
+          curvePoint(0.05),
+          curvePoint(0),
+          curvePoint(-0.08),
+          curvePoint(-0.16),
         ]
-      : context.phase === "departure"
+      : arc.segment === "opening"
         ? [
-            clamp01(targetEnergy - 0.08),
-            targetEnergy,
-            clamp01(targetEnergy + 0.06),
-            targetEnergy,
-            clamp01(targetEnergy + 0.02),
+            curvePoint(-0.08),
+            curvePoint(0),
+            curvePoint(0.06),
+            curvePoint(0),
+            curvePoint(0.02),
           ]
-        : [
-            targetEnergy,
-            clamp01(targetEnergy + 0.04),
-            clamp01(targetEnergy - 0.02),
-            clamp01(targetEnergy + 0.08),
-            clamp01(targetEnergy - 0.06),
-          ];
+        : arc.segment === "deep"
+          ? [
+              curvePoint(0),
+              curvePoint(0.02),
+              curvePoint(0),
+              curvePoint(0.03),
+              curvePoint(-0.02),
+            ]
+          : [
+              curvePoint(0),
+              curvePoint(0.04),
+              curvePoint(-0.02),
+              curvePoint(0.08),
+              curvePoint(-0.06),
+            ];
   const driveSignals = [
     context.phase,
     context.speedBucket,
@@ -1482,7 +1539,7 @@ export function buildMusicalBrief(
     context.paceTrend,
     context.etaTrend,
     context.autopilotState,
-    isNight ? "night" : undefined,
+    band === "deep_night" || band === "night" ? "night" : undefined,
     socialEnergy,
   ].filter((value): value is string => Boolean(value));
   const genres =
@@ -1495,7 +1552,11 @@ export function buildMusicalBrief(
           "afrobeats",
           "indie pop",
         ]
-      : deriveGenres(targetEnergy);
+      : uniqueNormalizedTags([
+          ...primaryMood.genres,
+          ...(secondaryMood ? secondaryMood.genres : []),
+          ...deriveGenres(targetEnergy),
+        ]).slice(0, 6);
 
   return {
     targetEnergy,
@@ -1506,7 +1567,7 @@ export function buildMusicalBrief(
     eras: "1970s through current releases",
     genres,
     regionHint: context.coarseRegion || context.destination,
-    moodWords,
+    moodWords: [...new Set(moodWords)],
     driveSignals,
     destination: context.destination,
     countryName: context.countryName,
@@ -1520,6 +1581,11 @@ export function buildMusicalBrief(
     tasteWeight,
     favoredGenres: context.tasteProfile?.topGenres ?? [],
     representativeArtists: context.tasteProfile?.representativeArtists ?? [],
+    valence,
+    timeBand: band,
+    tripSegment: arc.segment,
+    moodKey: mood.primary,
+    fatigueRisk,
   };
 }
 
@@ -1715,6 +1781,7 @@ export function buildLensPrompt(
     lens.instruction,
     `Target energy: ${brief.targetEnergy.toFixed(2)} (0=calm, 1=high). Five-track energy curve: ${brief.energyCurve.map((value) => value.toFixed(2)).join(" -> ")}.`,
     `Intensity: ${brief.intensity}. Focus level: ${brief.focusLevel.toFixed(2)}. Social energy: ${brief.socialEnergy}. Mood: ${brief.moodWords.join(", ")}.`,
+    `Valence: ${brief.valence.toFixed(2)} (-1 dark … +1 bright). Mood profile: ${brief.moodKey} (${brief.timeBand}, ${brief.tripSegment}).`,
     `Drive signals: ${brief.driveSignals.join(", ")}.`,
     driveModePromptLine(brief),
     `Span eras (${brief.eras}) and vary genres broadly (e.g. ${brief.genres.join(", ")}).`,
