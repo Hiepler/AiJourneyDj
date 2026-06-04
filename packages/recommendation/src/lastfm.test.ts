@@ -85,3 +85,32 @@ describe("LastfmChartClient", () => {
     ]);
   });
 });
+
+describe("LastfmChartClient pagination", () => {
+  it("sends the page param and caches per page", async () => {
+    const calls: string[] = [];
+    const fetchImpl = (async (url: string | URL) => {
+      calls.push(String(url));
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ tracks: { track: [] } }),
+      } as Response;
+    }) as typeof fetch;
+
+    const client = new LastfmChartClient({
+      apiKey: "k",
+      enabled: true,
+      fetchImpl,
+    });
+
+    await client.getGeoTopTracks("Germany", 50, 2);
+    await client.getGeoTopTracks("Germany", 50, 2); // cached → no second fetch
+    await client.getGeoTopTracks("Germany", 50, 3); // different page → new fetch
+
+    const geoCalls = calls.filter((u) => u.includes("geo.getTopTracks"));
+    expect(geoCalls).toHaveLength(2);
+    expect(geoCalls[0]).toContain("page=2");
+    expect(geoCalls[1]).toContain("page=3");
+  });
+});
