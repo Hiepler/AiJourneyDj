@@ -69,13 +69,25 @@ function titleCaseWords(value: string): string {
     .join(" ");
 }
 
+function assertNever(value: never): never {
+  throw new Error(`Unhandled music wish variant: ${JSON.stringify(value)}`);
+}
+
 export function roleTagsForWish(
   role: Extract<MusicWishIntent, { type: "role" }>["role"],
 ): string[] {
-  if (role === "singalong") return ["pop", "dance-pop", "feelgood", "karaoke"];
-  if (role === "wake_up") return ["feelgood", "dance-pop", "pop rock"];
-  if (role === "kids") return ["family", "kids", "pop", "singalong"];
-  return ["mellow", "acoustic", "chillout"];
+  switch (role) {
+    case "singalong":
+      return ["pop", "dance-pop", "feelgood", "karaoke"];
+    case "wake_up":
+      return ["feelgood", "dance-pop", "pop rock"];
+    case "kids":
+      return ["family", "kids", "pop", "singalong"];
+    case "calm_down":
+      return ["mellow", "acoustic", "chillout"];
+    default:
+      return assertNever(role);
+  }
 }
 
 export function musicWishSummary(intents: MusicWishIntent[]): string {
@@ -93,12 +105,15 @@ export function musicWishSummary(intents: MusicWishIntent[]): string {
       calm_down: "Ruhiger für die nächsten Songs",
     }[first.role];
   }
-  const avoid = [
-    ...(first.artists ?? []),
-    ...(first.moodTags ?? []),
-    ...(first.songKeys ?? []),
-  ].join(", ");
-  return avoid ? `Vermeide ${avoid}` : "Vermeide diesen Vibe";
+  if (first.type === "avoid") {
+    const avoid = [
+      ...(first.artists ?? []),
+      ...(first.moodTags ?? []),
+      ...(first.songKeys ?? []),
+    ].join(", ");
+    return avoid ? `Vermeide ${avoid}` : "Vermeide diesen Vibe";
+  }
+  return assertNever(first);
 }
 
 export function parseMusicWish(rawText: string): ParsedMusicWish {
