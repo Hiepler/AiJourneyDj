@@ -836,6 +836,9 @@ export class JourneyService {
       telemetry,
       this.store.recentTelemetry(journeyId),
     );
+    // NOTE: Music wishes currently steer only Spotify journeys (the default
+    // provider); TIDAL is a fallback path, so wishes are stored and surfaced but
+    // intentionally not applied to curation or decayed here. See analyzeSpotifyJourney.
     const policy = buildRecommendationPolicy(context);
     const candidates = await this.generateAndStoreCandidateSet(
       journeyId,
