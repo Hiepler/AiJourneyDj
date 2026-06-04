@@ -35,7 +35,9 @@ import type {
 import type { SongScout } from "@ai-journey-dj/recommendation";
 import {
   assessDriveState,
+  applyMusicWishesToPolicy,
   buildRecommendationPolicy,
+  candidatesFromMusicWishes,
   deriveTasteProfile,
   fallbackCandidates,
   lastfmTracksToCandidates,
@@ -938,6 +940,8 @@ export class JourneyService {
       telemetry,
       this.store.recentTelemetry(journeyId),
     );
+    const activeMusicWishes = this.store.listActiveMusicWishes(journeyId);
+    const contextWithWishes: JourneyContext = { ...context, activeMusicWishes };
 
     // Cost control: only the LLM lenses cost tokens. Run them when the vibe actually changes;
     // for routine top-ups, reuse the already-generated candidate pool if it can refill the buffer.
@@ -1004,17 +1008,23 @@ export class JourneyService {
 
     // Personalize the brief with the listener's taste (cached ~24h). Built once and reused for any
     // fallback regeneration below so the whole drive shares one taste signal.
-    let scoutContext: JourneyContext = context;
-    let policy = buildRecommendationPolicy(context);
+    let scoutContext: JourneyContext = contextWithWishes;
+    let policy = applyMusicWishesToPolicy(
+      buildRecommendationPolicy(contextWithWishes),
+      activeMusicWishes,
+    );
     let candidates: SongCandidate[] = [];
     if (mustGenerate) {
       const tasteProfile = await this.loadTasteProfile(accessToken);
       scoutContext = {
-        ...context,
+        ...contextWithWishes,
         tasteProfile,
         tasteWeight: journey.tasteWeight ?? DEFAULT_TASTE_WEIGHT,
       };
-      policy = buildRecommendationPolicy(scoutContext);
+      policy = applyMusicWishesToPolicy(
+        buildRecommendationPolicy(scoutContext),
+        activeMusicWishes,
+      );
       candidates = this.filterFreshCandidates(
         await this.generateAndStoreCandidateSet(
           journeyId,
@@ -1076,10 +1086,17 @@ export class JourneyService {
       },
       { consumedArtists: consumedTracks.map((track) => track.artist) },
     );
+    const immediateWishKeys = this.immediateWishSongKeys(activeMusicWishes);
+    const immediateWishTrack = rankedStored.find((track) => {
+      const exact = songKey(track.artist, track.title);
+      const titleOnly = songKey("", track.title);
+      return immediateWishKeys.has(exact) || immediateWishKeys.has(titleOnly);
+    });
     let activeTrack =
-      session?.activeTrack && session.activeTrack.provider === "spotify"
+      immediateWishTrack ??
+      (session?.activeTrack && session.activeTrack.provider === "spotify"
         ? stored.find((track) => track.id === session?.activeTrack?.id)
-        : undefined;
+        : undefined);
 
     if (!activeTrack) {
       activeTrack = rankedStored.find(
@@ -1220,6 +1237,10 @@ export class JourneyService {
         Boolean,
       ) as string[],
     );
+    this.store.decayActiveMusicWishes(
+      journeyId,
+      selected.length + (immediateWishTrack ? 1 : 0),
+    );
     this.store.savePlaylistUpdate(update);
     this.saveSession({
       journeyId,
@@ -1247,6 +1268,20 @@ export class JourneyService {
     // Mirror the curated set into the saved journey playlist (best-effort; never blocks the journey).
     await this.syncJourneyPlaylist(journey, accessToken);
     return update;
+  }
+
+  private immediateWishSongKeys(wishes: MusicWish[]): Set<string> {
+    const keys = new Set<string>();
+    for (const wish of wishes) {
+      if (wish.status !== "active" && wish.status !== "soft_applied") continue;
+      for (const intent of wish.intents) {
+        if (intent.type === "song" && intent.immediate) {
+          keys.add(songKey(intent.artist ?? "", intent.title));
+          keys.add(songKey("", intent.title));
+        }
+      }
+    }
+    return keys;
   }
 
   private pickSpotifyPlaybackTracks(
@@ -1898,6 +1933,10 @@ export class JourneyService {
     policy: RecommendationPolicy,
     targetCount: number,
   ): Promise<SongCandidate[]> {
+    const wishCandidates = await this.enrichAndStoreCandidates(
+      journeyId,
+      candidatesFromMusicWishes(context.activeMusicWishes ?? []),
+    );
     const [chartCandidates, aiCandidates] = await Promise.all([
       this.generateAndStoreLastfmCandidates(
         journeyId,
@@ -1908,7 +1947,7 @@ export class JourneyService {
       this.generateAndStoreCandidates(journeyId, context, targetCount, policy),
     ]);
     const seen = new Set<string>();
-    return [...chartCandidates, ...aiCandidates].filter((candidate) => {
+    return [...wishCandidates, ...chartCandidates, ...aiCandidates].filter((candidate) => {
       const key = songKey(candidate.artist, candidate.title);
       if (seen.has(key)) return false;
       seen.add(key);

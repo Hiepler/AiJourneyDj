@@ -140,3 +140,49 @@ describe("music wish routes", () => {
     await app.close();
   });
 });
+
+describe("music wish journey application", () => {
+  it("non-immediate wishes do not interrupt the active track", async () => {
+    const { app } = await buildApp(testConfig());
+    const journey = (await app.inject({
+      method: "POST",
+      url: "/journeys",
+      payload: { destination: "Dijon", userPrompt: "drive", passengerMode: "solo", provider: "spotify", deviceId: "mock-webplayer" },
+    })).json<{ id: string }>();
+    const before = (await app.inject({ method: "GET", url: `/journeys/${journey.id}` })).json();
+    const activeBefore = before.playbackSession.activeTrack.providerTrackId;
+
+    await app.inject({
+      method: "POST",
+      url: `/journeys/${journey.id}/music-wishes`,
+      payload: { text: "mehr Taylor Swift", source: "text" },
+    });
+
+    const after = (await app.inject({ method: "GET", url: `/journeys/${journey.id}` })).json();
+    expect(after.playbackSession.activeTrack.providerTrackId).toBe(activeBefore);
+    expect(after.tracks.some((track: { artist: string }) => track.artist === "Taylor Swift")).toBe(true);
+
+    await app.close();
+  });
+
+  it("explicit jetzt song wishes can replace the active track", async () => {
+    const { app } = await buildApp(testConfig());
+    const journey = (await app.inject({
+      method: "POST",
+      url: "/journeys",
+      payload: { destination: "Dijon", userPrompt: "drive", passengerMode: "solo", provider: "spotify", deviceId: "mock-webplayer" },
+    })).json<{ id: string }>();
+
+    await app.inject({
+      method: "POST",
+      url: `/journeys/${journey.id}/music-wishes`,
+      payload: { text: "spiel jetzt Taylor Swift - Shake It Off", source: "text" },
+    });
+
+    const after = (await app.inject({ method: "GET", url: `/journeys/${journey.id}` })).json();
+    expect(after.playbackSession.activeTrack.artist).toBe("Taylor Swift");
+    expect(after.playbackSession.activeTrack.title).toBe("Shake It Off");
+
+    await app.close();
+  });
+});
