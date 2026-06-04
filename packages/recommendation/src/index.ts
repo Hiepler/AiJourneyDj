@@ -1122,6 +1122,9 @@ export interface RecommendationPolicy {
   avoidSongKeys: string[];
   preferDistinctArtists: boolean;
   familyMode: boolean;
+  artistBoosts?: Array<{ artist: string; strength: number }>;
+  avoidMoodTags?: string[];
+  allowArtistRepeats?: boolean;
 }
 
 function uniqueNormalizedTags(tags: string[]): string[] {
@@ -1233,6 +1236,12 @@ export function rankResolvedTracksForPolicy<T extends ResolvedTrack>(
     policy.avoidArtists.map((artist) => normalizeText(artist)),
   );
   const avoidedSongs = new Set(policy.avoidSongKeys);
+  const avoidedMoodTags = new Set(
+    (policy.avoidMoodTags ?? []).map((tag) => normalizeText(tag)),
+  );
+  const artistBoosts = new Map(
+    (policy.artistBoosts ?? []).map((boost) => [normalizeText(boost.artist), boost.strength]),
+  );
   return [...tracks]
     .filter((track) => track.providerUri && track.isPlayable !== false)
     .filter((track) => !(policy.cleanRequired && track.explicit === true))
@@ -1247,9 +1256,16 @@ export function rankResolvedTracksForPolicy<T extends ResolvedTrack>(
         popularity / Math.max(1, policy.targetPopularity),
       );
       const artist = normalizeText(track.artist);
+      const boost = artistBoosts.get(artist) ?? 0;
+      const moodPenalty = (track.moodTags ?? []).some((tag) =>
+        avoidedMoodTags.has(normalizeText(tag)),
+      )
+        ? 0.35
+        : 0;
       const fatiguePenalty =
-        (consumedArtists.has(artist) ? 0.32 : 0) +
-        (avoidedArtists.has(artist) ? 0.45 : 0);
+        (consumedArtists.has(artist) && !policy.allowArtistRepeats ? 0.32 : 0) +
+        (avoidedArtists.has(artist) ? 0.45 : 0) +
+        moodPenalty;
       const score =
         track.matchConfidence * 0.24 +
         popularityScore * 0.22 +
@@ -1258,7 +1274,8 @@ export function rankResolvedTracksForPolicy<T extends ResolvedTrack>(
           policy.recencyBias *
           0.14 +
         moodFitScore(track, policy) * 0.08 +
-        (policy.cleanRequired && track.explicit === false ? 0.08 : 0) -
+        (policy.cleanRequired && track.explicit === false ? 0.08 : 0) +
+        boost * 0.42 -
         fatiguePenalty -
         index * 0.0001;
       return { track, score };
@@ -2285,7 +2302,9 @@ export function selectRollingBatch<T extends ResolvedTrack>(
 }
 
 export {
+  applyMusicWishesToPolicy,
   avoidSongKeysForWish,
+  candidatesFromMusicWishes,
   directSongKeysForWish,
   musicWishSummary,
   parseMusicWish,

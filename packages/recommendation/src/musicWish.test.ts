@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import type { MusicWish } from "@ai-journey-dj/core";
 import {
+  applyMusicWishesToPolicy,
+  candidatesFromMusicWishes,
   musicWishSummary,
   parseMusicWish,
   roleTagsForWish,
 } from "./musicWish.js";
+import { buildRecommendationPolicy } from "./index.js";
 
 describe("parseMusicWish", () => {
   it("parses explicit immediate song wishes", () => {
@@ -84,5 +87,71 @@ describe("MusicWish shared type", () => {
 
     expect(wish.intents[0]).toMatchObject({ type: "artist" });
     expect(wish.pinned).toBe(true);
+  });
+});
+
+function activeWish(intents: MusicWish["intents"], overrides: Partial<MusicWish> = {}): MusicWish {
+  return {
+    id: "wish",
+    journeyId: "journey",
+    rawText: "wish",
+    source: "text",
+    intents,
+    status: "active",
+    confidence: 0.9,
+    summary: "Wish",
+    pinned: false,
+    expiresAfterTracks: 5,
+    remainingTracks: 5,
+    createdAtIso: "2026-06-04T10:00:00.000Z",
+    updatedAtIso: "2026-06-04T10:00:00.000Z",
+    ...overrides,
+  };
+}
+
+describe("applyMusicWishesToPolicy", () => {
+  it("adds artist boosts, avoids and role tags", () => {
+    const policy = buildRecommendationPolicy({
+      destination: "Lago di Garda",
+      localTimeIso: "2026-06-04T10:00:00.000Z",
+      speedBucket: "highway",
+      phase: "cruise",
+      userPrompt: "bright",
+      passengerMode: "family",
+    });
+
+    const next = applyMusicWishesToPolicy(policy, [
+      activeWish([{ type: "artist", artist: "Taylor Swift", strength: 0.9 }]),
+      activeWish([{ type: "avoid", artists: ["Dua Lipa"], moodTags: ["mellow"] }]),
+      activeWish([{ type: "role", role: "singalong", strength: 0.86 }]),
+    ]);
+
+    expect(next.artistBoosts).toEqual([{ artist: "Taylor Swift", strength: 0.9 }]);
+    expect(next.avoidArtists).toContain("Dua Lipa");
+    expect(next.avoidMoodTags).toContain("mellow");
+    expect(next.moodTags).toEqual(expect.arrayContaining(["karaoke", "feelgood"]));
+    expect(next.preferDistinctArtists).toBe(false);
+  });
+
+  it("creates direct candidates from song and artist wishes", () => {
+    const candidates = candidatesFromMusicWishes([
+      activeWish([{ type: "song", artist: "Taylor Swift", title: "Shake It Off", immediate: true }]),
+      activeWish([{ type: "artist", artist: "Taylor Swift", strength: 0.9 }]),
+    ]);
+
+    expect(candidates).toEqual([
+      expect.objectContaining({
+        artist: "Taylor Swift",
+        title: "Shake It Off",
+        source: "music-wish",
+        confidence: 0.96,
+      }),
+      expect.objectContaining({
+        artist: "Taylor Swift",
+        title: "Taylor Swift radio",
+        source: "music-wish",
+        confidence: 0.74,
+      }),
+    ]);
   });
 });
