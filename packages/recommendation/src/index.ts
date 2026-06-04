@@ -1239,9 +1239,12 @@ export function rankResolvedTracksForPolicy<T extends ResolvedTrack>(
   const avoidedMoodTags = new Set(
     (policy.avoidMoodTags ?? []).map((tag) => normalizeText(tag)),
   );
-  const artistBoosts = new Map(
-    (policy.artistBoosts ?? []).map((boost) => [normalizeText(boost.artist), boost.strength]),
-  );
+  const artistBoosts = new Map<string, number>();
+  for (const boost of policy.artistBoosts ?? []) {
+    const key = normalizeText(boost.artist);
+    const clamped = Math.max(0, Math.min(1, boost.strength));
+    artistBoosts.set(key, Math.max(artistBoosts.get(key) ?? 0, clamped));
+  }
   return [...tracks]
     .filter((track) => track.providerUri && track.isPlayable !== false)
     .filter((track) => !(policy.cleanRequired && track.explicit === true))
