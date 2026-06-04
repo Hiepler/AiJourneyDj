@@ -9,6 +9,7 @@ import type {
   TasteProfile,
 } from "@ai-journey-dj/core";
 import { clampConfidence, normalizeText, songKey } from "@ai-journey-dj/core";
+import { seededJitter } from "./variety.js";
 import type { LastfmChartTrack } from "./lastfm.js";
 import type { TimeBand, TripSegment } from "./context-signals.js";
 import { timeOfDayBand, tripArc, alertnessFloor, ALERTNESS_FLOOR_BASE, ALERTNESS_FLOOR_SLOPE } from "./context-signals.js";
@@ -1227,7 +1228,19 @@ function moodFitScore(
 export function rankResolvedTracksForPolicy<T extends ResolvedTrack>(
   tracks: T[],
   policy: RecommendationPolicy,
-  options: { consumedArtists?: Iterable<string>; now?: Date } = {},
+  options: {
+    consumedArtists?: Iterable<string>;
+    now?: Date;
+    /** Variety seed; when set, near-equal tracks are reordered deterministically. */
+    seed?: number;
+    jitterStrength?: number;
+    /** Normalized-artist → penalty for recently surfaced artists (cross-journey). */
+    recentArtistPenalty?: Map<string, number>;
+    /** songKey → penalty for recently surfaced songs (cross-journey). */
+    recentSongPenalty?: Map<string, number>;
+    /** Normalized artists exempt from fatigue (active wish / pinned). */
+    fatigueExemptArtists?: Iterable<string>;
+  } = {},
 ): T[] {
   const consumedArtists = new Set(
     [...(options.consumedArtists ?? [])].map((artist) => normalizeText(artist)),
@@ -1245,6 +1258,14 @@ export function rankResolvedTracksForPolicy<T extends ResolvedTrack>(
     const clamped = Math.max(0, Math.min(1, boost.strength));
     artistBoosts.set(key, Math.max(artistBoosts.get(key) ?? 0, clamped));
   }
+  const recentArtistPenalty =
+    options.recentArtistPenalty ?? new Map<string, number>();
+  const recentSongPenalty =
+    options.recentSongPenalty ?? new Map<string, number>();
+  const fatigueExempt = new Set(
+    [...(options.fatigueExemptArtists ?? [])].map((artist) => normalizeText(artist)),
+  );
+  const jitterStrength = options.seed !== undefined ? options.jitterStrength ?? 0.06 : 0;
   return [...tracks]
     .filter((track) => track.providerUri && track.isPlayable !== false)
     .filter((track) => !(policy.cleanRequired && track.explicit === true))
@@ -1265,6 +1286,15 @@ export function rankResolvedTracksForPolicy<T extends ResolvedTrack>(
       )
         ? 0.35
         : 0;
+      const trackSongKey = songKey(track.artist, track.title);
+      const recentPenalty = fatigueExempt.has(artist)
+        ? 0
+        : (recentSongPenalty.get(trackSongKey) ?? 0) +
+          (recentArtistPenalty.get(artist) ?? 0);
+      const jitter =
+        jitterStrength > 0
+          ? seededJitter(options.seed as number, trackSongKey) * jitterStrength
+          : 0;
       const fatiguePenalty =
         (consumedArtists.has(artist) && !policy.allowArtistRepeats ? 0.32 : 0) +
         (avoidedArtists.has(artist) ? 0.45 : 0) +
@@ -1278,8 +1308,10 @@ export function rankResolvedTracksForPolicy<T extends ResolvedTrack>(
           0.14 +
         moodFitScore(track, policy) * 0.08 +
         (policy.cleanRequired && track.explicit === false ? 0.08 : 0) +
-        boost * 0.42 -
+        boost * 0.42 +
+        jitter -
         fatiguePenalty -
+        recentPenalty -
         index * 0.0001;
       return { track, score };
     })
