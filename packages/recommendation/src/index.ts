@@ -1069,6 +1069,12 @@ export interface MusicalBrief {
   moodKey: MoodKey;
   /** 0..1 fatigue-aware floor that was applied to target energy (0 = none). */
   fatigueRisk: number;
+  /** Live weather descriptor passed through to the prompt for context. */
+  weatherFeel?: string;
+  /** Rotating exploration angle for per-journey freshness. */
+  explorationAngle?: string;
+  /** Recently-played artists to avoid (cross-journey fatigue, surfaced to the LLM). */
+  avoidRecentArtists?: string[];
 }
 
 /**
@@ -1638,6 +1644,9 @@ export function buildMusicalBrief(
     tripSegment: arc.segment,
     moodKey: mood.primary,
     fatigueRisk,
+    weatherFeel: context.weatherFeel,
+    explorationAngle: context.varietyAngle,
+    avoidRecentArtists: context.recentlyPlayedArtists ?? [],
   };
 }
 
@@ -1840,6 +1849,11 @@ export function buildLensPrompt(
     brief.regionHint ? `Region/destination context: ${brief.regionHint}.` : "",
     brief.countryName
       ? `Current country chart context: ${brief.countryName}.`
+      : "",
+    brief.weatherFeel ? `Weather right now: ${brief.weatherFeel}.` : "",
+    brief.explorationAngle ? `Freshness directive: ${brief.explorationAngle}.` : "",
+    brief.avoidRecentArtists && brief.avoidRecentArtists.length > 0
+      ? `Avoid these recently played artists: ${brief.avoidRecentArtists.slice(0, 12).join(", ")}.`
       : "",
     tasteSteeringLine(lens, brief),
     `Listener mode: ${brief.passengerMode}. Direction: "${brief.userPrompt}".`,

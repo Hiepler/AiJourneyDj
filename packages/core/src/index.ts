@@ -82,6 +82,10 @@ export interface JourneyContext {
   elapsedMinutes?: number;
   /** Active music-wish layers steering this journey. */
   activeMusicWishes?: MusicWish[];
+  /** Rotating "exploration angle" hint for the LLM scout (variety engine). */
+  varietyAngle?: string;
+  /** Recently surfaced artists across journeys to de-prioritize (variety engine). */
+  recentlyPlayedArtists?: string[];
 }
 
 export type SongCandidateRole =
