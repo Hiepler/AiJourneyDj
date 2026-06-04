@@ -15,6 +15,7 @@ import type {
   TasteProfile,
   TemperatureBucket,
 } from "@ai-journey-dj/core";
+import { songKey } from "@ai-journey-dj/core";
 import { speedBucket, temperatureBucket } from "@ai-journey-dj/telemetry";
 import { assessDriveState } from "@ai-journey-dj/recommendation";
 
@@ -518,6 +519,49 @@ export class Store {
         status: remaining === 0 ? "expired" : wish.status,
       });
     }
+  }
+
+  /** 30-day hard cap so the table never grows unbounded regardless of the fatigue window. */
+  private static readonly RECENT_PLAYS_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+  recordRecentPlays(
+    journeyId: string,
+    tracks: Array<{ artist: string; title: string }>,
+    surfacedAtIso: string = now(),
+  ): void {
+    for (const track of tracks) {
+      this.db.run(
+        "INSERT INTO recent_plays (id, journey_id, artist, song_key, surfaced_at) VALUES (?, ?, ?, ?, ?)",
+        [
+          crypto.randomUUID(),
+          journeyId,
+          track.artist,
+          songKey(track.artist, track.title),
+          surfacedAtIso,
+        ],
+      );
+    }
+    const cutoff = new Date(
+      Date.parse(surfacedAtIso) - Store.RECENT_PLAYS_MAX_AGE_MS,
+    ).toISOString();
+    this.db.run("DELETE FROM recent_plays WHERE surfaced_at < ?", [cutoff]);
+  }
+
+  listRecentlyPlayed(
+    windowMs: number,
+    nowMs: number = Date.now(),
+  ): Array<{ artist: string; songKey: string; ageMs: number }> {
+    const cutoff = new Date(nowMs - windowMs).toISOString();
+    return this.db
+      .all<any>(
+        "SELECT artist, song_key, surfaced_at FROM recent_plays WHERE surfaced_at >= ? ORDER BY surfaced_at DESC",
+        [cutoff],
+      )
+      .map((row) => ({
+        artist: row.artist,
+        songKey: row.song_key,
+        ageMs: Math.max(0, nowMs - Date.parse(row.surfaced_at)),
+      }));
   }
 
   listResolvedTracks(
