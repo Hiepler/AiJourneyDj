@@ -27,3 +27,6 @@ tesla-public.pem
 *.crt
 *.csr
 *.srl
+
+# Internal design specs & implementation plans (not published)
+docs/superpowers/
