@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import type { MusicWish } from "@ai-journey-dj/core";
 import {
   musicWishSummary,
   parseMusicWish,
@@ -60,5 +61,28 @@ describe("parseMusicWish", () => {
     expect(wish.confidence).toBeLessThan(0.65);
     expect(wish.intents).toEqual([]);
     expect(wish.summary).toBe("Ich bin nicht sicher, welchen Musikwunsch du meinst.");
+  });
+});
+
+describe("MusicWish shared type", () => {
+  it("represents an active pinned wish with remaining tracks", () => {
+    const wish: MusicWish = {
+      id: "wish-1",
+      journeyId: "journey-1",
+      rawText: "mehr Taylor Swift",
+      source: "text",
+      intents: [{ type: "artist", artist: "Taylor Swift", strength: 0.9 }],
+      status: "active",
+      confidence: 0.82,
+      summary: "Mehr Taylor Swift",
+      pinned: true,
+      expiresAfterTracks: 5,
+      remainingTracks: 5,
+      createdAtIso: "2026-06-04T10:00:00.000Z",
+      updatedAtIso: "2026-06-04T10:00:00.000Z",
+    };
+
+    expect(wish.intents[0]).toMatchObject({ type: "artist" });
+    expect(wish.pinned).toBe(true);
   });
 });

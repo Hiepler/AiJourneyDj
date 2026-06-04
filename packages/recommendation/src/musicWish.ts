@@ -1,31 +1,11 @@
+import type {
+  MusicWishIntent,
+  MusicWishSource,
+  MusicWishStatus,
+} from "@ai-journey-dj/core";
 import { normalizeText, songKey } from "@ai-journey-dj/core";
 
-export type MusicWishSource = "text" | "voice" | "chip";
-
-export type MusicWishStatus =
-  | "pending_confirmation"
-  | "active"
-  | "soft_applied"
-  | "expired"
-  | "undone"
-  | "failed";
-
-export type MusicWishIntent =
-  | { type: "song"; artist?: string; title: string; immediate: boolean }
-  | { type: "artist"; artist: string; strength: number }
-  | { type: "genre"; genre: string; strength: number }
-  | { type: "mood"; moodTags: string[]; strength: number }
-  | {
-      type: "avoid";
-      artists?: string[];
-      songKeys?: string[];
-      moodTags?: string[];
-    }
-  | {
-      type: "role";
-      role: "singalong" | "wake_up" | "kids" | "calm_down";
-      strength: number;
-    };
+export type { MusicWishIntent, MusicWishSource, MusicWishStatus };
 
 export interface ParsedMusicWish {
   rawText: string;
