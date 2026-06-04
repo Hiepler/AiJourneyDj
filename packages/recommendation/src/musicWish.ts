@@ -37,6 +37,39 @@ const GENRE_TAGS: Record<string, string[]> = {
   schlager: ["schlager", "party"],
 };
 
+const AMBIGUOUS_BARE_WISH_WORDS = new Set([
+  "alle",
+  "anders",
+  "andere",
+  "anderes",
+  "beats",
+  "bisschen",
+  "etwas",
+  "familie",
+  "gute",
+  "hinten",
+  "irgendwie",
+  "kids",
+  "kinder",
+  "langsam",
+  "laune",
+  "lieder",
+  "lofi",
+  "mehr",
+  "musik",
+  "party",
+  "ruhig",
+  "ruhiger",
+  "songs",
+  "vibe",
+  "vibes",
+  "wach",
+  "was",
+  "weniger",
+  "wieder",
+  "zum",
+]);
+
 function cleanSubject(value: string): string {
   return value
     .replace(/[.!?]+$/g, "")
@@ -50,6 +83,23 @@ function titleCaseWords(value: string): string {
     .filter(Boolean)
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
+}
+
+function isLikelyBareArtistWish(value: string): boolean {
+  const subject = cleanSubject(value);
+  const words = subject.split(/\s+/).filter(Boolean);
+  if (words.length < 1 || words.length > 4) return false;
+  if (subject.length < 3 || subject.length > 64) return false;
+  if (!words.every((word) => /^[\p{L}\p{N}'.&-]+$/u.test(word))) return false;
+
+  const normalizedWords = words.map((word) => normalizeText(word));
+  if (normalizedWords.some((word) => AMBIGUOUS_BARE_WISH_WORDS.has(word))) {
+    return false;
+  }
+  if (GENRE_TAGS[normalizeText(subject)]) return false;
+
+  const hasNameCasing = words.some((word) => /^[A-ZÄÖÜ0-9]/.test(word));
+  return hasNameCasing || words.length >= 2;
 }
 
 function assertNever(value: never): never {
@@ -165,6 +215,11 @@ export function parseMusicWish(rawText: string): ParsedMusicWish {
       immediate: false,
     });
     return { rawText: text, status: "active", confidence: 0.74, summary: musicWishSummary(intents), intents };
+  }
+
+  if (isLikelyBareArtistWish(text)) {
+    intents.push({ type: "artist", artist: titleCaseWords(text), strength: 0.86 });
+    return { rawText: text, status: "active", confidence: 0.76, summary: musicWishSummary(intents), intents };
   }
 
   return {

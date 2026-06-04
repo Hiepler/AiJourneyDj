@@ -35,6 +35,7 @@ import {
 } from "lucide-react";
 
 import { api, type Health, type Journey, type JourneyDetail, type MusicWish, type SpotifyDevice } from "./lib/api.js";
+import { queueTracksInPlaybackOrder } from "./lib/queue.js";
 import { getSpeechRecognitionCtor, isSpeechRecognitionSupported } from "./lib/speech.js";
 import {
   connectSpotifyWebPlayer,
@@ -192,8 +193,7 @@ export function App() {
   const queuedIds = detail?.playbackSession?.queuedTrackIds ?? [];
   const bufferTracks = useMemo(() => {
     if (!detail) return [];
-    const queued = new Set(queuedIds);
-    return detail.tracks.filter((track) => queued.has(track.id));
+    return queueTracksInPlaybackOrder(detail.tracks, queuedIds);
   }, [detail, queuedIds]);
   const recentDestinations = useMemo(() => {
     const seen = new Set<string>();
