@@ -1268,3 +1268,150 @@ button:disabled,
   font-size: 0.85rem;
   color: var(--text-dim);
 }
+
+.wish-bar {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.wish-input {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: rgba(9, 12, 14, 0.58);
+}
+
+.wish-input input {
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #f5f8f7;
+  font: inherit;
+}
+
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  color: #eaf8f4;
+  background: rgba(255, 255, 255, 0.08);
+  cursor: pointer;
+}
+
+.icon-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.icon-btn.on {
+  background: rgba(38, 214, 178, 0.25);
+}
+
+.wish-chips,
+.wish-active,
+.wish-drawer-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.wish-chips button,
+.wish-drawer-chips button,
+.wish-layer {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: #dce8e5;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.wish-layer {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(38, 214, 178, 0.14);
+}
+
+.wish-layer button {
+  display: inline-grid;
+  place-items: center;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+.wish-drawer {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 20;
+  width: min(420px, calc(100vw - 32px));
+  max-height: min(620px, calc(100vh - 48px));
+  overflow: auto;
+  padding: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(13, 17, 19, 0.96);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.45);
+}
+
+.wish-drawer-head,
+.wish-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.wish-drawer-head {
+  margin-bottom: 14px;
+  color: #f5f8f7;
+  font-weight: 700;
+}
+
+.wish-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.wish-card {
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.wish-card small {
+  display: block;
+  margin-top: 4px;
+  color: #93a39f;
+}
+
+.wish-card-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.wish-card-actions button {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  color: #eaf8f4;
+  background: rgba(255, 255, 255, 0.08);
+  cursor: pointer;
+}
