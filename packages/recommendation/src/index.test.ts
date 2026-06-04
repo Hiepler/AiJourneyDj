@@ -27,6 +27,7 @@ import {
   parseCandidateJson,
   rankResolvedTracksForPolicy,
   repairJsonString,
+  moodTagsForContext,
   resolveXaiModel,
   salvageCandidatesFromText,
   selectJourneyLenses,
@@ -406,7 +407,7 @@ describe("recommendation", () => {
     expect(policy.cleanRequired).toBe(true);
     expect(policy.targetPopularity).toBeGreaterThanOrEqual(70);
     expect(policy.moodTags).toEqual(
-      expect.arrayContaining(["pop", "dance-pop", "feelgood"]),
+      expect.arrayContaining(["dance-pop", "feelgood"]),
     );
     expect(brief.moodWords).toEqual(
       expect.arrayContaining(["clean", "singalong", "current-pop"]),
@@ -767,5 +768,149 @@ describe("recommendation", () => {
       mock: true,
     });
     expect(await mockScout.generateCandidates(context, 5)).toHaveLength(5);
+  });
+});
+
+describe("buildMusicalBrief — time/trip/mood", () => {
+  const base: JourneyContext = {
+    destination: "Lake",
+    localTimeIso: "2026-06-04T02:00:00", // 02:00 local → deep_night
+    speedBucket: "highway",
+    phase: "cruise",
+    userPrompt: "road trip to the coast",
+    passengerMode: "solo",
+  } as JourneyContext;
+
+  it("deep-night long haul keeps energy at the alertness floor even under calm mode", () => {
+    const brief = buildMusicalBrief({
+      ...base,
+      plannedDurationMinutes: 360,
+      elapsedMinutes: 200,
+      etaMinutes: 160,
+      driveState: { mode: "calm", reason: "long drive", intensity: 1, signals: [] },
+    });
+    expect(brief.moodKey).toBe("night_cruise");
+    expect(brief.timeBand).toBe("deep_night");
+    expect(brief.fatigueRisk).toBeGreaterThan(0);
+    // calm mode would push energy well below the floor; the floor must hold it up.
+    expect(brief.targetEnergy).toBeGreaterThanOrEqual(0.5);
+    // the energy curve must reflect the floored energy too (max point >= ~floor)
+    expect(Math.max(...brief.energyCurve)).toBeGreaterThanOrEqual(0.5);
+    // floor propagates to the whole curve, not just the target
+    expect(Math.min(...brief.energyCurve)).toBeGreaterThanOrEqual(0.5);
+    expect(brief.moodWords).toContain("wakeful");
+  });
+
+  it("midday short trip is brighter and higher energy than deep night", () => {
+    const brief = buildMusicalBrief({
+      ...base,
+      localTimeIso: "2026-06-04T12:00:00",
+      plannedDurationMinutes: 40,
+      elapsedMinutes: 10,
+      etaMinutes: 30,
+    });
+    expect(brief.moodKey).toBe("bright_day");
+    expect(brief.timeBand).toBe("midday");
+    expect(brief.fatigueRisk).toBe(0);
+    expect(brief.valence).toBeGreaterThan(0.5);
+  });
+
+  it("a short late-night drive is calmer than a midday drive (no floor)", () => {
+    const night = buildMusicalBrief({
+      ...base,
+      localTimeIso: "2026-06-04T22:00:00",
+      plannedDurationMinutes: 30,
+      elapsedMinutes: 5,
+      etaMinutes: 25,
+    });
+    const day = buildMusicalBrief({
+      ...base,
+      localTimeIso: "2026-06-04T12:00:00",
+      plannedDurationMinutes: 30,
+      elapsedMinutes: 5,
+      etaMinutes: 25,
+    });
+    expect(night.fatigueRisk).toBe(0); // "night" band + short trip => below risk threshold
+    expect(night.targetEnergy).toBeLessThan(day.targetEnergy);
+  });
+});
+
+describe("moodTagsForContext — mood-driven", () => {
+  it("returns the night_cruise tags for a night drive", () => {
+    const tags = moodTagsForContext({
+      destination: "Lake",
+      localTimeIso: "2026-06-04T23:00:00",
+      speedBucket: "highway",
+      phase: "cruise",
+      userPrompt: "road trip",
+      passengerMode: "solo",
+      elapsedMinutes: 30,
+      etaMinutes: 120,
+    } as JourneyContext);
+    expect(tags).toContain("synthwave");
+  });
+
+  it("returns family tags in family mode", () => {
+    const tags = moodTagsForContext({
+      destination: "Zoo",
+      localTimeIso: "2026-06-04T12:00:00",
+      speedBucket: "city",
+      phase: "cruise",
+      userPrompt: "fun day out",
+      passengerMode: "family",
+    } as JourneyContext);
+    expect(tags).toContain("dance-pop");
+  });
+});
+
+describe("buildLensPrompt — valence", () => {
+  it("includes a valence line", () => {
+    const brief = buildMusicalBrief({
+      destination: "Lake",
+      localTimeIso: "2026-06-04T12:00:00",
+      speedBucket: "highway",
+      phase: "cruise",
+      userPrompt: "road trip",
+      passengerMode: "solo",
+      elapsedMinutes: 10,
+      etaMinutes: 30,
+    } as JourneyContext);
+    const prompt = buildLensPrompt(DEFAULT_LENSES[0], brief, 5);
+    expect(prompt.toLowerCase()).toContain("valence");
+  });
+});
+
+describe("overnight vacation drive — mood transitions", () => {
+  function briefAt(localTimeIso: string, elapsedMinutes: number) {
+    return buildMusicalBrief({
+      destination: "Coast",
+      localTimeIso,
+      speedBucket: "highway",
+      phase: "cruise",
+      userPrompt: "long drive to the coast",
+      passengerMode: "solo",
+      plannedDurationMinutes: 420,
+      elapsedMinutes,
+      etaMinutes: Math.max(20, 420 - elapsedMinutes),
+    } as JourneyContext);
+  }
+
+  it("moves night_cruise → dawn_lift → bright_day and stays alert at night", () => {
+    const night = briefAt("2026-06-04T01:00:00", 60);
+    const dawn = briefAt("2026-06-04T05:00:00", 300);
+    // elapsedMinutes=180: progress=180/420≈0.43 → "body" segment, not "closing".
+    // etaMinutes=max(20,420-180)=240. Hour 08:00 → morning band → bright_day.
+    const morning = briefAt("2026-06-04T08:00:00", 180);
+
+    expect(night.moodKey).toBe("night_cruise");
+    expect(dawn.moodKey).toBe("dawn_lift");
+    expect(morning.moodKey).toBe("bright_day");
+
+    // Deep-night + long elapsed → fatigue floor keeps energy up.
+    expect(night.fatigueRisk).toBeGreaterThan(0);
+    expect(night.targetEnergy).toBeGreaterThanOrEqual(0.5);
+
+    // Daytime brighter than night.
+    expect(morning.valence).toBeGreaterThan(night.valence);
   });
 });

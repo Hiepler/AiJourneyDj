@@ -170,6 +170,13 @@ export class JourneyService {
     const active = this.store.listActiveJourneys();
     for (const journey of active) {
       const phase = derivePhase(event, journey.phase);
+      if (
+        journey.plannedDurationMinutes === undefined &&
+        typeof event.etaMinutes === "number" &&
+        event.etaMinutes > 0
+      ) {
+        this.store.setPlannedDurationMinutes(journey.id, event.etaMinutes);
+      }
       this.store.saveTelemetry(journey.id, event, phase);
       if (phase !== journey.phase) {
         this.store.updateJourneyPhase(journey.id, phase);
