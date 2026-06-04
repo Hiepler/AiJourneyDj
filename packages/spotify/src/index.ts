@@ -778,6 +778,50 @@ export class SpotifyResolver {
         if (resolvedTrack) {
           resolved.push(resolvedTrack);
         }
+
+        // For artist-only wish queries, also store additional qualifying tracks so that
+        // the hard wish quota can guarantee ≥WISH_QUOTA_MIN tracks per artist in the queue.
+        const isArtistWish =
+          candidate.source === "music-wish" &&
+          candidate.lens === "music-wish-artist";
+        if (isArtistWish && best) {
+          const seenIds = new Set(resolved.map((track) => track.providerTrackId));
+          for (const extra of results) {
+            if (resolved.length >= target) break;
+            if (seenIds.has(extra.id)) continue;
+            if (extra.isPlayable === false) continue;
+            const extraArtist = normalizeText(extra.artist);
+            const candidateArtist = normalizeText(candidate.artist);
+            const artistMatch =
+              extraArtist.includes(candidateArtist) ||
+              candidateArtist.includes(extraArtist);
+            if (!artistMatch) continue;
+            const extraTrack: ResolvedTrack = {
+              provider: "spotify",
+              providerTrackId: extra.id,
+              providerUri: extra.uri,
+              externalUrl: extra.externalUrl,
+              isPlayable: extra.isPlayable ?? true,
+              market: extra.market ?? this.options.market,
+              albumArtUrl: extra.albumArtUrl,
+              artist: extra.artist,
+              title: extra.title,
+              isrc: extra.isrc,
+              popularity: extra.popularity ?? candidate.popularity,
+              explicit: extra.explicit ?? candidate.explicit,
+              releaseDate: extra.releaseDate ?? candidate.releaseDate,
+              chartRank: candidate.chartRank,
+              chartPlaycount: candidate.chartPlaycount,
+              chartCountry: candidate.chartCountry,
+              chartSource: candidate.chartSource,
+              moodTags: candidate.moodTags,
+              matchConfidence: 0.9,
+              matchReason: "artist wish match",
+            };
+            resolved.push(extraTrack);
+            seenIds.add(extra.id);
+          }
+        }
         this.options.onSearch?.({
           index,
           artist: candidate.artist,
