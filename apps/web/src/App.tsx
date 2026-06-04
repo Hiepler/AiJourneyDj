@@ -7,28 +7,35 @@ import {
   Heart,
   ListMusic,
   Loader2,
+  Mic,
   MonitorSpeaker,
   MapPin,
   Music2,
   Navigation,
   Pause,
+  Pin,
+  PinOff,
   Play,
   Power,
   RefreshCw,
   Radio,
+  RotateCcw,
   Route,
   Satellite,
   Scale,
   Moon,
+  Send,
   SkipBack,
   SkipForward,
   Sparkles,
   Sunset,
   Wifi,
-  Wind
+  Wind,
+  X
 } from "lucide-react";
 
-import { api, type Health, type Journey, type JourneyDetail, type SpotifyDevice } from "./lib/api.js";
+import { api, type Health, type Journey, type JourneyDetail, type MusicWish, type SpotifyDevice } from "./lib/api.js";
+import { getSpeechRecognitionCtor, isSpeechRecognitionSupported } from "./lib/speech.js";
 import {
   connectSpotifyWebPlayer,
   spotifySdkStatusLabel,
@@ -103,6 +110,11 @@ export function App() {
   const [vibeTuning, setVibeTuning] = useState<string>();
   const [devices, setDevices] = useState<SpotifyDevice[]>([]);
   const [showDevices, setShowDevices] = useState(false);
+  const [wishText, setWishText] = useState("");
+  const [wishDrawerOpen, setWishDrawerOpen] = useState(false);
+  const [wishLoading, setWishLoading] = useState(false);
+  const [listening, setListening] = useState(false);
+  const speechSupported = typeof window !== "undefined" && isSpeechRecognitionSupported();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -339,6 +351,66 @@ export function App() {
 
   async function refreshQueue() {
     await loadTracks(true);
+  }
+
+  async function submitMusicWish(text: string, source: "text" | "voice" | "chip" = "text") {
+    const trimmed = text.trim();
+    if (!activeJourneyId || !trimmed) return;
+    setWishLoading(true);
+    setError(undefined);
+    try {
+      await api.createMusicWish(activeJourneyId, { text: trimmed, source });
+      setWishText("");
+      setDetail(await api.journey(activeJourneyId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setWishLoading(false);
+    }
+  }
+
+  async function toggleWishPin(wish: MusicWish) {
+    if (!activeJourneyId) return;
+    setWishLoading(true);
+    try {
+      await api.updateMusicWish(activeJourneyId, wish.id, { pinned: !wish.pinned });
+      setDetail(await api.journey(activeJourneyId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setWishLoading(false);
+    }
+  }
+
+  async function undoWish(wish: MusicWish) {
+    if (!activeJourneyId) return;
+    setWishLoading(true);
+    try {
+      await api.undoMusicWish(activeJourneyId, wish.id);
+      setDetail(await api.journey(activeJourneyId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setWishLoading(false);
+    }
+  }
+
+  function startWishSpeech() {
+    const Ctor = getSpeechRecognitionCtor();
+    if (!Ctor) return;
+    const recognition = new Ctor();
+    recognition.lang = "de-DE";
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+    recognition.onresult = (event) => {
+      const transcript = event.results[0]?.[0]?.transcript ?? "";
+      setWishText(transcript);
+      void submitMusicWish(transcript, "voice");
+    };
+    recognition.onerror = () => setListening(false);
+    recognition.onend = () => setListening(false);
+    setListening(true);
+    recognition.start();
   }
 
   async function retryAnalysis() {
@@ -956,6 +1028,58 @@ export function App() {
                 </button>
               </div>
 
+              <div className="wish-bar">
+                <form
+                  className="wish-input"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void submitMusicWish(wishText, "text");
+                  }}
+                >
+                  <Sparkles size={16} />
+                  <input
+                    disabled={wishLoading || !activeJourneyId}
+                    onChange={(event) => setWishText(event.target.value)}
+                    placeholder="Musikwunsch..."
+                    value={wishText}
+                  />
+                  <button className="icon-btn" disabled={wishLoading || !wishText.trim()} title="Wunsch senden" type="submit">
+                    {wishLoading ? <Loader2 className="spin" size={16} /> : <Send size={16} />}
+                  </button>
+                  <button
+                    className={`icon-btn${listening ? " on" : ""}`}
+                    disabled={!speechSupported || wishLoading}
+                    onClick={startWishSpeech}
+                    title={speechSupported ? "Spracheingabe" : "Spracheingabe ist in diesem Browser nicht verfügbar"}
+                    type="button"
+                  >
+                    <Mic size={16} />
+                  </button>
+                </form>
+                <div className="wish-chips">
+                  {["Mitsingen", "Mehr Pop", "Weniger ruhig"].map((chip) => (
+                    <button disabled={wishLoading} key={chip} onClick={() => submitMusicWish(chip, "chip")} type="button">
+                      {chip}
+                    </button>
+                  ))}
+                  <button className="wish-drawer-toggle" onClick={() => setWishDrawerOpen(true)} type="button">
+                    Wünsche
+                  </button>
+                </div>
+                {detail?.activeMusicWishes?.length ? (
+                  <div className="wish-active">
+                    {detail.activeMusicWishes.slice(0, 2).map((wish) => (
+                      <span className="wish-layer" key={wish.id}>
+                        {wish.summary} · {wish.pinned ? "Pinned" : `${wish.remainingTracks} Songs`}
+                        <button onClick={() => undoWish(wish)} title="Undo" type="button">
+                          <RotateCcw size={13} />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+
               {error ? <p className="error">{error}</p> : null}
             </div>
 
@@ -1066,6 +1190,45 @@ export function App() {
                   <span className="retuning-orb" aria-hidden="true" />
                   <span className="retuning-label">{vibeTuning ? "Adjusting mix" : "Re-tuning the vibe"}</span>
                   <strong className="retuning-phase">{vibeTuning ?? phaseMeta(retuningPhase).label}</strong>
+                </div>
+              </div>
+            ) : null}
+            {wishDrawerOpen ? (
+              <div className="wish-drawer" role="dialog" aria-label="Music wishes">
+                <div className="wish-drawer-head">
+                  <span>Music Wishes</span>
+                  <button className="icon-btn" onClick={() => setWishDrawerOpen(false)} type="button">
+                    <X size={16} />
+                  </button>
+                </div>
+                <div className="wish-drawer-chips">
+                  {["Spiel jetzt gute Laune", "Mehr 90s Pop", "Nicht so langsam", "Für die Kinder hinten"].map((chip) => (
+                    <button disabled={wishLoading} key={chip} onClick={() => submitMusicWish(chip, "chip")} type="button">
+                      {chip}
+                    </button>
+                  ))}
+                </div>
+                <div className="wish-list">
+                  {(detail?.recentMusicWishes ?? []).length ? (
+                    detail!.recentMusicWishes!.map((wish) => (
+                      <div className={`wish-card ${wish.status}`} key={wish.id}>
+                        <div>
+                          <strong>{wish.summary}</strong>
+                          <small>{wish.status} · {wish.pinned ? "pinned" : `${wish.remainingTracks}/${wish.expiresAfterTracks} songs`}</small>
+                        </div>
+                        <div className="wish-card-actions">
+                          <button onClick={() => toggleWishPin(wish)} title={wish.pinned ? "Unpin" : "Pin"} type="button">
+                            {wish.pinned ? <PinOff size={15} /> : <Pin size={15} />}
+                          </button>
+                          <button onClick={() => undoWish(wish)} title="Undo" type="button">
+                            <RotateCcw size={15} />
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="muted">Noch keine Musikwünsche.</p>
+                  )}
                 </div>
               </div>
             ) : null}
