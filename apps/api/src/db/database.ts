@@ -218,6 +218,16 @@ export function migrate(db: Db): void {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS recent_plays (
+      id TEXT PRIMARY KEY,
+      journey_id TEXT NOT NULL,
+      artist TEXT NOT NULL,
+      song_key TEXT NOT NULL,
+      surfaced_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_recent_plays_surfaced_at
+      ON recent_plays (surfaced_at);
   `);
 
   tryAddColumn(db, "journeys", "provider", "TEXT NOT NULL DEFAULT 'tidal'");

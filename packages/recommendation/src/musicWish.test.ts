@@ -32,6 +32,17 @@ describe("parseMusicWish", () => {
     expect(musicWishSummary(wish.intents)).toBe("Mehr Taylor Swift");
   });
 
+  it("treats a short bare artist name as a low-friction artist boost", () => {
+    const wish = parseMusicWish("Nina Chuba");
+
+    expect(wish.status).toBe("active");
+    expect(wish.confidence).toBeGreaterThanOrEqual(0.75);
+    expect(wish.intents).toEqual([
+      { type: "artist", artist: "Nina Chuba", strength: 0.86 },
+    ]);
+    expect(musicWishSummary(wish.intents)).toBe("Mehr Nina Chuba");
+  });
+
   it("parses avoid wishes without interrupting playback", () => {
     const wish = parseMusicWish("nicht schon wieder Dua Lipa");
 

@@ -41,8 +41,11 @@ import {
   deriveTasteProfile,
   fallbackCandidates,
   lastfmTracksToCandidates,
+  makeVarietyContext,
   parseMusicWish,
   rankResolvedTracksForPolicy,
+  rotateWindow,
+  seededExplorationAngle,
   selectRollingBatch,
   stabilizeDriveMode,
   type LastfmChartClient,
@@ -946,6 +949,58 @@ export class JourneyService {
     const activeMusicWishes = this.store.listActiveMusicWishes(journeyId);
     const contextWithWishes: JourneyContext = { ...context, activeMusicWishes };
 
+    const variety = makeVarietyContext({
+      journeyId,
+      elapsedMinutes: context.elapsedMinutes,
+      bucketMinutes: this.config.VARIETY_BUCKET_MINUTES,
+      phase: context.phase,
+      speedBucket: context.speedBucket,
+      driveMode: context.driveState?.mode ?? journey.driveMode,
+    });
+    const recentPlays = this.config.RECENT_FATIGUE_ENABLED
+      ? this.store.listRecentlyPlayed(
+          this.config.RECENT_FATIGUE_HOURS * 60 * 60 * 1000,
+        )
+      : [];
+    const recentArtistPenalty = new Map<string, number>();
+    const recentSongPenalty = new Map<string, number>();
+    const fatigueHorizonMs = Math.max(
+      1,
+      this.config.RECENT_FATIGUE_HOURS * 60 * 60 * 1000,
+    );
+    for (const play of recentPlays) {
+      const decay = Math.max(0, 1 - play.ageMs / fatigueHorizonMs);
+      const artistKey = normalizeText(play.artist);
+      recentArtistPenalty.set(
+        artistKey,
+        Math.max(
+          recentArtistPenalty.get(artistKey) ?? 0,
+          this.config.RECENT_FATIGUE_ARTIST_PENALTY * decay,
+        ),
+      );
+      recentSongPenalty.set(
+        play.songKey,
+        Math.max(
+          recentSongPenalty.get(play.songKey) ?? 0,
+          this.config.RECENT_FATIGUE_SONG_PENALTY * decay,
+        ),
+      );
+    }
+    const wishArtists = activeMusicWishes
+      .flatMap((wish) => wish.intents)
+      .flatMap((intent) =>
+        intent.type === "artist"
+          ? [intent.artist]
+          : intent.type === "song" && intent.artist
+            ? [intent.artist]
+            : [],
+      );
+    const groundedContext: JourneyContext = {
+      ...contextWithWishes,
+      varietyAngle: seededExplorationAngle(variety.seed),
+      recentlyPlayedArtists: [...recentArtistPenalty.keys()].slice(0, 12),
+    };
+
     // Cost control: only the LLM lenses cost tokens. Run them when the vibe actually changes;
     // for routine top-ups, reuse the already-generated candidate pool if it can refill the buffer.
     const vibeChangingReasons = new Set([
@@ -1011,16 +1066,16 @@ export class JourneyService {
 
     // Personalize the brief with the listener's taste (cached ~24h). Built once and reused for any
     // fallback regeneration below so the whole drive shares one taste signal.
-    let scoutContext: JourneyContext = contextWithWishes;
+    let scoutContext: JourneyContext = groundedContext;
     let policy = applyMusicWishesToPolicy(
-      buildRecommendationPolicy(contextWithWishes),
+      buildRecommendationPolicy(groundedContext),
       activeMusicWishes,
     );
     let candidates: SongCandidate[] = [];
     if (mustGenerate) {
       const tasteProfile = await this.loadTasteProfile(accessToken);
       scoutContext = {
-        ...contextWithWishes,
+        ...groundedContext,
         tasteProfile,
         tasteWeight: journey.tasteWeight ?? DEFAULT_TASTE_WEIGHT,
       };
@@ -1034,6 +1089,7 @@ export class JourneyService {
           scoutContext,
           policy,
           8,
+          variety.seed,
         ),
         consumedSongKeys,
       );
@@ -1087,7 +1143,16 @@ export class JourneyService {
         avoidArtists: [...consumedArtistKeys],
         avoidSongKeys: [...consumedSongKeys],
       },
-      { consumedArtists: consumedTracks.map((track) => track.artist) },
+      {
+        consumedArtists: consumedTracks.map((track) => track.artist),
+        seed: variety.seed,
+        jitterStrength: this.config.RANK_JITTER_ENABLED
+          ? this.config.RANK_JITTER_STRENGTH
+          : 0,
+        recentArtistPenalty,
+        recentSongPenalty,
+        fatigueExemptArtists: wishArtists,
+      },
     );
     const immediateWishKeys = this.immediateWishSongKeys(activeMusicWishes);
     const immediateWishTrack = rankedStored.find((track) => {
@@ -1095,6 +1160,10 @@ export class JourneyService {
       const titleOnly = songKey("", track.title);
       return immediateWishKeys.has(exact) || immediateWishKeys.has(titleOnly);
     });
+    const isWishApplicationPass =
+      reason === "music-wish" || reason === "music-wish-undo";
+    const shouldRebuildQueueForWish =
+      isWishApplicationPass || (reason === "manual" && activeMusicWishes.length > 0);
     let activeTrack =
       immediateWishTrack ??
       (session?.activeTrack && session.activeTrack.provider === "spotify"
@@ -1118,11 +1187,12 @@ export class JourneyService {
           savedToPlaylist: boolean;
         } => Boolean(track),
       );
-    const needed = Math.max(0, 5 - currentQueued.length);
+    const preservedQueued = shouldRebuildQueueForWish ? [] : currentQueued;
+    const needed = Math.max(0, 5 - preservedQueued.length);
     const selected = queueTracksForBuffer(rankedStored, {
       activeProviderTrackId: activeTrack?.providerTrackId,
       alreadyQueuedProviderIds: new Set(
-        currentQueued.map((track) => track.providerTrackId),
+        preservedQueued.map((track) => track.providerTrackId),
       ),
       excludeProviderTrackIds: consumedProviderIds,
       excludeSongKeys: consumedSongKeys,
@@ -1132,7 +1202,7 @@ export class JourneyService {
       targetBufferSize: needed,
     });
 
-    if (currentQueued.length + selected.length < 5) {
+    if (preservedQueued.length + selected.length < 5) {
       this.store.audit(
         journeyId,
         "recommendation.fallback",
@@ -1144,6 +1214,7 @@ export class JourneyService {
           scoutContext,
           policy,
           8,
+          variety.seed,
         ),
         consumedSongKeys,
       );
@@ -1160,10 +1231,19 @@ export class JourneyService {
           avoidArtists: [...consumedArtistKeys],
           avoidSongKeys: [...consumedSongKeys],
         },
-        { consumedArtists: consumedTracks.map((track) => track.artist) },
+        {
+          consumedArtists: consumedTracks.map((track) => track.artist),
+          seed: variety.seed,
+          jitterStrength: this.config.RANK_JITTER_ENABLED
+            ? this.config.RANK_JITTER_STRENGTH
+            : 0,
+          recentArtistPenalty,
+          recentSongPenalty,
+          fatigueExemptArtists: wishArtists,
+        },
       );
       const alreadyQueued = new Set([
-        ...currentQueued.map((track) => track.providerTrackId),
+        ...preservedQueued.map((track) => track.providerTrackId),
         ...selected.map((track) => track.providerTrackId),
       ]);
       const additional = queueTracksForBuffer(rankedFallbackStored, {
@@ -1176,7 +1256,7 @@ export class JourneyService {
         cleanRequired: policy.cleanRequired,
         targetBufferSize: Math.max(
           0,
-          5 - currentQueued.length - selected.length,
+          5 - preservedQueued.length - selected.length,
         ),
       });
       for (const track of additional) {
@@ -1187,11 +1267,20 @@ export class JourneyService {
         ) {
           selected.push(track);
         }
-        if (currentQueued.length + selected.length >= 5) {
+        if (preservedQueued.length + selected.length >= 5) {
           break;
         }
       }
     }
+
+    const quotaSelected = this.enforceWishQuota({
+      selected,
+      rankedStored,
+      wishes: activeMusicWishes,
+      excludeProviderIds: consumedProviderIds,
+    });
+    selected.length = 0;
+    selected.push(...quotaSelected);
 
     session = this.store.getPlaybackSession(journeyId);
     const deviceId = journey.spotifyDeviceId ?? session?.deviceId;
@@ -1212,7 +1301,7 @@ export class JourneyService {
     const playedActiveTrack = playbackApplied.deviceReachable
       ? activeTrack
       : (session?.activeTrack ?? activeTrack);
-    const queuedTracks = [...currentQueued, ...selected].slice(0, 5);
+    const queuedTracks = [...preservedQueued, ...selected].slice(0, 5);
     const status =
       queuedTracks.length === 5 &&
       playbackApplied.deviceReachable &&
@@ -1240,15 +1329,26 @@ export class JourneyService {
         Boolean,
       ) as string[],
     );
-    // Decay wishes by the tracks the listener actually advanced through this pass —
-    // the buffer deficit we just refilled (`needed`) plus an immediate replacement —
-    // NOT `selected.length`, which balloons to the whole re-curation batch when the
-    // buffer is already full (queueTracksForBuffer over-selects at targetBufferSize 0),
-    // and would otherwise expire a brand-new wish before it ever steered a track.
-    this.store.decayActiveMusicWishes(
-      journeyId,
-      needed + (immediateWishTrack ? 1 : 0),
-    );
+    // Decay wishes only on passes driven by actual playback progression, by the tracks
+    // the listener advanced through (the buffer deficit we just refilled, `needed`).
+    // NEVER on a wish refresh pass: the listener has not advanced through a
+    // track yet, so the wish must keep its budget instead of expiring during
+    // re-curation.
+    if (!shouldRebuildQueueForWish) {
+      this.store.decayActiveMusicWishes(
+        journeyId,
+        needed + (immediateWishTrack ? 1 : 0),
+      );
+    }
+    if (this.config.RECENT_FATIGUE_ENABLED) {
+      const surfaced = [activeTrack, ...queuedTracks].filter(
+        (track): track is NonNullable<typeof track> => Boolean(track),
+      );
+      this.store.recordRecentPlays(
+        journeyId,
+        surfaced.map((track) => ({ artist: track.artist, title: track.title })),
+      );
+    }
     this.store.savePlaylistUpdate(update);
     this.saveSession({
       journeyId,
@@ -1290,6 +1390,65 @@ export class JourneyService {
       }
     }
     return keys;
+  }
+
+  /**
+   * Enforces the hard wish quota: ensures at least WISH_QUOTA_MIN tracks per active
+   * artist wish are in the next queue, capped at WISH_QUOTA_MAX_SLOTS total wish slots,
+   * by swapping the lowest-ranked non-wish, non-pinned selected tracks for the top-ranked
+   * unused wish-artist tracks. Returns the (possibly modified) selected list.
+   */
+  private enforceWishQuota<T extends ResolvedTrack & { id: string }>(args: {
+    selected: T[];
+    rankedStored: T[];
+    wishes: MusicWish[];
+    excludeProviderIds: Set<string>;
+  }): T[] {
+    const min = this.config.WISH_QUOTA_MIN;
+    const maxSlots = this.config.WISH_QUOTA_MAX_SLOTS;
+    if (min <= 0 || maxSlots <= 0) return [...args.selected];
+
+    const wishArtistKeys = new Set(
+      args.wishes
+        .filter(
+          (wish) => wish.status === "active" || wish.status === "soft_applied",
+        )
+        .flatMap((wish) => wish.intents)
+        .flatMap((intent) =>
+          intent.type === "artist" ? [normalizeText(intent.artist)] : [],
+        ),
+    );
+    if (wishArtistKeys.size === 0) return [...args.selected];
+
+    const isWishTrack = (track: ResolvedTrack) =>
+      wishArtistKeys.has(normalizeText(track.artist));
+
+    const selected = [...args.selected];
+    const inQueueIds = new Set(selected.map((track) => track.providerTrackId));
+    let wishSlots = selected.filter(isWishTrack).length;
+
+    const wishCandidates = args.rankedStored.filter(
+      (track) =>
+        isWishTrack(track) &&
+        track.providerUri &&
+        track.isPlayable !== false &&
+        !inQueueIds.has(track.providerTrackId) &&
+        !args.excludeProviderIds.has(track.providerTrackId),
+    );
+
+    const target = Math.min(maxSlots, Math.max(min, wishSlots));
+    for (const candidate of wishCandidates) {
+      if (wishSlots >= target) break;
+      const victimIndex = [...selected]
+        .map((track, index) => ({ track, index }))
+        .reverse()
+        .find(({ track }) => !isWishTrack(track))?.index;
+      if (victimIndex === undefined) break;
+      selected[victimIndex] = candidate;
+      inQueueIds.add(candidate.providerTrackId);
+      wishSlots += 1;
+    }
+    return selected;
   }
 
   private pickSpotifyPlaybackTracks(
@@ -1940,6 +2099,7 @@ export class JourneyService {
     context: JourneyContext,
     policy: RecommendationPolicy,
     targetCount: number,
+    seed = 0,
   ): Promise<SongCandidate[]> {
     const wishCandidates = await this.enrichAndStoreCandidates(
       journeyId,
@@ -1951,6 +2111,7 @@ export class JourneyService {
         context,
         policy,
         targetCount + 8,
+        seed,
       ),
       this.generateAndStoreCandidates(journeyId, context, targetCount, policy),
     ]);
@@ -1981,18 +2142,24 @@ export class JourneyService {
     context: JourneyContext,
     policy: RecommendationPolicy,
     targetCount: number,
+    seed = 0,
   ): Promise<SongCandidate[]> {
     if (!this.lastfmCharts) return [];
     const country = this.countryNameForCharts(context);
     const tags = policy.moodTags.slice(0, policy.familyMode ? 5 : 3);
+    const rotation = this.config.LASTFM_CHART_ROTATION_ENABLED;
+    const page = rotation ? (seed % this.config.LASTFM_CHART_PAGES) + 1 : 1;
+    const window = rotation
+      ? this.config.LASTFM_CHART_WINDOW
+      : Math.max(targetCount, 30);
     const [geoTracks, tagTracks] = await Promise.all([
-      this.lastfmCharts.getGeoTopTracks(country, Math.max(targetCount, 30)),
-      Promise.all(
-        tags.map((tag) => this.lastfmCharts!.getTagTopTracks(tag, 12)),
-      ),
+      this.lastfmCharts.getGeoTopTracks(country, window, page),
+      Promise.all(tags.map((tag) => this.lastfmCharts!.getTagTopTracks(tag, 12, page))),
     ]);
+    const pool = [...geoTracks, ...tagTracks.flat()];
+    const rotated = rotation ? rotateWindow(pool, seed, pool.length) : pool;
     const candidates = lastfmTracksToCandidates(
-      [...geoTracks, ...tagTracks.flat()],
+      rotated,
       context,
       policy.moodTags,
     ).slice(0, targetCount);

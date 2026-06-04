@@ -5,6 +5,7 @@ import type {
   ResolvedTrack,
   SongCandidate,
 } from "@ai-journey-dj/core";
+import { songKey } from "@ai-journey-dj/core";
 
 import type { RecommendationPolicy } from "./index.js";
 
@@ -998,5 +999,100 @@ describe("overnight vacation drive — mood transitions", () => {
 
     // Daytime brighter than night.
     expect(morning.valence).toBeGreaterThan(night.valence);
+  });
+});
+
+describe("scout grounding", () => {
+  it("buildMusicalBrief surfaces weather, exploration angle and recently-played avoids", () => {
+    const brief = buildMusicalBrief({
+      ...context,
+      weatherFeel: "warm and clear",
+      varietyAngle: "favor a different era than the most obvious one",
+      recentlyPlayedArtists: ["Dua Lipa", "The Weeknd"],
+    });
+    expect(brief.weatherFeel).toBe("warm and clear");
+    expect(brief.explorationAngle).toBe("favor a different era than the most obvious one");
+    expect(brief.avoidRecentArtists).toEqual(["Dua Lipa", "The Weeknd"]);
+  });
+
+  it("buildLensPrompt mentions the exploration angle and avoid list", () => {
+    const brief = buildMusicalBrief({
+      ...context,
+      varietyAngle: "surface a less-obvious facet of the mood",
+      recentlyPlayedArtists: ["Dua Lipa"],
+    });
+    const prompt = buildLensPrompt(DEFAULT_LENSES[0], brief, 5);
+    expect(prompt).toContain("surface a less-obvious facet of the mood");
+    expect(prompt).toContain("Dua Lipa");
+  });
+});
+
+describe("variety-aware ranking", () => {
+  function trackOf(id: string, artist: string, title: string, pop: number) {
+    return {
+      provider: "spotify" as const,
+      providerTrackId: id,
+      providerUri: `spotify:track:${id}`,
+      artist,
+      title,
+      explicit: false,
+      popularity: pop,
+      matchConfidence: 0.9,
+      matchReason: "artist and title match",
+    };
+  }
+
+  it("seeded jitter reorders near-equal tracks but never inverts a clear fit gap", () => {
+    const policy = buildRecommendationPolicy(context);
+    const near: ResolvedTrack[] = [
+      trackOf("a", "Artist A", "Song A", 70),
+      trackOf("b", "Artist B", "Song B", 70),
+      trackOf("c", "Artist C", "Song C", 70),
+    ];
+    const seedX = rankResolvedTracksForPolicy(near, policy, {
+      now: new Date("2026-06-03"),
+      seed: 1,
+      jitterStrength: 0.06,
+    }).map((t) => t.providerTrackId);
+    const seedY = rankResolvedTracksForPolicy(near, policy, {
+      now: new Date("2026-06-03"),
+      seed: 999,
+      jitterStrength: 0.06,
+    }).map((t) => t.providerTrackId);
+    expect(seedX).not.toEqual(seedY);
+    expect([...seedX].sort()).toEqual([...seedY].sort());
+
+    const gap: ResolvedTrack[] = [
+      trackOf("weak", "Weak", "Weak", 30),
+      { ...trackOf("strong", "Strong", "Strong", 99), matchConfidence: 0.99, chartRank: 1 },
+    ];
+    const ranked = rankResolvedTracksForPolicy(gap, policy, {
+      now: new Date("2026-06-03"),
+      seed: 7,
+      jitterStrength: 0.06,
+    });
+    expect(ranked[0].providerTrackId).toBe("strong");
+  });
+
+  it("recent-fatigue penalizes recent songs/artists and exempts wish artists", () => {
+    const policy = buildRecommendationPolicy(context);
+    // tired is at index=0 so its base score is fractionally higher (no index tiebreaker penalty);
+    // this lets a large recentSongPenalty (0.5) flip the result, and removal of the penalty restores it.
+    const tracks: ResolvedTrack[] = [
+      trackOf("tired", "Tired Artist", "Tired Song", 88),
+      trackOf("fresh", "Fresh Artist", "Fresh Song", 70),
+    ];
+    const ranked = rankResolvedTracksForPolicy(tracks, policy, {
+      now: new Date("2026-06-03"),
+      recentSongPenalty: new Map([[songKey("Tired Artist", "Tired Song"), 0.5]]),
+    });
+    expect(ranked[0].providerTrackId).toBe("fresh");
+
+    const exempt = rankResolvedTracksForPolicy(tracks, policy, {
+      now: new Date("2026-06-03"),
+      recentSongPenalty: new Map([[songKey("Tired Artist", "Tired Song"), 0.5]]),
+      fatigueExemptArtists: ["Tired Artist"],
+    });
+    expect(exempt[0].providerTrackId).toBe("tired");
   });
 });

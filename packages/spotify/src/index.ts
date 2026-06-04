@@ -528,8 +528,10 @@ export class MockSpotifyAdapter implements SpotifyAdapter {
     market: string;
     limit: number;
   }): Promise<SpotifyTrackSearchResult[]> {
-    const [artist = "Unknown Artist", title = args.query] =
-      args.query.split(" - ");
+    const artistOnlyMatch = args.query.match(/^artist:"(.+)"$/);
+    const [artist = "Unknown Artist", title = args.query] = artistOnlyMatch
+      ? [artistOnlyMatch[1], "Top Hit"]
+      : args.query.split(" - ");
     const cleanTitle = title.trim().endsWith(" radio")
       ? title.trim().replace(/\s+radio$/i, "")
       : title.trim();
@@ -724,9 +726,7 @@ export class SpotifyResolver {
       }
 
       const candidate = candidates[index];
-      const query = candidate.isrc
-        ? `isrc:${candidate.isrc}`
-        : `${candidate.artist} - ${candidate.title}`;
+      const query = spotifySearchQueryForCandidate(candidate);
       const cacheKey = `${this.options.market}:${query.toLowerCase()}`;
 
       // Cache hit (resolved track) or cached "no match" (null) -> skip the Spotify API call.
@@ -778,6 +778,50 @@ export class SpotifyResolver {
         if (resolvedTrack) {
           resolved.push(resolvedTrack);
         }
+
+        // For artist-only wish queries, also store additional qualifying tracks so that
+        // the hard wish quota can guarantee ≥WISH_QUOTA_MIN tracks per artist in the queue.
+        const isArtistWish =
+          candidate.source === "music-wish" &&
+          candidate.lens === "music-wish-artist";
+        if (isArtistWish && best) {
+          const seenIds = new Set(resolved.map((track) => track.providerTrackId));
+          for (const extra of results) {
+            if (resolved.length >= target) break;
+            if (seenIds.has(extra.id)) continue;
+            if (extra.isPlayable === false) continue;
+            const extraArtist = normalizeText(extra.artist);
+            const candidateArtist = normalizeText(candidate.artist);
+            const artistMatch =
+              extraArtist.includes(candidateArtist) ||
+              candidateArtist.includes(extraArtist);
+            if (!artistMatch) continue;
+            const extraTrack: ResolvedTrack = {
+              provider: "spotify",
+              providerTrackId: extra.id,
+              providerUri: extra.uri,
+              externalUrl: extra.externalUrl,
+              isPlayable: extra.isPlayable ?? true,
+              market: extra.market ?? this.options.market,
+              albumArtUrl: extra.albumArtUrl,
+              artist: extra.artist,
+              title: extra.title,
+              isrc: extra.isrc,
+              popularity: extra.popularity ?? candidate.popularity,
+              explicit: extra.explicit ?? candidate.explicit,
+              releaseDate: extra.releaseDate ?? candidate.releaseDate,
+              chartRank: candidate.chartRank,
+              chartPlaycount: candidate.chartPlaycount,
+              chartCountry: candidate.chartCountry,
+              chartSource: candidate.chartSource,
+              moodTags: candidate.moodTags,
+              matchConfidence: 0.9,
+              matchReason: "artist wish match",
+            };
+            resolved.push(extraTrack);
+            seenIds.add(extra.id);
+          }
+        }
         this.options.onSearch?.({
           index,
           artist: candidate.artist,
@@ -799,6 +843,16 @@ export class SpotifyResolver {
 
     return resolved;
   }
+}
+
+function spotifySearchQueryForCandidate(candidate: SongCandidate): string {
+  if (candidate.isrc) {
+    return `isrc:${candidate.isrc}`;
+  }
+  if (candidate.source === "music-wish" && candidate.lens === "music-wish-artist") {
+    return `artist:"${candidate.artist.replaceAll('"', "").trim()}"`;
+  }
+  return `${candidate.artist} - ${candidate.title}`;
 }
 
 function withCandidateMetadata(
@@ -826,6 +880,8 @@ export function bestSpotifyMatch(
   | undefined {
   const candidateArtist = normalizeText(candidate.artist);
   const candidateTitle = normalizeText(candidate.title);
+  const artistWishOnly =
+    candidate.source === "music-wish" && candidate.lens === "music-wish-artist";
   let best:
     | { track: SpotifyTrackSearchResult; confidence: number; reason: string }
     | undefined;
@@ -846,6 +902,8 @@ export function bestSpotifyMatch(
 
     const confidence = isrcMatch
       ? 0.99
+      : artistWishOnly && artistMatch
+        ? 0.9
       : artistMatch && titleMatch
         ? 0.94
         : artistMatch && titleContains
@@ -855,6 +913,8 @@ export function bestSpotifyMatch(
             : 0.4;
     const reason = isrcMatch
       ? "isrc match"
+      : artistWishOnly && artistMatch
+        ? "artist wish match"
       : artistMatch && titleMatch
         ? "artist and title match"
         : artistMatch && titleContains

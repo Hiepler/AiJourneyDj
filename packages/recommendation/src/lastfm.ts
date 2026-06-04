@@ -99,15 +99,17 @@ export class LastfmChartClient {
   async getGeoTopTracks(
     country: string | undefined,
     limit = 50,
+    page = 1,
   ): Promise<LastfmChartTrack[]> {
     const normalizedCountry = country?.trim();
     if (!this.enabled || !normalizedCountry) return [];
     const url = this.url("geo.getTopTracks", {
       country: normalizedCountry,
       limit,
+      page,
     });
     const payload = await this.fetchCached(
-      `geo:${normalizedCountry.toLowerCase()}:${limit}`,
+      `geo:${normalizedCountry.toLowerCase()}:${limit}:${page}`,
       url,
       this.chartTtlMs,
     );
@@ -122,12 +124,13 @@ export class LastfmChartClient {
   async getTagTopTracks(
     tag: string | undefined,
     limit = 25,
+    page = 1,
   ): Promise<LastfmChartTrack[]> {
     const normalizedTag = tag?.trim().toLowerCase();
     if (!this.enabled || !normalizedTag) return [];
-    const url = this.url("tag.getTopTracks", { tag: normalizedTag, limit });
+    const url = this.url("tag.getTopTracks", { tag: normalizedTag, limit, page });
     const payload = await this.fetchCached(
-      `tag:${normalizedTag}:${limit}`,
+      `tag:${normalizedTag}:${limit}:${page}`,
       url,
       this.tagTtlMs,
     );
