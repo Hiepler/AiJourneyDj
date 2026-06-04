@@ -2317,3 +2317,15 @@ export {
   type MusicWishStatus,
   type ParsedMusicWish,
 } from "./musicWish.js";
+
+export {
+  EXPLORATION_ANGLES,
+  hashString,
+  makeVarietyContext,
+  mulberry32,
+  rotateWindow,
+  seededExplorationAngle,
+  seededJitter,
+  type VarietyContext,
+  type VarietyInput,
+} from "./variety.js";
