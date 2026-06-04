@@ -139,6 +139,17 @@ export class Store {
     ]);
   }
 
+  /** Snapshot the planned trip duration once; subsequent calls are no-ops. */
+  setPlannedDurationMinutes(journeyId: string, minutes: number): void {
+    if (!Number.isFinite(minutes) || minutes <= 0) return;
+    this.db.run(
+      `UPDATE journeys
+       SET planned_duration_minutes = ?, planned_duration_set_at = ?
+       WHERE id = ? AND planned_duration_minutes IS NULL`,
+      [Math.round(minutes), new Date().toISOString(), journeyId],
+    );
+  }
+
   updateJourneyProvider(
     journeyId: string,
     provider: "spotify" | "tidal",
@@ -696,6 +707,7 @@ function mapJourney(row: any): JourneyRecord {
       row.adaptive_mode_enabled === undefined
         ? undefined
         : row.adaptive_mode_enabled !== 0,
+    plannedDurationMinutes: row.planned_duration_minutes ?? undefined,
     createdAtIso: row.created_at,
     stoppedAtIso: row.stopped_at,
   };
@@ -790,6 +802,11 @@ export function contextFromJourney(
     passengerMode: journey.passengerMode,
     driveState: driveStateForBrief(journey, recentTelemetry),
     telemetrySource,
+    plannedDurationMinutes: journey.plannedDurationMinutes,
+    elapsedMinutes: Math.max(
+      0,
+      (Date.now() - Date.parse(journey.createdAtIso)) / 60000,
+    ),
   };
 }
 

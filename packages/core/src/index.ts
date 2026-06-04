@@ -76,6 +76,10 @@ export interface JourneyContext {
   driveState?: DriveStateAssessment;
   /** Which source produced the latest context: live streaming vs REST polling. */
   telemetrySource?: "streaming" | "polling";
+  /** Snapshot of the planned total trip duration in minutes (first ETA seen). */
+  plannedDurationMinutes?: number;
+  /** Minutes elapsed since the journey started (now − createdAt). */
+  elapsedMinutes?: number;
 }
 
 export type SongCandidateRole =
@@ -232,6 +236,8 @@ export interface JourneyRecord {
   adaptiveModeEnabled?: boolean;
   createdAtIso: string;
   stoppedAtIso?: string;
+  /** Planned total trip duration in minutes, snapshotted from the first ETA. */
+  plannedDurationMinutes?: number;
 }
 
 export interface PlaybackSession {

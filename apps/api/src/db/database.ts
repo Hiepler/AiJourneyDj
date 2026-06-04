@@ -246,6 +246,8 @@ export function migrate(db: Db): void {
     "adaptive_mode_enabled",
     "INTEGER NOT NULL DEFAULT 1",
   );
+  tryAddColumn(db, "journeys", "planned_duration_minutes", "INTEGER");
+  tryAddColumn(db, "journeys", "planned_duration_set_at", "TEXT");
   tryAddColumn(db, "song_candidates", "genre", "TEXT");
   tryAddColumn(db, "song_candidates", "lens", "TEXT");
   tryAddColumn(db, "song_candidates", "role", "TEXT");
