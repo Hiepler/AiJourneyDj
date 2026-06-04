@@ -1,9 +1,12 @@
 import type {
+  MusicWish,
   MusicWishIntent,
   MusicWishSource,
   MusicWishStatus,
+  SongCandidate,
 } from "@ai-journey-dj/core";
 import { normalizeText, songKey } from "@ai-journey-dj/core";
+import type { RecommendationPolicy } from "./index.js";
 
 export type { MusicWishIntent, MusicWishSource, MusicWishStatus };
 
@@ -181,4 +184,91 @@ export function directSongKeysForWish(intents: MusicWishIntent[]): string[] {
   return intents.flatMap((intent) =>
     intent.type === "song" ? [songKey(intent.artist ?? "", intent.title)] : [],
   );
+}
+
+function unique(values: string[]): string[] {
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    const normalized = normalizeText(value);
+    if (!normalized || seen.has(normalized)) return false;
+    seen.add(normalized);
+    return true;
+  });
+}
+
+export function applyMusicWishesToPolicy(
+  policy: RecommendationPolicy,
+  wishes: MusicWish[],
+): RecommendationPolicy {
+  const active = wishes.filter((wish) => wish.status === "active" || wish.status === "soft_applied");
+  const artistBoosts = [...(policy.artistBoosts ?? [])];
+  const avoidArtists = [...policy.avoidArtists];
+  const avoidSongKeys = [...policy.avoidSongKeys];
+  const avoidMoodTags = [...(policy.avoidMoodTags ?? [])];
+  const moodTags = [...policy.moodTags];
+  let allowArtistRepeats = policy.allowArtistRepeats ?? false;
+
+  for (const wish of active) {
+    for (const intent of wish.intents) {
+      if (intent.type === "artist") {
+        artistBoosts.push({ artist: intent.artist, strength: intent.strength });
+        allowArtistRepeats = true;
+      } else if (intent.type === "song") {
+        moodTags.push("requested");
+      } else if (intent.type === "genre") {
+        moodTags.push(intent.genre);
+      } else if (intent.type === "mood") {
+        moodTags.push(...intent.moodTags);
+      } else if (intent.type === "avoid") {
+        avoidArtists.push(...(intent.artists ?? []));
+        avoidSongKeys.push(...(intent.songKeys ?? []));
+        avoidMoodTags.push(...(intent.moodTags ?? []));
+      } else if (intent.type === "role") {
+        moodTags.push(...roleTagsForWish(intent.role));
+      }
+    }
+  }
+
+  return {
+    ...policy,
+    moodTags: unique(moodTags),
+    avoidArtists: unique(avoidArtists),
+    avoidSongKeys: unique(avoidSongKeys),
+    avoidMoodTags: unique(avoidMoodTags),
+    artistBoosts,
+    allowArtistRepeats,
+    preferDistinctArtists: allowArtistRepeats ? false : policy.preferDistinctArtists,
+  };
+}
+
+export function candidatesFromMusicWishes(wishes: MusicWish[]): SongCandidate[] {
+  const candidates: SongCandidate[] = [];
+  for (const wish of wishes.filter((item) => item.status === "active" || item.status === "soft_applied")) {
+    for (const intent of wish.intents) {
+      if (intent.type === "song") {
+        candidates.push({
+          artist: intent.artist ?? "Unknown Artist",
+          title: intent.title,
+          lens: "music-wish-song",
+          role: "anchor",
+          reason: `Direct music wish: ${wish.rawText}`,
+          source: "music-wish",
+          confidence: intent.immediate ? 0.96 : 0.88,
+          moodTags: ["requested"],
+        });
+      }
+      if (intent.type === "artist") {
+        candidates.push({
+          artist: intent.artist,
+          title: `${intent.artist} radio`,
+          lens: "music-wish-artist",
+          reason: `Artist boost from music wish: ${wish.rawText}`,
+          source: "music-wish",
+          confidence: 0.74,
+          moodTags: ["requested"],
+        });
+      }
+    }
+  }
+  return candidates;
 }

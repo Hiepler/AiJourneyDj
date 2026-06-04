@@ -176,7 +176,8 @@ export interface SongCandidate {
     | "fallback"
     | "musicbrainz"
     | "listenbrainz"
-    | "lastfm";
+    | "lastfm"
+    | "music-wish";
   confidence: number;
 }
 
