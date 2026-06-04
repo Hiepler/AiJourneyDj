@@ -36,6 +36,17 @@ const deviceSchema = z.object({
   syncOnly: z.boolean().optional(),
 });
 
+const musicWishSchema = z.object({
+  text: z.string().min(1).max(240),
+  source: z.enum(["text", "voice", "chip"]).default("text"),
+  apply: z.boolean().optional(),
+});
+
+const musicWishPatchSchema = z.object({
+  pinned: z.boolean().optional(),
+  status: z.enum(["expired", "undone"]).optional(),
+});
+
 export async function registerJourneyRoutes(
   app: FastifyInstance,
   service: JourneyService,
@@ -99,6 +110,8 @@ export async function registerJourneyRoutes(
       journey,
       latestUpdate,
       tracks,
+      activeMusicWishes: store.listActiveMusicWishes(id),
+      recentMusicWishes: store.listRecentMusicWishes(id),
       playbackSession: store.getPlaybackSession(id),
       needsAnalysis:
         journey.status === "active" &&
@@ -174,6 +187,33 @@ export async function registerJourneyRoutes(
       .object({ weight: z.number().min(0).max(1) })
       .parse(request.body);
     return service.setTasteWeight(id, weight);
+  });
+
+  app.post("/journeys/:id/music-wishes", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const payload = musicWishSchema.parse(request.body);
+    const result = await service.createMusicWish(id, payload);
+    return reply.code(201).send(result);
+  });
+
+  app.get("/journeys/:id/music-wishes", async (request) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    service.getJourneyOrThrow(id);
+    return {
+      active: store.listActiveMusicWishes(id),
+      recent: store.listRecentMusicWishes(id),
+    };
+  });
+
+  app.patch("/journeys/:id/music-wishes/:wishId", async (request) => {
+    const { id, wishId } = z.object({ id: z.string(), wishId: z.string() }).parse(request.params);
+    const payload = musicWishPatchSchema.parse(request.body);
+    return service.updateMusicWish(id, wishId, payload);
+  });
+
+  app.post("/journeys/:id/music-wishes/:wishId/undo", async (request) => {
+    const { id, wishId } = z.object({ id: z.string(), wishId: z.string() }).parse(request.params);
+    return service.undoMusicWish(id, wishId);
   });
 
   app.post("/journeys/:id/playback/skip", async (request) => {

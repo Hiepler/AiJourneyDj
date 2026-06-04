@@ -2,6 +2,9 @@ import type {
   JourneyContext,
   JourneyPhase,
   JourneyRecord,
+  MusicWish,
+  MusicWishSource,
+  MusicWishStatus,
   NormalizedTelemetryEvent,
   PlaybackSession,
   PlaylistUpdate,
@@ -32,10 +35,13 @@ import type {
 import type { SongScout } from "@ai-journey-dj/recommendation";
 import {
   assessDriveState,
+  applyMusicWishesToPolicy,
   buildRecommendationPolicy,
+  candidatesFromMusicWishes,
   deriveTasteProfile,
   fallbackCandidates,
   lastfmTracksToCandidates,
+  parseMusicWish,
   rankResolvedTracksForPolicy,
   selectRollingBatch,
   stabilizeDriveMode,
@@ -248,6 +254,70 @@ export class JourneyService {
         "drive_mode.recurate_error",
       );
     }
+  }
+
+  async createMusicWish(
+    journeyId: string,
+    input: { text: string; source: MusicWishSource; apply?: boolean },
+  ): Promise<{ wish: MusicWish; update?: PlaylistUpdate }> {
+    const journey = this.getJourneyOrThrow(journeyId);
+    if (journey.status !== "active") {
+      throw new Error("Cannot add a music wish to a stopped journey.");
+    }
+    const parsed = parseMusicWish(input.text);
+    const createdAtIso = new Date().toISOString();
+    const wish: MusicWish = {
+      id: crypto.randomUUID(),
+      journeyId,
+      rawText: parsed.rawText,
+      source: input.source,
+      intents: parsed.intents,
+      status: parsed.status,
+      confidence: parsed.confidence,
+      summary: parsed.summary,
+      pinned: false,
+      expiresAfterTracks: 5,
+      remainingTracks: 5,
+      createdAtIso,
+      updatedAtIso: createdAtIso,
+    };
+    this.store.saveMusicWish(wish);
+    this.store.audit(journeyId, "music_wish.created", wish.summary, {
+      wishId: wish.id,
+      status: wish.status,
+    });
+    const update =
+      wish.status === "active" && input.apply !== false
+        ? await this.analyzeJourney(journeyId, "music-wish")
+        : undefined;
+    return { wish: this.store.getMusicWish(journeyId, wish.id) ?? wish, update };
+  }
+
+  async updateMusicWish(
+    journeyId: string,
+    wishId: string,
+    patch: { pinned?: boolean; status?: MusicWishStatus },
+  ): Promise<MusicWish> {
+    this.getJourneyOrThrow(journeyId);
+    this.store.updateMusicWish(journeyId, wishId, patch);
+    const wish = this.store.getMusicWish(journeyId, wishId);
+    if (!wish) throw new Error("Music wish not found.");
+    this.store.audit(journeyId, "music_wish.updated", wish.summary, {
+      wishId,
+      pinned: wish.pinned,
+      status: wish.status,
+    });
+    return wish;
+  }
+
+  async undoMusicWish(journeyId: string, wishId: string): Promise<MusicWish> {
+    const wish = await this.updateMusicWish(journeyId, wishId, { status: "undone" });
+    // Re-curate only while the journey is still running; the undo itself is
+    // already persisted, so a stopped journey must not surface as a failed undo.
+    if (this.getJourneyOrThrow(journeyId).status === "active") {
+      await this.analyzeJourney(journeyId, "music-wish-undo");
+    }
+    return wish;
   }
 
   async analyzeJourney(
@@ -766,6 +836,9 @@ export class JourneyService {
       telemetry,
       this.store.recentTelemetry(journeyId),
     );
+    // NOTE: Music wishes currently steer only Spotify journeys (the default
+    // provider); TIDAL is a fallback path, so wishes are stored and surfaced but
+    // intentionally not applied to curation or decayed here. See analyzeSpotifyJourney.
     const policy = buildRecommendationPolicy(context);
     const candidates = await this.generateAndStoreCandidateSet(
       journeyId,
@@ -870,6 +943,8 @@ export class JourneyService {
       telemetry,
       this.store.recentTelemetry(journeyId),
     );
+    const activeMusicWishes = this.store.listActiveMusicWishes(journeyId);
+    const contextWithWishes: JourneyContext = { ...context, activeMusicWishes };
 
     // Cost control: only the LLM lenses cost tokens. Run them when the vibe actually changes;
     // for routine top-ups, reuse the already-generated candidate pool if it can refill the buffer.
@@ -880,6 +955,8 @@ export class JourneyService {
       "taste-override",
       "manual",
       "recovery",
+      "music-wish",
+      "music-wish-undo",
     ]);
     const priorSession = this.store.getPlaybackSession(journeyId);
     const storedForGate = this.store
@@ -934,17 +1011,23 @@ export class JourneyService {
 
     // Personalize the brief with the listener's taste (cached ~24h). Built once and reused for any
     // fallback regeneration below so the whole drive shares one taste signal.
-    let scoutContext: JourneyContext = context;
-    let policy = buildRecommendationPolicy(context);
+    let scoutContext: JourneyContext = contextWithWishes;
+    let policy = applyMusicWishesToPolicy(
+      buildRecommendationPolicy(contextWithWishes),
+      activeMusicWishes,
+    );
     let candidates: SongCandidate[] = [];
     if (mustGenerate) {
       const tasteProfile = await this.loadTasteProfile(accessToken);
       scoutContext = {
-        ...context,
+        ...contextWithWishes,
         tasteProfile,
         tasteWeight: journey.tasteWeight ?? DEFAULT_TASTE_WEIGHT,
       };
-      policy = buildRecommendationPolicy(scoutContext);
+      policy = applyMusicWishesToPolicy(
+        buildRecommendationPolicy(scoutContext),
+        activeMusicWishes,
+      );
       candidates = this.filterFreshCandidates(
         await this.generateAndStoreCandidateSet(
           journeyId,
@@ -1006,10 +1089,17 @@ export class JourneyService {
       },
       { consumedArtists: consumedTracks.map((track) => track.artist) },
     );
+    const immediateWishKeys = this.immediateWishSongKeys(activeMusicWishes);
+    const immediateWishTrack = rankedStored.find((track) => {
+      const exact = songKey(track.artist, track.title);
+      const titleOnly = songKey("", track.title);
+      return immediateWishKeys.has(exact) || immediateWishKeys.has(titleOnly);
+    });
     let activeTrack =
-      session?.activeTrack && session.activeTrack.provider === "spotify"
+      immediateWishTrack ??
+      (session?.activeTrack && session.activeTrack.provider === "spotify"
         ? stored.find((track) => track.id === session?.activeTrack?.id)
-        : undefined;
+        : undefined);
 
     if (!activeTrack) {
       activeTrack = rankedStored.find(
@@ -1150,6 +1240,15 @@ export class JourneyService {
         Boolean,
       ) as string[],
     );
+    // Decay wishes by the tracks the listener actually advanced through this pass —
+    // the buffer deficit we just refilled (`needed`) plus an immediate replacement —
+    // NOT `selected.length`, which balloons to the whole re-curation batch when the
+    // buffer is already full (queueTracksForBuffer over-selects at targetBufferSize 0),
+    // and would otherwise expire a brand-new wish before it ever steered a track.
+    this.store.decayActiveMusicWishes(
+      journeyId,
+      needed + (immediateWishTrack ? 1 : 0),
+    );
     this.store.savePlaylistUpdate(update);
     this.saveSession({
       journeyId,
@@ -1177,6 +1276,20 @@ export class JourneyService {
     // Mirror the curated set into the saved journey playlist (best-effort; never blocks the journey).
     await this.syncJourneyPlaylist(journey, accessToken);
     return update;
+  }
+
+  private immediateWishSongKeys(wishes: MusicWish[]): Set<string> {
+    const keys = new Set<string>();
+    for (const wish of wishes) {
+      if (wish.status !== "active" && wish.status !== "soft_applied") continue;
+      for (const intent of wish.intents) {
+        if (intent.type === "song" && intent.immediate) {
+          keys.add(songKey(intent.artist ?? "", intent.title));
+          keys.add(songKey("", intent.title));
+        }
+      }
+    }
+    return keys;
   }
 
   private pickSpotifyPlaybackTracks(
@@ -1828,6 +1941,10 @@ export class JourneyService {
     policy: RecommendationPolicy,
     targetCount: number,
   ): Promise<SongCandidate[]> {
+    const wishCandidates = await this.enrichAndStoreCandidates(
+      journeyId,
+      candidatesFromMusicWishes(context.activeMusicWishes ?? []),
+    );
     const [chartCandidates, aiCandidates] = await Promise.all([
       this.generateAndStoreLastfmCandidates(
         journeyId,
@@ -1838,7 +1955,7 @@ export class JourneyService {
       this.generateAndStoreCandidates(journeyId, context, targetCount, policy),
     ]);
     const seen = new Set<string>();
-    return [...chartCandidates, ...aiCandidates].filter((candidate) => {
+    return [...wishCandidates, ...chartCandidates, ...aiCandidates].filter((candidate) => {
       const key = songKey(candidate.artist, candidate.title);
       if (seen.has(key)) return false;
       seen.add(key);

@@ -43,6 +43,31 @@ export interface Track {
   addedToPlaylist: boolean;
 }
 
+export type MusicWishSource = "text" | "voice" | "chip";
+export type MusicWishStatus =
+  | "pending_confirmation"
+  | "active"
+  | "soft_applied"
+  | "expired"
+  | "undone"
+  | "failed";
+
+export interface MusicWish {
+  id: string;
+  journeyId: string;
+  rawText: string;
+  source: MusicWishSource;
+  intents: unknown[];
+  status: MusicWishStatus;
+  confidence: number;
+  summary: string;
+  pinned: boolean;
+  expiresAfterTracks: number;
+  remainingTracks: number;
+  createdAtIso: string;
+  updatedAtIso: string;
+}
+
 export interface JourneyDetail {
   journey: Journey;
   latestUpdate?: {
@@ -89,6 +114,8 @@ export interface JourneyDetail {
   taste?: {
     topGenres: string[];
   };
+  activeMusicWishes?: MusicWish[];
+  recentMusicWishes?: MusicWish[];
 }
 
 export interface SpotifyDevice {
@@ -252,6 +279,30 @@ export const api = {
     ),
   fallbackToTidal: (id: string) =>
     request<Journey>(`/journeys/${id}/fallback/tidal`, {
+      method: "POST",
+    }),
+  createMusicWish: (
+    id: string,
+    payload: { text: string; source: MusicWishSource; apply?: boolean },
+  ) =>
+    request<{ wish: MusicWish; update?: { id: string; batchSize: number; status: string } }>(
+      `/journeys/${id}/music-wishes`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      },
+    ),
+  updateMusicWish: (
+    id: string,
+    wishId: string,
+    payload: { pinned?: boolean; status?: "expired" | "undone" },
+  ) =>
+    request<MusicWish>(`/journeys/${id}/music-wishes/${wishId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  undoMusicWish: (id: string, wishId: string) =>
+    request<MusicWish>(`/journeys/${id}/music-wishes/${wishId}/undo`, {
       method: "POST",
     }),
   spotifyToken: () =>
