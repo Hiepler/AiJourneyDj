@@ -135,6 +135,57 @@ describe("spotify resolver", () => {
     expect(searchCalls).toBe(1); // negative cache — no re-search
   });
 
+  it("resolves music wish artist boosts with an artist-only Spotify search", async () => {
+    let query = "";
+    const adapter: Pick<SpotifyAdapter, "searchTracks"> = {
+      searchTracks: async (args) => {
+        query = args.query;
+        return [
+          {
+            id: "nina-hit",
+            uri: "spotify:track:nina-hit",
+            title: "Wildberry Lillet",
+            artist: "Nina Chuba",
+            isPlayable: true,
+            market: "DE",
+            popularity: 82,
+          },
+          {
+            id: "other-hit",
+            uri: "spotify:track:other-hit",
+            title: "Other Song",
+            artist: "Other Artist",
+            isPlayable: true,
+            market: "DE",
+            popularity: 95,
+          },
+        ];
+      },
+    };
+    const resolver = new SpotifyResolver(adapter as SpotifyAdapter, {
+      accessToken: "token",
+      market: "DE",
+    });
+
+    const [track] = await resolver.resolveCandidates([
+      {
+        artist: "Nina Chuba",
+        title: "Nina Chuba radio",
+        lens: "music-wish-artist",
+        reason: "Artist boost from music wish",
+        source: "music-wish",
+        confidence: 0.74,
+      },
+    ]);
+
+    expect(query).toBe('artist:"Nina Chuba"');
+    expect(track).toMatchObject({
+      artist: "Nina Chuba",
+      title: "Wildberry Lillet",
+      matchReason: "artist wish match",
+    });
+  });
+
   it("fills a five-track buffer from mock resolver output", async () => {
     const resolver = new SpotifyResolver(new MockSpotifyAdapter(), {
       accessToken: "token",

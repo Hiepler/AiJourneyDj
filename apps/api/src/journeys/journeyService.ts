@@ -1095,6 +1095,10 @@ export class JourneyService {
       const titleOnly = songKey("", track.title);
       return immediateWishKeys.has(exact) || immediateWishKeys.has(titleOnly);
     });
+    const isWishApplicationPass =
+      reason === "music-wish" || reason === "music-wish-undo";
+    const shouldRebuildQueueForWish =
+      isWishApplicationPass || (reason === "manual" && activeMusicWishes.length > 0);
     let activeTrack =
       immediateWishTrack ??
       (session?.activeTrack && session.activeTrack.provider === "spotify"
@@ -1118,11 +1122,12 @@ export class JourneyService {
           savedToPlaylist: boolean;
         } => Boolean(track),
       );
-    const needed = Math.max(0, 5 - currentQueued.length);
+    const preservedQueued = shouldRebuildQueueForWish ? [] : currentQueued;
+    const needed = Math.max(0, 5 - preservedQueued.length);
     const selected = queueTracksForBuffer(rankedStored, {
       activeProviderTrackId: activeTrack?.providerTrackId,
       alreadyQueuedProviderIds: new Set(
-        currentQueued.map((track) => track.providerTrackId),
+        preservedQueued.map((track) => track.providerTrackId),
       ),
       excludeProviderTrackIds: consumedProviderIds,
       excludeSongKeys: consumedSongKeys,
@@ -1132,7 +1137,7 @@ export class JourneyService {
       targetBufferSize: needed,
     });
 
-    if (currentQueued.length + selected.length < 5) {
+    if (preservedQueued.length + selected.length < 5) {
       this.store.audit(
         journeyId,
         "recommendation.fallback",
@@ -1163,7 +1168,7 @@ export class JourneyService {
         { consumedArtists: consumedTracks.map((track) => track.artist) },
       );
       const alreadyQueued = new Set([
-        ...currentQueued.map((track) => track.providerTrackId),
+        ...preservedQueued.map((track) => track.providerTrackId),
         ...selected.map((track) => track.providerTrackId),
       ]);
       const additional = queueTracksForBuffer(rankedFallbackStored, {
@@ -1176,7 +1181,7 @@ export class JourneyService {
         cleanRequired: policy.cleanRequired,
         targetBufferSize: Math.max(
           0,
-          5 - currentQueued.length - selected.length,
+          5 - preservedQueued.length - selected.length,
         ),
       });
       for (const track of additional) {
@@ -1187,7 +1192,7 @@ export class JourneyService {
         ) {
           selected.push(track);
         }
-        if (currentQueued.length + selected.length >= 5) {
+        if (preservedQueued.length + selected.length >= 5) {
           break;
         }
       }
@@ -1212,7 +1217,7 @@ export class JourneyService {
     const playedActiveTrack = playbackApplied.deviceReachable
       ? activeTrack
       : (session?.activeTrack ?? activeTrack);
-    const queuedTracks = [...currentQueued, ...selected].slice(0, 5);
+    const queuedTracks = [...preservedQueued, ...selected].slice(0, 5);
     const status =
       queuedTracks.length === 5 &&
       playbackApplied.deviceReachable &&
@@ -1242,14 +1247,10 @@ export class JourneyService {
     );
     // Decay wishes only on passes driven by actual playback progression, by the tracks
     // the listener advanced through (the buffer deficit we just refilled, `needed`).
-    // NEVER on the wish-application pass itself ("music-wish"/"music-wish-undo"): a
-    // brand-new wish has not steered any played track yet, so it must keep its full
-    // budget and surface as an active steering layer (the chip) instead of expiring
-    // instantly. (`selected.length` is also wrong here — it balloons to the whole
-    // re-curation batch because queueTracksForBuffer over-selects at targetBufferSize 0.)
-    const isWishApplicationPass =
-      reason === "music-wish" || reason === "music-wish-undo";
-    if (!isWishApplicationPass) {
+    // NEVER on a wish refresh pass: the listener has not advanced through a
+    // track yet, so the wish must keep its budget instead of expiring during
+    // re-curation.
+    if (!shouldRebuildQueueForWish) {
       this.store.decayActiveMusicWishes(
         journeyId,
         needed + (immediateWishTrack ? 1 : 0),
