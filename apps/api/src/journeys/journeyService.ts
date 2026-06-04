@@ -1237,9 +1237,14 @@ export class JourneyService {
         Boolean,
       ) as string[],
     );
+    // Decay wishes by the tracks the listener actually advanced through this pass —
+    // the buffer deficit we just refilled (`needed`) plus an immediate replacement —
+    // NOT `selected.length`, which balloons to the whole re-curation batch when the
+    // buffer is already full (queueTracksForBuffer over-selects at targetBufferSize 0),
+    // and would otherwise expire a brand-new wish before it ever steered a track.
     this.store.decayActiveMusicWishes(
       journeyId,
-      selected.length + (immediateWishTrack ? 1 : 0),
+      needed + (immediateWishTrack ? 1 : 0),
     );
     this.store.savePlaylistUpdate(update);
     this.saveSession({
