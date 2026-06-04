@@ -1273,6 +1273,15 @@ export class JourneyService {
       }
     }
 
+    const quotaSelected = this.enforceWishQuota({
+      selected,
+      rankedStored,
+      wishes: activeMusicWishes,
+      excludeProviderIds: consumedProviderIds,
+    });
+    selected.length = 0;
+    selected.push(...quotaSelected);
+
     session = this.store.getPlaybackSession(journeyId);
     const deviceId = journey.spotifyDeviceId ?? session?.deviceId;
     const playbackApplied = deviceId
@@ -1381,6 +1390,65 @@ export class JourneyService {
       }
     }
     return keys;
+  }
+
+  /**
+   * Enforces the hard wish quota: ensures at least WISH_QUOTA_MIN tracks per active
+   * artist wish are in the next queue, capped at WISH_QUOTA_MAX_SLOTS total wish slots,
+   * by swapping the lowest-ranked non-wish, non-pinned selected tracks for the top-ranked
+   * unused wish-artist tracks. Returns the (possibly modified) selected list.
+   */
+  private enforceWishQuota<T extends ResolvedTrack & { id: string }>(args: {
+    selected: T[];
+    rankedStored: T[];
+    wishes: MusicWish[];
+    excludeProviderIds: Set<string>;
+  }): T[] {
+    const min = this.config.WISH_QUOTA_MIN;
+    const maxSlots = this.config.WISH_QUOTA_MAX_SLOTS;
+    if (min <= 0 || maxSlots <= 0) return [...args.selected];
+
+    const wishArtistKeys = new Set(
+      args.wishes
+        .filter(
+          (wish) => wish.status === "active" || wish.status === "soft_applied",
+        )
+        .flatMap((wish) => wish.intents)
+        .flatMap((intent) =>
+          intent.type === "artist" ? [normalizeText(intent.artist)] : [],
+        ),
+    );
+    if (wishArtistKeys.size === 0) return [...args.selected];
+
+    const isWishTrack = (track: ResolvedTrack) =>
+      wishArtistKeys.has(normalizeText(track.artist));
+
+    const selected = [...args.selected];
+    const inQueueIds = new Set(selected.map((track) => track.providerTrackId));
+    let wishSlots = selected.filter(isWishTrack).length;
+
+    const wishCandidates = args.rankedStored.filter(
+      (track) =>
+        isWishTrack(track) &&
+        track.providerUri &&
+        track.isPlayable !== false &&
+        !inQueueIds.has(track.providerTrackId) &&
+        !args.excludeProviderIds.has(track.providerTrackId),
+    );
+
+    const target = Math.min(maxSlots, Math.max(min, wishSlots));
+    for (const candidate of wishCandidates) {
+      if (wishSlots >= target) break;
+      const victimIndex = [...selected]
+        .map((track, index) => ({ track, index }))
+        .reverse()
+        .find(({ track }) => !isWishTrack(track))?.index;
+      if (victimIndex === undefined) break;
+      selected[victimIndex] = candidate;
+      inQueueIds.add(candidate.providerTrackId);
+      wishSlots += 1;
+    }
+    return selected;
   }
 
   private pickSpotifyPlaybackTracks(

@@ -66,4 +66,38 @@ describe("engine variety", () => {
 
     await app.close();
   });
+
+  it("guarantees at least the wish quota of artist tracks in the next queue", async () => {
+    const { app } = await buildApp(testConfig());
+    const journey = (
+      await app.inject({
+        method: "POST",
+        url: "/journeys",
+        payload: {
+          destination: "Dijon",
+          userPrompt: "drive",
+          passengerMode: "solo",
+          provider: "spotify",
+          deviceId: "mock-webplayer",
+        },
+      })
+    ).json<{ id: string }>();
+
+    await app.inject({
+      method: "POST",
+      url: `/journeys/${journey.id}/music-wishes`,
+      payload: { text: "mehr Taylor Swift", source: "text" },
+    });
+
+    const detail = (await app.inject({ method: "GET", url: `/journeys/${journey.id}` })).json();
+    const queued = detail.playbackSession.queuedTrackIds.map((id: string) =>
+      detail.tracks.find((track: { id: string }) => track.id === id),
+    );
+    const taylorCount = queued.filter(
+      (track: { artist: string } | undefined) => track?.artist === "Taylor Swift",
+    ).length;
+    expect(taylorCount).toBeGreaterThanOrEqual(2);
+
+    await app.close();
+  });
 });
