@@ -88,7 +88,8 @@ function buildService(adapter: SpotifyAdapter) {
 }
 
 describe("spotify track skip", () => {
-  it("advances the journey queue and records play history on next", async () => {
+  // Skips run a real playback sync incl. paced device-queue top-ups → allow 15s.
+  it("advances the journey queue and records play history on next", { timeout: 15_000 }, async () => {
     const adapter = new SkipSpotifyAdapter();
     const { service, store } = buildService(adapter);
 
@@ -108,10 +109,13 @@ describe("spotify track skip", () => {
 
     adapter.startCalls.length = 0;
     const after = await service.skipSpotifyTrack(journey.id, "next", "web-device");
-    // Authoritative skip: Spotify is told to play the exact track now shown as active, and the
-    // whole queue is re-sent as context (>1 uri) so Spotify can't drift onto its own queue.
+    // Authoritative skip: Spotify is told to play EXACTLY the track now shown as active —
+    // and nothing else. A multi-track context gets preempted by previously queued items
+    // (Spotify plays its manual queue before the context remainder), which is what made the
+    // played track diverge from the shown track on real drives. The upcoming order lives in
+    // the device queue, topped up separately.
     expect(adapter.startCalls.at(-1)?.uris[0]).toBe(after.activeTrack?.providerUri);
-    expect(adapter.startCalls.at(-1)?.uris.length ?? 0).toBeGreaterThan(1);
+    expect(adapter.startCalls.at(-1)?.uris).toHaveLength(1);
     expect(after.activeTrack?.id).toBe(nextId);
     expect(after.playedTrackIds).toContain(activeId);
     expect(after.queuedTrackIds[0]).not.toBe(nextId);
@@ -146,7 +150,7 @@ describe("spotify track skip", () => {
     expect(new Set(actives).size).toBe(actives.length);
   });
 
-  it("restores the previous track from journey history", async () => {
+  it("restores the previous track from journey history", { timeout: 15_000 }, async () => {
     const adapter = new SkipSpotifyAdapter();
     const { service, store } = buildService(adapter);
 

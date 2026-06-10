@@ -1284,13 +1284,21 @@ export class JourneyService {
 
     session = this.store.getPlaybackSession(journeyId);
     const deviceId = journey.spotifyDeviceId ?? session?.deviceId;
+    // The visible model decides what reaches the device: Spotify must never be sent a
+    // track the 5-slot model doesn't show, or the reconciler later flags our own queue
+    // as "external". Compute the model first and sync exactly its delta.
+    const queuedTracks = [...preservedQueued, ...selected].slice(0, 5);
+    const preservedIds = new Set(preservedQueued.map((track) => track.id));
+    const queueDelta = queuedTracks.filter(
+      (track) => !preservedIds.has(track.id),
+    );
     const playbackApplied = deviceId
       ? await this.syncSpotifyPlayback({
           journeyId,
           accessToken,
           deviceId,
           activeTrack,
-          queueTracks: selected,
+          queueTracks: queueDelta,
           shouldStart: Boolean(
             activeTrack?.providerUri &&
             (!session?.activeTrack || session.status !== "playing"),
@@ -1301,7 +1309,6 @@ export class JourneyService {
     const playedActiveTrack = playbackApplied.deviceReachable
       ? activeTrack
       : (session?.activeTrack ?? activeTrack);
-    const queuedTracks = [...preservedQueued, ...selected].slice(0, 5);
     const status =
       queuedTracks.length === 5 &&
       playbackApplied.deviceReachable &&
@@ -1496,10 +1503,10 @@ export class JourneyService {
         return {
           activeTrack: active,
           queueTracks,
-          queuedTrackIds: [
-            active.id,
-            ...queueTracks.map((track) => track.id),
-          ].slice(0, 5),
+          // Convention everywhere else in this service: queuedTrackIds are the FUTURE
+          // tracks only. Prepending the active here used to shift the real 5th queue
+          // track out of the model while it stayed queued on the device.
+          queuedTrackIds: queueTracks.map((track) => track.id).slice(0, 5),
         };
       }
     }
@@ -1535,14 +1542,15 @@ export class JourneyService {
     activeTrack?: ResolvedTrack;
     queueTracks: ResolvedTrack[];
   }): Promise<{ deviceReachable: boolean; rateLimited?: boolean }> {
-    const uris = [
-      ...(args.activeTrack?.providerUri ? [args.activeTrack.providerUri] : []),
-      ...args.queueTracks
+    // Same single-ordering-source contract as syncSpotifyPlayback: play ONLY the exact
+    // track as the context and keep the upcoming order in Spotify's queue. A multi-track
+    // context would be preempted by previously queued items and drift from the model.
+    const startUri =
+      args.activeTrack?.providerUri ??
+      args.queueTracks
         .map((track) => track.providerUri)
-        .filter((uri): uri is string => Boolean(uri)),
-    ];
-    const uniqueUris = [...new Set(uris)];
-    if (uniqueUris.length === 0) {
+        .find((uri): uri is string => Boolean(uri));
+    if (!startUri) {
       return { deviceReachable: false };
     }
 
@@ -1555,7 +1563,7 @@ export class JourneyService {
       await this.spotifyAdapter.startPlayback({
         accessToken: args.accessToken,
         deviceId,
-        uris: uniqueUris,
+        uris: [startUri],
       });
       if (args.activeTrack?.providerUri) {
         this.store.saveQueueOperation({
@@ -1570,7 +1578,22 @@ export class JourneyService {
           createdAtIso: new Date().toISOString(),
         });
       }
-      return { deviceReachable: true };
+      // Top up the device queue with whatever part of the modeled queue it is missing
+      // (no-ops for entries that are already queued — Spotify's queue is append-only).
+      const queueOutcome = await this.queueMissingTracks({
+        journeyId: args.journeyId,
+        accessToken: args.accessToken,
+        deviceId,
+        tracks: args.queueTracks,
+        excludeUri: startUri,
+      });
+      if (queueOutcome === "unreachable") {
+        return { deviceReachable: false };
+      }
+      return {
+        deviceReachable: true,
+        rateLimited: queueOutcome === "rate-limited" || undefined,
+      };
     } catch (error) {
       // Device not active yet (e.g. Webplayer just (re)connected): fall back to transfer + start.
       if (isSpotifyDeviceNotFoundError(error)) {
@@ -1602,6 +1625,82 @@ export class JourneyService {
       );
       return { deviceReachable: false };
     }
+  }
+
+  /**
+   * Appends the given tracks to the device queue, skipping anything the device already has
+   * queued. Spotify's queue is append-only (no remove/reorder API), so re-syncs MUST be
+   * idempotent or every webplayer reload / device-ready pass would duplicate the queue.
+   */
+  private async queueMissingTracks(args: {
+    journeyId: string;
+    accessToken: string;
+    deviceId: string;
+    tracks: ResolvedTrack[];
+    /** URI just started as the playback context — never re-queue it. */
+    excludeUri?: string;
+  }): Promise<"ok" | "rate-limited" | "unreachable"> {
+    const candidates = args.tracks.filter(
+      (track) => track.providerUri && track.providerUri !== args.excludeUri,
+    );
+    if (candidates.length === 0) return "ok";
+
+    let deviceQueuedIds: ReadonlySet<string> = new Set<string>();
+    try {
+      const state = await this.spotifyAdapter.getPlaybackState({
+        accessToken: args.accessToken,
+        market: this.config.SPOTIFY_MARKET,
+      });
+      deviceQueuedIds = new Set(state.queuedProviderTrackIds);
+    } catch {
+      // Best-effort: without queue visibility we still add — a rare duplicate beats a gap.
+    }
+
+    for (const track of candidates) {
+      if (deviceQueuedIds.has(track.providerTrackId)) continue;
+      try {
+        await this.spotifyAdapter.addToQueue({
+          accessToken: args.accessToken,
+          deviceId: args.deviceId,
+          uri: track.providerUri as string,
+        });
+        this.store.saveQueueOperation({
+          id: crypto.randomUUID(),
+          journeyId: args.journeyId,
+          provider: "spotify",
+          providerTrackId: track.providerTrackId,
+          providerUri: track.providerUri as string,
+          operation: "queue",
+          status: "success",
+          deviceId: args.deviceId,
+          createdAtIso: new Date().toISOString(),
+        });
+        await new Promise((resolve) => setTimeout(resolve, 400));
+      } catch (error) {
+        if (isSpotifyDeviceNotFoundError(error)) {
+          return "unreachable";
+        }
+        if (isSpotifyRateLimitError(error)) {
+          return "rate-limited";
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn(
+          { journeyId: args.journeyId, deviceId: args.deviceId, err: message },
+          "spotify.queue.degraded",
+        );
+        this.store.audit(
+          args.journeyId,
+          "spotify.playback_error",
+          "Spotify queue add failed; remaining tracks saved, playback degraded.",
+          {
+            deviceId: args.deviceId,
+            error: message,
+          },
+        );
+        return "unreachable";
+      }
+    }
+    return "ok";
   }
 
   private async syncSpotifyPlayback(args: {
@@ -1658,23 +1757,26 @@ export class JourneyService {
       }
     }
 
-    const playUris = [
-      ...(args.shouldStart && args.activeTrack?.providerUri
-        ? [args.activeTrack.providerUri]
-        : []),
-      ...args.queueTracks
+    // Single ordering source: start ONLY the active track as the playback context and feed
+    // every upcoming track through Spotify's queue. A multi-track context cannot be kept in
+    // sync with later queue adds — Spotify plays manually queued items BEFORE the context
+    // remainder — which made the device order diverge from the model on real drives until
+    // the reconciler flagged our own curation as "external".
+    const startUri =
+      args.activeTrack?.providerUri ??
+      args.queueTracks
         .map((track) => track.providerUri)
-        .filter((uri): uri is string => Boolean(uri)),
-    ];
-    const uniquePlayUris = [...new Set(playUris)];
+        .find((uri): uri is string => Boolean(uri));
 
-    if (args.shouldStart && uniquePlayUris.length > 0) {
+    let startedActive = false;
+    if (args.shouldStart && startUri) {
       try {
         await this.spotifyAdapter.startPlayback({
           accessToken: args.accessToken,
           deviceId,
-          uris: uniquePlayUris,
+          uris: [startUri],
         });
+        startedActive = true;
         if (args.activeTrack?.providerUri) {
           this.store.saveQueueOperation({
             id: crypto.randomUUID(),
@@ -1688,7 +1790,6 @@ export class JourneyService {
             createdAtIso: new Date().toISOString(),
           });
         }
-        return { deviceReachable: true };
       } catch (error) {
         if (isSpotifyDeviceNotFoundError(error)) {
           return { deviceReachable: false };
@@ -1714,57 +1815,24 @@ export class JourneyService {
       }
     }
 
-    let rateLimited = false;
-    for (const track of args.queueTracks) {
-      if (!track.providerUri) continue;
-      try {
-        await this.spotifyAdapter.addToQueue({
-          accessToken: args.accessToken,
-          deviceId,
-          uri: track.providerUri,
-        });
-        this.store.saveQueueOperation({
-          id: crypto.randomUUID(),
-          journeyId: args.journeyId,
-          provider: "spotify",
-          providerTrackId: track.providerTrackId,
-          providerUri: track.providerUri,
-          operation: "queue",
-          status: "success",
-          deviceId,
-          createdAtIso: new Date().toISOString(),
-        });
-        await new Promise((resolve) => setTimeout(resolve, 400));
-      } catch (error) {
-        if (isSpotifyDeviceNotFoundError(error)) {
-          return { deviceReachable: false };
-        }
-        if (isSpotifyRateLimitError(error)) {
-          rateLimited = true;
-          break;
-        }
-        const message = error instanceof Error ? error.message : String(error);
-        this.logger.warn(
-          { journeyId: args.journeyId, deviceId, err: message },
-          "spotify.queue.degraded",
-        );
-        this.store.audit(
-          args.journeyId,
-          "spotify.playback_error",
-          "Spotify queue add failed; remaining tracks saved, playback degraded.",
-          {
-            deviceId,
-            error: message,
-          },
-        );
-        return { deviceReachable: false };
-      }
-    }
-
-    if (transferFailed) {
+    const queueOutcome = await this.queueMissingTracks({
+      journeyId: args.journeyId,
+      accessToken: args.accessToken,
+      deviceId,
+      tracks: args.queueTracks,
+      excludeUri: startedActive ? startUri : undefined,
+    });
+    if (queueOutcome === "unreachable") {
       return { deviceReachable: false };
     }
-    return { deviceReachable: true, rateLimited: rateLimited || undefined };
+
+    if (!startedActive && transferFailed) {
+      return { deviceReachable: false };
+    }
+    return {
+      deviceReachable: true,
+      rateLimited: queueOutcome === "rate-limited" || undefined,
+    };
   }
 
   async maybeRefreshActiveJourneys(): Promise<void> {
@@ -1866,9 +1934,55 @@ export class JourneyService {
     const result = reconcilePlaybackModel(
       model.map((track) => track.providerTrackId),
       state.activeProviderTrackId,
+      new Set(stored.map((track) => track.providerTrackId)),
     );
 
-    if (result.kind === "external") {
+    if (result.kind === "drifted") {
+      // One of OUR journey tracks is on air, just not at a position the 6-slot model shows.
+      // Spotify's queue is append-only (no remove/reorder), so stale adds or a wish rebuild
+      // can legitimately put such a track on air. Re-anchor the model on reality instead of
+      // pausing curation as "external".
+      const driftedTrack = stored.find(
+        (track) => track.providerTrackId === state.activeProviderTrackId,
+      );
+      if (driftedTrack) {
+        const remainingQueue = model
+          .filter(
+            (track) =>
+              track.id !== driftedTrack.id && track.id !== activeTrack?.id,
+          )
+          .map((track) => track.id)
+          .slice(0, 5);
+        this.saveSession({
+          journeyId,
+          provider: "spotify",
+          deviceId: session.deviceId,
+          status: "playing",
+          activeTrack: driftedTrack,
+          queuedTrackIds: remainingQueue,
+          playedTrackIds: [
+            ...(session.playedTrackIds ?? []),
+            ...(activeTrack?.id && activeTrack.id !== driftedTrack.id
+              ? [activeTrack.id]
+              : []),
+          ],
+          targetBufferSize: 5,
+          lastHeartbeatAt: now,
+        });
+        this.store.audit(
+          journeyId,
+          "spotify.playback_reanchored",
+          "Re-anchored curation on a journey track playing outside the model.",
+          {
+            activeProviderTrackId: state.activeProviderTrackId,
+            remainingQueue: remainingQueue.length,
+          },
+        );
+        return "playing";
+      }
+    }
+
+    if (result.kind === "external" || result.kind === "drifted") {
       if (session.status !== "external") {
         this.saveSession({
           ...session,
