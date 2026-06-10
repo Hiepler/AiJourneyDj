@@ -317,6 +317,34 @@ describe("spotify resolver", () => {
     ]);
   });
 
+  it("selects nothing when the buffer is already full (targetBufferSize 0)", () => {
+    const tracks = Array.from({ length: 8 }, (_, index) => ({
+      provider: "spotify" as const,
+      providerTrackId: `track-${index}`,
+      providerUri: `spotify:track:${index}`,
+      artist: "Artist",
+      title: `Track ${index}`,
+      matchConfidence: 0.9,
+      matchReason: "test",
+    }));
+
+    // A full forward buffer must select zero tracks — anything returned here would be
+    // queued on Spotify without ever entering the 5-slot playback model, and the
+    // reconciler would later flag our own queue as "external".
+    expect(
+      queueTracksForBuffer(tracks, {
+        alreadyQueuedProviderIds: new Set(),
+        targetBufferSize: 0,
+      }),
+    ).toEqual([]);
+    expect(
+      queueTracksForBuffer(tracks, {
+        alreadyQueuedProviderIds: new Set(),
+        targetBufferSize: -1,
+      }),
+    ).toEqual([]);
+  });
+
   it("creates deterministic mock Spotify playlists for adapter parity", async () => {
     const playlist = await new MockSpotifyAdapter().createPlaylist({
       accessToken: "mock",
