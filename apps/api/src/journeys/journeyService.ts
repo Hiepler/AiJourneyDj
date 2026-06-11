@@ -264,7 +264,7 @@ export class JourneyService {
   async createMusicWish(
     journeyId: string,
     input: { text: string; source: MusicWishSource; apply?: boolean },
-  ): Promise<{ wish: MusicWish; update?: PlaylistUpdate }> {
+  ): Promise<{ wish: MusicWish }> {
     const journey = this.getJourneyOrThrow(journeyId);
     if (journey.status !== "active") {
       throw new Error("Cannot add a music wish to a stopped journey.");
@@ -291,11 +291,12 @@ export class JourneyService {
       wishId: wish.id,
       status: wish.status,
     });
-    const update =
-      wish.status === "active" && input.apply !== false
-        ? await this.analyzeJourney(journeyId, "music-wish")
-        : undefined;
-    return { wish: this.store.getMusicWish(journeyId, wish.id) ?? wish, update };
+    if (wish.status === "active" && input.apply !== false) {
+      // Curation runs in the background — the wish response must be instant. Failures land
+      // in the existing analysis.failed audit; analysisPending clears via the in-flight map.
+      void this.analyzeJourney(journeyId, "music-wish").catch(() => undefined);
+    }
+    return { wish: this.store.getMusicWish(journeyId, wish.id) ?? wish };
   }
 
   async updateMusicWish(
@@ -320,7 +321,7 @@ export class JourneyService {
     // Re-curate only while the journey is still running; the undo itself is
     // already persisted, so a stopped journey must not surface as a failed undo.
     if (this.getJourneyOrThrow(journeyId).status === "active") {
-      await this.analyzeJourney(journeyId, "music-wish-undo");
+      void this.analyzeJourney(journeyId, "music-wish-undo").catch(() => undefined);
     }
     return wish;
   }
@@ -349,6 +350,11 @@ export class JourneyService {
     });
     this.analyzeByJourney.set(journeyId, tracked);
     return tracked;
+  }
+
+  /** True while a (re-)curation pass for this journey is in flight. */
+  isAnalysisPending(journeyId: string): boolean {
+    return this.analyzeByJourney.has(journeyId);
   }
 
   private async analyzeJourneyBody(
