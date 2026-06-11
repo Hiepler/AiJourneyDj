@@ -273,6 +273,90 @@ describe("reconcileSpotifyPlayback", () => {
     // The modeled queue stays upcoming instead of being wiped.
     expect(after.queuedTrackIds.length).toBeGreaterThan(0);
   });
+
+  it("reclaims playback when autoplay takes over after the queue drained", async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+    const session = store.getPlaybackSession(journey.id)!;
+
+    // Simulate a drained queue: everything modeled was consumed.
+    store.savePlaybackSession({
+      ...session,
+      queuedTrackIds: [],
+      playedTrackIds: [...(session.playedTrackIds ?? []), ...session.queuedTrackIds],
+    });
+    adapter.startCalls.length = 0;
+
+    // Spotify autoplay put a foreign track on air.
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: "spotify-autoplay-foreign",
+      queuedProviderTrackIds: [],
+    };
+    const outcome = await service.reconcileSpotifyPlayback(journey.id);
+
+    expect(outcome).toBe("playing");
+    // Assert immediately after reconcile — before any background work.
+    expect(adapter.startCalls.length).toBe(1);
+    expect(adapter.startCalls[0].uris).toHaveLength(1);
+    const after = store.getPlaybackSession(journey.id)!;
+    expect(after.status).toBe("playing");
+    expect(after.activeTrack?.providerUri).toBe(adapter.startCalls[0].uris[0]);
+
+    // Wait for any in-flight background analyze to finish before afterEach cleanup.
+    // isAnalysisPending arrives in a later task; use a type-safe escape hatch so it's a no-op now.
+    const svc = service as unknown as { isAnalysisPending?: (id: string) => boolean };
+    const deadline = Date.now() + 20_000;
+    while (svc.isAnalysisPending?.(journey.id)) {
+      if (Date.now() > deadline) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  });
+
+  it("respects a deliberate external choice when the queue is healthy", async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+    adapter.startCalls.length = 0;
+
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: "foreign-deliberate",
+      queuedProviderTrackIds: [],
+    };
+    const outcome = await service.reconcileSpotifyPlayback(journey.id);
+
+    expect(outcome).toBe("external");
+    expect(adapter.startCalls.length).toBe(0);
+    expect(store.getPlaybackSession(journey.id)!.status).toBe("external");
+  });
+
+  it("does not reclaim twice within the cooldown window", async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+    const session = store.getPlaybackSession(journey.id)!;
+    store.savePlaybackSession({ ...session, queuedTrackIds: [] });
+
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: "autoplay-1",
+      queuedProviderTrackIds: [],
+    };
+    await service.reconcileSpotifyPlayback(journey.id);
+    adapter.startCalls.length = 0;
+
+    // Drain again immediately; second foreign track within cooldown → respect it.
+    const again = store.getPlaybackSession(journey.id)!;
+    store.savePlaybackSession({ ...again, queuedTrackIds: [] });
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: "autoplay-2",
+      queuedProviderTrackIds: [],
+    };
+    const outcome = await service.reconcileSpotifyPlayback(journey.id);
+
+    expect(outcome).toBe("external");
+    expect(adapter.startCalls.length).toBe(0);
+  });
 });
 
 describe("connect-mode queue sync", () => {
