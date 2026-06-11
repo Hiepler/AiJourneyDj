@@ -499,15 +499,33 @@ export class JourneyService {
     journeyId: string,
     deviceId: string,
     status: PlaybackSession["status"] = "ready",
-    options: { syncOnly?: boolean } = {},
+    options: { syncOnly?: boolean; transfer?: boolean } = {},
   ): Promise<PlaybackSession> {
     const journey = this.getJourneyOrThrow(journeyId);
     if (journey.provider !== "spotify") {
       throw new Error("Cannot register a Spotify device for a TIDAL journey.");
     }
 
-    this.store.updateJourneySpotifyDevice(journeyId, deviceId);
     const existing = this.store.getPlaybackSession(journeyId);
+    // Device affinity: a passive registration (page load, refresh) must never steal playback
+    // from a device that is actively playing (e.g. the Tesla via Connect). Only an explicit
+    // user choice (transfer: true) may switch devices.
+    if (
+      !options.transfer &&
+      existing?.status === "playing" &&
+      existing.deviceId &&
+      existing.deviceId !== deviceId
+    ) {
+      this.store.audit(
+        journeyId,
+        "spotify.device_register_skipped",
+        "Device registration skipped; another device is actively playing.",
+        { requestedDeviceId: deviceId, activeDeviceId: existing.deviceId },
+      );
+      return existing;
+    }
+
+    this.store.updateJourneySpotifyDevice(journeyId, deviceId);
     this.saveSession({
       journeyId,
       provider: "spotify",
