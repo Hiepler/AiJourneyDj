@@ -330,6 +330,33 @@ describe("reconcileSpotifyPlayback", () => {
     expect(store.getPlaybackSession(journey.id)!.status).toBe("external");
   });
 
+  it("does not steal playback when registering a second device passively", async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+    expect(store.getPlaybackSession(journey.id)!.status).toBe("playing");
+    adapter.startCalls.length = 0;
+
+    // Browser reopens and passively registers its webplayer while the Tesla plays.
+    const result = await service.registerSpotifyDevice(
+      journey.id,
+      "browser-webplayer",
+      "ready",
+      { syncOnly: true },
+    );
+
+    expect(adapter.startCalls.length).toBe(0); // no transfer/start
+    expect(result.deviceId).toBe("tesla-web-device"); // current session returned
+    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("tesla-web-device");
+
+    // Explicit user choice still switches.
+    await service.registerSpotifyDevice(journey.id, "browser-webplayer", "ready", {
+      syncOnly: true,
+      transfer: true,
+    });
+    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("browser-webplayer");
+    expect(adapter.startCalls.length).toBeGreaterThan(0);
+  });
+
   it("does not reclaim twice within the cooldown window", async () => {
     const { service, store, adapter } = buildService();
     const journey = await startSpotifyJourney(service);
