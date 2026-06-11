@@ -101,6 +101,8 @@ export class JourneyService {
     Promise<PlaylistUpdate>
   >();
   private analyzeGlobalChain: Promise<void> = Promise.resolve();
+  /** Last autoplay-reclaim attempt per journey — prevents fighting a user who chose Spotify. */
+  private readonly reclaimAttemptAt = new Map<string, number>();
 
   constructor(
     private readonly config: AppConfig,
@@ -1983,6 +1985,67 @@ export class JourneyService {
           },
         );
         return "playing";
+      }
+    }
+
+    if (result.kind === "external") {
+      // Heuristic: a foreign track right after our queue drained is Spotify AUTOPLAY taking
+      // over, not a deliberate user choice — reclaim with the next unused curated track.
+      const lastReclaim = this.reclaimAttemptAt.get(journeyId) ?? 0;
+      const cooldownMs = this.config.PLAYBACK_RECLAIM_COOLDOWN_SECONDS * 1000;
+      const queueDrained = session.queuedTrackIds.length <= 1;
+      if (
+        this.config.PLAYBACK_RECLAIM_ENABLED &&
+        queueDrained &&
+        session.deviceId &&
+        Date.now() - lastReclaim > cooldownMs
+      ) {
+        const consumedIds = new Set<string>([
+          ...(session.playedTrackIds ?? []),
+          ...session.queuedTrackIds,
+          ...(session.activeTrack?.id ? [session.activeTrack.id] : []),
+        ]);
+        const nextTrack = stored.find(
+          (track) =>
+            track.providerUri &&
+            track.isPlayable !== false &&
+            !consumedIds.has(track.id),
+        );
+        if (nextTrack) {
+          this.reclaimAttemptAt.set(journeyId, Date.now());
+          const applied = await this.playExact({
+            journeyId,
+            accessToken,
+            deviceId: session.deviceId,
+            activeTrack: nextTrack,
+            queueTracks: [],
+          });
+          if (applied.deviceReachable) {
+            this.saveSession({
+              journeyId,
+              provider: "spotify",
+              deviceId: session.deviceId,
+              status: "playing",
+              activeTrack: nextTrack,
+              queuedTrackIds: [],
+              playedTrackIds: [
+                ...(session.playedTrackIds ?? []),
+                ...(session.activeTrack?.id ? [session.activeTrack.id] : []),
+              ],
+              targetBufferSize: 5,
+              lastHeartbeatAt: now,
+            });
+            this.store.audit(
+              journeyId,
+              "spotify.playback_reclaimed",
+              "Reclaimed playback after autoplay took over a drained queue.",
+              { activeProviderTrackId: nextTrack.providerTrackId },
+            );
+            // Refill the now-empty queue in the background.
+            void this.analyzeJourney(journeyId, "skip-refill").catch(() => undefined);
+            return "playing";
+          }
+        }
       }
     }
 
