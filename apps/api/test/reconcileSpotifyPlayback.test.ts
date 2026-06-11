@@ -222,6 +222,28 @@ describe("reconcileSpotifyPlayback", () => {
     await expect(service.reconcileSpotifyPlayback("does-not-exist")).resolves.toBe("idle");
   });
 
+  it("marks the session paused when the remote device stops playing, and resumes", async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+    const model = modelOf(store, journey.id);
+    expect(store.getPlaybackSession(journey.id)!.status).toBe("playing");
+
+    // Tesla miniplayer pause → Spotify reports nothing playing.
+    adapter.playbackState = { isPlaying: false, queuedProviderTrackIds: [] };
+    const outcome = await service.reconcileSpotifyPlayback(journey.id);
+    expect(outcome).toBe("idle");
+    expect(store.getPlaybackSession(journey.id)!.status).toBe("paused");
+
+    // Resume in the miniplayer on the curated track → back to playing.
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: model[0].providerTrackId,
+      queuedProviderTrackIds: [],
+    };
+    await service.reconcileSpotifyPlayback(journey.id);
+    expect(store.getPlaybackSession(journey.id)!.status).toBe("playing");
+  });
+
   it("re-anchors instead of pausing when one of OUR tracks plays outside the model", async () => {
     const { service, store, adapter } = buildService();
     const journey = await startSpotifyJourney(service);
