@@ -1910,8 +1910,12 @@ export class JourneyService {
 
     const now = new Date().toISOString();
 
-    // Nothing playing → leave the model untouched, just back the poller off.
+    // Nothing playing → leave the model untouched, just back the poller off. A session that
+    // was playing is now truthfully "paused" so the UI doesn't show a stopped journey as live.
     if (!state.isPlaying || !state.activeProviderTrackId) {
+      if (session.status === "playing") {
+        this.saveSession({ ...session, status: "paused", lastHeartbeatAt: now });
+      }
       return "idle";
     }
 
