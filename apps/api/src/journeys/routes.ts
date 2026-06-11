@@ -112,6 +112,7 @@ export async function registerJourneyRoutes(
       latestUpdate,
       tracks,
       activeMusicWishes: store.listActiveMusicWishes(id),
+      analysisPending: service.isAnalysisPending(id),
       recentMusicWishes: store.listRecentMusicWishes(id),
       playbackSession: store.getPlaybackSession(id),
       needsAnalysis:

@@ -78,6 +78,7 @@ export interface JourneyDetail {
   };
   needsAnalysis?: boolean;
   analysisError?: string;
+  analysisPending?: boolean;
   tracks: Track[];
   playbackSession?: {
     journeyId: string;

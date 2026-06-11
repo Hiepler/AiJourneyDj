@@ -304,11 +304,9 @@ describe("reconcileSpotifyPlayback", () => {
     expect(after.activeTrack?.providerUri).toBe(adapter.startCalls[0].uris[0]);
 
     // Wait for any in-flight background analyze to finish before afterEach cleanup.
-    // isAnalysisPending arrives in a later task; use a type-safe escape hatch so it's a no-op now.
-    const svc = service as unknown as { isAnalysisPending?: (id: string) => boolean };
     const deadline = Date.now() + 20_000;
-    while (svc.isAnalysisPending?.(journey.id)) {
-      if (Date.now() > deadline) break;
+    while (service.isAnalysisPending(journey.id)) {
+      if (Date.now() > deadline) throw new Error("wish analysis did not finish");
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   });
@@ -424,8 +422,8 @@ describe("connect-mode queue sync", () => {
     expect(adapter.startCalls.length).toBe(startCallsBefore);
   });
 
-  // Two full analysis passes (initial + wish rebuild) with real per-add pacing → allow 15s.
-  it("keeps every wish-rebuild queue add inside the visible model", { timeout: 15_000 }, async () => {
+  // Two full analysis passes (initial + wish rebuild) with real per-add pacing → allow 30s.
+  it("keeps every wish-rebuild queue add inside the visible model", { timeout: 30_000 }, async () => {
     const { service, store, adapter } = buildService();
     const journey = await startSpotifyJourney(service);
     const before = adapter.queueCalls.length;
@@ -434,6 +432,12 @@ describe("connect-mode queue sync", () => {
       text: "mehr Taylor Swift",
       source: "text",
     });
+
+    const deadline = Date.now() + 20_000;
+    while (service.isAnalysisPending(journey.id)) {
+      if (Date.now() > deadline) throw new Error("wish analysis did not finish");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
 
     const model = modelOf(store, journey.id);
     const modelUris = new Set(
