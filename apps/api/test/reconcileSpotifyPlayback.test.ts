@@ -57,7 +57,19 @@ class ControllableAdapter implements SpotifyAdapter {
     this.queueCalls.push({ deviceId: args.deviceId, uri: args.uri });
   }
   async getPlaybackState(): Promise<SpotifyPlaybackState> {
-    return this.playbackState;
+    // Mirror a real device: everything added via addToQueue shows up in the device queue,
+    // on top of whatever base state the test pinned explicitly.
+    return {
+      ...this.playbackState,
+      queuedProviderTrackIds: [
+        ...new Set([
+          ...this.playbackState.queuedProviderTrackIds,
+          ...this.queueCalls
+            .map((call) => call.uri.split(":").pop())
+            .filter((id): id is string => Boolean(id)),
+        ]),
+      ],
+    };
   }
 }
 
@@ -208,5 +220,96 @@ describe("reconcileSpotifyPlayback", () => {
   it("returns idle for a non-existent / non-spotify journey without throwing", async () => {
     const { service } = buildService();
     await expect(service.reconcileSpotifyPlayback("does-not-exist")).resolves.toBe("idle");
+  });
+
+  it("re-anchors instead of pausing when one of OUR tracks plays outside the model", async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+    const model = modelOf(store, journey.id);
+    const modelIds = new Set(model.map((track) => track.providerTrackId));
+    const stored = store
+      .listResolvedTracks(journey.id)
+      .filter((track) => track.provider === "spotify");
+    // The resolver stores more tracks than the 6-slot model shows — exactly the kind of
+    // track a stale (append-only) Spotify queue can put on air during a real drive.
+    const ours = stored.find((track) => !modelIds.has(track.providerTrackId));
+    expect(ours).toBeDefined();
+
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: ours!.providerTrackId,
+      queuedProviderTrackIds: [],
+    };
+    const outcome = await service.reconcileSpotifyPlayback(journey.id);
+
+    expect(outcome).toBe("playing");
+    const after = store.getPlaybackSession(journey.id)!;
+    expect(after.status).toBe("playing");
+    expect((after.activeTrack as { providerTrackId: string }).providerTrackId).toBe(
+      ours!.providerTrackId,
+    );
+    // The modeled queue stays upcoming instead of being wiped.
+    expect(after.queuedTrackIds.length).toBeGreaterThan(0);
+  });
+});
+
+describe("connect-mode queue sync", () => {
+  it("starts only the active track and feeds the queue through queue-adds in model order", async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+
+    const model = modelOf(store, journey.id);
+    expect(model.length).toBeGreaterThanOrEqual(3);
+
+    // Single ordering source: the playback context is the active track only — a multi-track
+    // context cannot be kept in sync with later queue adds (Spotify plays manual queue items
+    // before the context remainder), which is what made device order diverge on real drives.
+    expect(adapter.startCalls.length).toBeGreaterThan(0);
+    for (const call of adapter.startCalls) {
+      expect(call.uris).toHaveLength(1);
+    }
+    expect(adapter.startCalls[0].uris[0]).toBe(
+      `spotify:track:${model[0].providerTrackId}`,
+    );
+    // Every upcoming track reaches the device through the queue, in model order, exactly once.
+    const queuedUris = adapter.queueCalls.map((call) => call.uri);
+    expect(queuedUris).toEqual(
+      model.slice(1).map((track) => `spotify:track:${track.providerTrackId}`),
+    );
+  });
+
+  it("adds nothing to the device queue on a full-buffer re-analysis", async () => {
+    const { service, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+    const queueCallsBefore = adapter.queueCalls.length;
+    const startCallsBefore = adapter.startCalls.length;
+
+    await service.analyzeJourney(journey.id, "manual");
+
+    // Full buffer → the model gains nothing → Spotify must receive nothing.
+    expect(adapter.queueCalls.length).toBe(queueCallsBefore);
+    expect(adapter.startCalls.length).toBe(startCallsBefore);
+  });
+
+  // Two full analysis passes (initial + wish rebuild) with real per-add pacing → allow 15s.
+  it("keeps every wish-rebuild queue add inside the visible model", { timeout: 15_000 }, async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+    const before = adapter.queueCalls.length;
+
+    await service.createMusicWish(journey.id, {
+      text: "mehr Taylor Swift",
+      source: "text",
+    });
+
+    const model = modelOf(store, journey.id);
+    const modelUris = new Set(
+      model.map((track) => `spotify:track:${track.providerTrackId}`),
+    );
+    const newAdds = adapter.queueCalls.slice(before).map((call) => call.uri);
+    expect(newAdds.length).toBeGreaterThan(0);
+    for (const uri of newAdds) {
+      expect(modelUris.has(uri)).toBe(true);
+    }
   });
 });

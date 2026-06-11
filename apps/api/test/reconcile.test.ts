@@ -28,6 +28,28 @@ describe("reconcilePlaybackModel", () => {
   it("flags an off-journey track not in the model as external", () => {
     expect(reconcilePlaybackModel(model, "some-foreign-track")).toEqual({ kind: "external", index: -1 });
   });
+
+  it("re-anchors (drifted) when the track is ours but outside the model", () => {
+    // Spotify's queue is append-only: stale adds and wish rebuilds can put one of OUR
+    // journey tracks on air at a position the 6-slot model no longer shows. That must
+    // re-anchor the model, not pause curation as "external".
+    expect(
+      reconcilePlaybackModel(model, "t-ours-old", new Set(["t-ours-old", "t-active"])),
+    ).toEqual({ kind: "drifted", index: -1 });
+  });
+
+  it("still flags foreign tracks as external even with a known set", () => {
+    expect(
+      reconcilePlaybackModel(model, "some-foreign-track", new Set(["t-ours-old"])),
+    ).toEqual({ kind: "external", index: -1 });
+  });
+
+  it("prefers the model position over the known set", () => {
+    expect(reconcilePlaybackModel(model, "t-q1", new Set(["t-q1"]))).toEqual({
+      kind: "skipped",
+      index: 1,
+    });
+  });
 });
 
 describe("nextPollIntervalSeconds", () => {
