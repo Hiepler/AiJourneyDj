@@ -133,7 +133,8 @@ describe("spotify playback initiation", () => {
   });
 
 
-  it("on skip, commands Spotify to play exactly the track shown as active (no queue desync)", async () => {
+  // Skip runs a real playback sync incl. paced device-queue top-ups → allow 15s.
+  it("on skip, commands Spotify to play exactly the track shown as active (no queue desync)", { timeout: 15_000 }, async () => {
     const adapter = new RaceSpotifyAdapter();
     const { service, store } = buildService(adapter);
 

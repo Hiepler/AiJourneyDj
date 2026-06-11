@@ -950,6 +950,11 @@ export function queueTracksForBuffer<T extends ResolvedTrack>(
   },
 ): T[] {
   const target = args.targetBufferSize ?? 5;
+  // A non-positive target means the buffer is already full: select nothing. Without this
+  // guard the early-return below (`selected.length === target`) can never fire and the
+  // whole eligible pool would be returned — and then queued on Spotify without ever
+  // entering the 5-slot playback model.
+  if (target <= 0) return [];
   const seenIds = new Set(args.alreadyQueuedProviderIds);
   if (args.activeProviderTrackId) {
     seenIds.add(args.activeProviderTrackId);

@@ -10,6 +10,7 @@
 export type ReconcileKind =
   | "same" // the active track is still the one playing — no drift
   | "skipped" // playback advanced into our queue — `index` tracks how far
+  | "drifted" // one of OUR journey tracks plays outside the model — re-anchor, don't pause
   | "external" // the current track is not in our curated model — user is off-journey
   | "empty"; // we have no model to reconcile against (no active track / fresh journey)
 
@@ -24,10 +25,15 @@ export interface ReconcileResult {
  *
  * @param modelProviderTrackIds Ordered `[activeTrack, ...queued]` provider track IDs.
  * @param currentProviderTrackId The provider track ID Spotify reports as playing.
+ * @param knownProviderTrackIds Every provider track ID this journey ever resolved. Spotify's
+ *   queue is append-only, so a stale add or a wish rebuild can put one of OUR tracks on air
+ *   at a position the 6-slot model no longer shows — that is drift to re-anchor on, not an
+ *   off-journey track to pause for.
  */
 export function reconcilePlaybackModel(
   modelProviderTrackIds: string[],
-  currentProviderTrackId: string | undefined
+  currentProviderTrackId: string | undefined,
+  knownProviderTrackIds?: ReadonlySet<string>
 ): ReconcileResult {
   if (modelProviderTrackIds.length === 0) {
     return { kind: "empty", index: -1 };
@@ -38,6 +44,9 @@ export function reconcilePlaybackModel(
   }
   const index = modelProviderTrackIds.indexOf(currentProviderTrackId);
   if (index === -1) {
+    if (knownProviderTrackIds?.has(currentProviderTrackId)) {
+      return { kind: "drifted", index: -1 };
+    }
     return { kind: "external", index: -1 };
   }
   if (index === 0) {
