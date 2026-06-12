@@ -152,6 +152,8 @@ const schema = z.object({
   // Pre-warm threshold: keep at least this many unused resolved tracks per journey so
   // refills never wait on LLM generation mid-drive (0 disables pre-warming).
   CANDIDATE_POOL_FLOOR: z.coerce.number().int().min(0).max(50).default(6),
+  // Pause between consecutive device queue adds (gentle API pacing).
+  SPOTIFY_QUEUE_ADD_DELAY_MS: z.coerce.number().int().min(0).max(2000).default(150),
   TESLA_FLEET_ENABLED: envBoolean(false),
   TESLA_CLIENT_ID: z.string().optional(),
   TESLA_CLIENT_SECRET: z.string().optional(),
