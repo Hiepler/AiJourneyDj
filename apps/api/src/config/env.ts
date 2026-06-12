@@ -147,6 +147,13 @@ const schema = z.object({
   RECENT_FATIGUE_ARTIST_PENALTY: z.coerce.number().min(0).max(1).default(0.2),
   WISH_QUOTA_MIN: z.coerce.number().int().min(0).max(5).default(2),
   WISH_QUOTA_MAX_SLOTS: z.coerce.number().int().min(0).max(5).default(3),
+  PLAYBACK_RECLAIM_ENABLED: envBoolean(true),
+  PLAYBACK_RECLAIM_COOLDOWN_SECONDS: z.coerce.number().int().min(10).default(120),
+  // Pre-warm threshold: keep at least this many unused resolved tracks per journey so
+  // refills never wait on LLM generation mid-drive (0 disables pre-warming).
+  CANDIDATE_POOL_FLOOR: z.coerce.number().int().min(0).max(50).default(6),
+  // Pause between consecutive device queue adds (gentle API pacing).
+  SPOTIFY_QUEUE_ADD_DELAY_MS: z.coerce.number().int().min(0).max(2000).default(150),
   TESLA_FLEET_ENABLED: envBoolean(false),
   TESLA_CLIENT_ID: z.string().optional(),
   TESLA_CLIENT_SECRET: z.string().optional(),

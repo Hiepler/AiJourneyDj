@@ -26,6 +26,22 @@ function testConfig(sharedDbDir?: string) {
   });
 }
 
+async function waitForAnalysis(
+  app: Awaited<ReturnType<typeof buildApp>>["app"],
+  journeyId: string,
+  timeoutMs = 20_000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const detail = (
+      await app.inject({ method: "GET", url: `/journeys/${journeyId}` })
+    ).json();
+    if (!detail.analysisPending) return detail;
+    if (Date.now() > deadline) throw new Error("analysis did not finish in time");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 async function startJourney(
   app: Awaited<ReturnType<typeof buildApp>>["app"],
   destination: string,
@@ -70,7 +86,7 @@ describe("engine variety", () => {
     await app.close();
   });
 
-  it("guarantees at least the wish quota of artist tracks in the next queue", async () => {
+  it("guarantees at least the wish quota of artist tracks in the next queue", { timeout: 30_000 }, async () => {
     const { app } = await buildApp(testConfig());
     const journey = (
       await app.inject({
@@ -92,7 +108,7 @@ describe("engine variety", () => {
       payload: { text: "mehr Taylor Swift", source: "text" },
     });
 
-    const detail = (await app.inject({ method: "GET", url: `/journeys/${journey.id}` })).json();
+    const detail = await waitForAnalysis(app, journey.id);
     const queued = detail.playbackSession.queuedTrackIds.map((id: string) =>
       detail.tracks.find((track: { id: string }) => track.id === id),
     );

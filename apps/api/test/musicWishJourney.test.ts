@@ -25,6 +25,22 @@ function testConfig() {
   });
 }
 
+async function waitForAnalysis(
+  app: Awaited<ReturnType<typeof buildApp>>["app"],
+  journeyId: string,
+  timeoutMs = 20_000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const detail = (
+      await app.inject({ method: "GET", url: `/journeys/${journeyId}` })
+    ).json();
+    if (!detail.analysisPending) return detail;
+    if (Date.now() > deadline) throw new Error("analysis did not finish in time");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 describe("music wish routes", () => {
   it("creates an active wish and includes it in journey detail", async () => {
     const { app } = await buildApp(testConfig());
@@ -136,11 +152,12 @@ describe("music wish routes", () => {
 
     const detail = await app.inject({ method: "GET", url: `/journeys/${journey.id}` });
     expect(detail.json().activeMusicWishes).toEqual([]);
+    expect(detail.json().analysisPending).toBe(false);
 
     await app.close();
   });
 
-  it("activates a short bare artist wish so the frontend can show a chip", async () => {
+  it("activates a short bare artist wish so the frontend can show a chip", { timeout: 30_000 }, async () => {
     const { app } = await buildApp(testConfig());
     const journey = (await app.inject({
       method: "POST",
@@ -162,7 +179,7 @@ describe("music wish routes", () => {
       },
     });
 
-    const detail = (await app.inject({ method: "GET", url: `/journeys/${journey.id}` })).json();
+    const detail = await waitForAnalysis(app, journey.id);
     expect(detail.activeMusicWishes).toEqual([
       expect.objectContaining({ summary: "Mehr Nina Chuba", status: "active" }),
     ]);
@@ -170,6 +187,34 @@ describe("music wish routes", () => {
       detail.tracks.find((track: { id: string }) => track.id === id),
     );
     expect(queuedTracks.some((track: { artist: string } | undefined) => track?.artist === "Nina Chuba")).toBe(true);
+
+    await app.close();
+  });
+
+  it("answers the wish instantly and reports analysisPending until curation finishes", { timeout: 30_000 }, async () => {
+    const { app } = await buildApp(testConfig());
+    const journey = (await app.inject({
+      method: "POST",
+      url: "/journeys",
+      payload: { destination: "Dijon", userPrompt: "drive", passengerMode: "solo", provider: "spotify", deviceId: "mock-webplayer" },
+    })).json<{ id: string }>();
+
+    const startedAt = Date.now();
+    const wishResponse = await app.inject({
+      method: "POST",
+      url: `/journeys/${journey.id}/music-wishes`,
+      payload: { text: "mehr Taylor Swift", source: "text" },
+    });
+    const elapsed = Date.now() - startedAt;
+
+    expect(wishResponse.statusCode).toBe(201);
+    expect(elapsed).toBeLessThan(1000); // no longer waits for the analysis
+    const detail = (await app.inject({ method: "GET", url: `/journeys/${journey.id}` })).json();
+    expect(detail.analysisPending).toBe(true);
+
+    const settled = await waitForAnalysis(app, journey.id);
+    expect(settled.analysisPending).toBe(false);
+    expect(settled.tracks.some((track: { artist: string }) => track.artist === "Taylor Swift")).toBe(true);
 
     await app.close();
   });
@@ -204,7 +249,7 @@ describe("music wish routes", () => {
 });
 
 describe("music wish journey application", () => {
-  it("non-immediate wishes do not interrupt the active track", async () => {
+  it("non-immediate wishes do not interrupt the active track", { timeout: 30_000 }, async () => {
     const { app } = await buildApp(testConfig());
     const journey = (await app.inject({
       method: "POST",
@@ -220,14 +265,14 @@ describe("music wish journey application", () => {
       payload: { text: "mehr Taylor Swift", source: "text" },
     });
 
-    const after = (await app.inject({ method: "GET", url: `/journeys/${journey.id}` })).json();
+    const after = await waitForAnalysis(app, journey.id);
     expect(after.playbackSession.activeTrack.providerTrackId).toBe(activeBefore);
     expect(after.tracks.some((track: { artist: string }) => track.artist === "Taylor Swift")).toBe(true);
 
     await app.close();
   });
 
-  it("explicit jetzt song wishes can replace the active track", async () => {
+  it("explicit jetzt song wishes can replace the active track", { timeout: 30_000 }, async () => {
     const { app } = await buildApp(testConfig());
     const journey = (await app.inject({
       method: "POST",
@@ -241,14 +286,14 @@ describe("music wish journey application", () => {
       payload: { text: "spiel jetzt Taylor Swift - Shake It Off", source: "text" },
     });
 
-    const after = (await app.inject({ method: "GET", url: `/journeys/${journey.id}` })).json();
+    const after = await waitForAnalysis(app, journey.id);
     expect(after.playbackSession.activeTrack.artist).toBe("Taylor Swift");
     expect(after.playbackSession.activeTrack.title).toBe("Shake It Off");
 
     await app.close();
   });
 
-  it("keeps a fresh wish active with its full track budget once the buffer is full", async () => {
+  it("keeps a fresh wish active with its full track budget once the buffer is full", { timeout: 30_000 }, async () => {
     const { app } = await buildApp(testConfig());
     const journey = (await app.inject({
       method: "POST",
@@ -271,6 +316,7 @@ describe("music wish journey application", () => {
     expect(created.wish.status).toBe("active");
     expect(created.wish.remainingTracks).toBe(created.wish.expiresAfterTracks);
 
+    await waitForAnalysis(app, journey.id);
     const active = (await app.inject({ method: "GET", url: `/journeys/${journey.id}/music-wishes` })).json();
     expect(active.active).toHaveLength(1);
     expect(active.active[0].remainingTracks).toBe(5);
