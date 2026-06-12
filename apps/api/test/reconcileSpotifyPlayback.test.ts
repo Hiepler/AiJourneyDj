@@ -382,6 +382,37 @@ describe("reconcileSpotifyPlayback", () => {
     expect(outcome).toBe("external");
     expect(adapter.startCalls.length).toBe(0);
   });
+
+  it("pre-warms the candidate pool after analysis when it falls below the floor", { timeout: 20_000 }, async () => {
+    // Floor high enough that the post-start pool is always below it; refill throttle off so
+    // the pre-warm is not blocked by the just-finished initial analysis. In mock mode the
+    // deterministic scout regenerates identical tracks (dedup → no row growth), so the
+    // observable contract is the pool_prewarmed audit proving the full pipeline ran.
+    const { service, store } = buildService({
+      CANDIDATE_POOL_FLOOR: "50",
+      SPOTIFY_REFILL_MIN_INTERVAL_SECONDS: "0",
+    });
+    const journey = await startSpotifyJourney(service);
+
+    const deadline = Date.now() + 15_000;
+    for (;;) {
+      if (store.latestAuditEvent(journey.id, "recommendation.pool_prewarmed")) break;
+      if (Date.now() > deadline) throw new Error("pool did not pre-warm");
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  });
+
+  it("skips pre-warming when disabled via a zero floor", async () => {
+    const { service, store } = buildService({
+      CANDIDATE_POOL_FLOOR: "0",
+      SPOTIFY_REFILL_MIN_INTERVAL_SECONDS: "0",
+    });
+    const journey = await startSpotifyJourney(service);
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    expect(
+      store.latestAuditEvent(journey.id, "recommendation.pool_prewarmed"),
+    ).toBeUndefined();
+  });
 });
 
 describe("connect-mode queue sync", () => {
