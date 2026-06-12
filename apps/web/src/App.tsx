@@ -323,7 +323,13 @@ export function App() {
     setError(undefined);
     try {
       await api.analyze(activeJourneyId);
-      if (syncPlayback && spotifyConnected && !health?.spotifyMock && isSpotifyJourney) {
+      // Never hijack a device that is actively playing (e.g. the Tesla via Connect):
+      // a refresh then only re-analyzes and reloads the view.
+      const playingElsewhere =
+        detail?.playbackSession?.status === "playing" &&
+        Boolean(detail.journey.spotifyDeviceId) &&
+        detail.journey.spotifyDeviceId !== spotifyDeviceId;
+      if (syncPlayback && !playingElsewhere && spotifyConnected && !health?.spotifyMock && isSpotifyJourney) {
         try {
           const deviceId = await ensureSpotifyDevice();
           if (deviceId) {
@@ -425,7 +431,8 @@ export function App() {
       const deviceId = await ensureSpotifyDevice();
       if (deviceId) {
         await new Promise((resolve) => setTimeout(resolve, 400));
-        await api.registerSpotifyDevice(activeJourneyId, { deviceId, status: "ready", syncOnly: true });
+        // Explicit user intent: "play here in the browser" may take over playback.
+        await api.registerSpotifyDevice(activeJourneyId, { deviceId, status: "ready", syncOnly: true, transfer: true });
       }
       setDetail(await api.journey(activeJourneyId));
       if (playerRef.current) {
@@ -494,7 +501,8 @@ export function App() {
     setShowDevices(false);
     setError(undefined);
     try {
-      await api.registerSpotifyDevice(activeJourneyId, { deviceId: device.id, status: "ready", syncOnly: true });
+      // Explicit device choice from the menu may take over playback.
+      await api.registerSpotifyDevice(activeJourneyId, { deviceId: device.id, status: "ready", syncOnly: true, transfer: true });
       setDetail(await api.journey(activeJourneyId));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -619,7 +627,18 @@ export function App() {
   const driveMode = detail?.context?.driveMode;
   const driveModeLabel = DRIVE_MODE_REASON_LABELS[detail?.context?.driveModeReason ?? ""] ?? detail?.context?.driveModeReason;
   const demo = Boolean(health?.spotifyMock);
-  const playing = isPaused === undefined ? isPlayingInBrowser : !isPaused;
+  // Connect mode: the truth about a remote device (Tesla native app) lives in the server
+  // session (kept fresh by the backend poller) — the local SDK only knows the browser player.
+  const remoteDeviceActive = Boolean(
+    detail?.journey.spotifyDeviceId &&
+      detail.journey.spotifyDeviceId !== spotifyDeviceId,
+  );
+  const sessionStatus = detail?.playbackSession?.status;
+  const playing = remoteDeviceActive
+    ? sessionStatus === "playing"
+    : isPaused === undefined
+      ? isPlayingInBrowser
+      : !isPaused;
   const nowLabel = activeTrack ? (playing ? "Now playing" : "Paused") : "Up next";
   const canSkipBack = (detail?.playbackSession?.playedTrackIds?.length ?? 0) > 0;
   const canSkipForward = upcoming.length > 0 || displayTracks.length > 1;
@@ -975,6 +994,12 @@ export function App() {
                     </button>
                   </>
                 )}
+                {remoteDeviceActive && (sessionStatus === "playing" || sessionStatus === "paused") ? (
+                  <span className="transport-note">
+                    {sessionStatus === "playing" ? "Spielt" : "Pausiert"} auf{" "}
+                    {activeDeviceLabel(devices, detail?.journey.spotifyDeviceId)}
+                  </span>
+                ) : null}
                 <button className="ctrl" disabled={loading} onClick={refreshQueue} title="Refresh queue" type="button">
                   <RefreshCw className={loading ? "spin" : undefined} size={20} />
                   <span>Refresh</span>
@@ -1184,12 +1209,16 @@ export function App() {
               </div>
             </aside>
 
-            {retuningPhase || vibeTuning ? (
+            {retuningPhase || vibeTuning || detail?.analysisPending ? (
               <div className="retuning" role="status">
                 <div className="retuning-card">
                   <span className="retuning-orb" aria-hidden="true" />
-                  <span className="retuning-label">{vibeTuning ? "Adjusting mix" : "Re-tuning the vibe"}</span>
-                  <strong className="retuning-phase">{vibeTuning ?? phaseMeta(retuningPhase).label}</strong>
+                  <span className="retuning-label">
+                    {vibeTuning || !retuningPhase ? "Adjusting mix" : "Re-tuning the vibe"}
+                  </span>
+                  <strong className="retuning-phase">
+                    {vibeTuning ?? (retuningPhase ? phaseMeta(retuningPhase).label : "Adjusting mix")}
+                  </strong>
                 </div>
               </div>
             ) : null}
