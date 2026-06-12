@@ -5,7 +5,7 @@ import type {
   ResolvedTrack,
   SongCandidate,
 } from "@ai-journey-dj/core";
-import { songKey } from "@ai-journey-dj/core";
+import { normalizeText, songKey } from "@ai-journey-dj/core";
 
 import type { RecommendationPolicy } from "./index.js";
 
@@ -1094,5 +1094,39 @@ describe("variety-aware ranking", () => {
       fatigueExemptArtists: ["Tired Artist"],
     });
     expect(exempt[0].providerTrackId).toBe("tired");
+  });
+});
+
+describe("artist ban ranking", () => {
+  function bTrack(id: string, artist: string) {
+    return {
+      provider: "spotify" as const,
+      providerTrackId: id,
+      providerUri: `spotify:track:${id}`,
+      artist,
+      title: `Song ${id}`,
+      explicit: false,
+      popularity: 80,
+      matchConfidence: 0.9,
+      matchReason: "artist and title match",
+    };
+  }
+
+  it("hard-excludes banned artists but never exempted ones", () => {
+    const policy = buildRecommendationPolicy(context);
+    const tracks: ResolvedTrack[] = [bTrack("a", "Banned Star"), bTrack("b", "Fresh Find")];
+
+    const ranked = rankResolvedTracksForPolicy(tracks, policy, {
+      now: new Date("2026-06-11"),
+      bannedArtists: new Set([normalizeText("Banned Star")]),
+    });
+    expect(ranked.map((t) => t.providerTrackId)).toEqual(["b"]);
+
+    const exempt = rankResolvedTracksForPolicy(tracks, policy, {
+      now: new Date("2026-06-11"),
+      bannedArtists: new Set([normalizeText("Banned Star")]),
+      fatigueExemptArtists: ["Banned Star"],
+    });
+    expect(exempt.map((t) => t.providerTrackId).sort()).toEqual(["a", "b"]);
   });
 });

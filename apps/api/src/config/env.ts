@@ -154,6 +154,10 @@ const schema = z.object({
   CANDIDATE_POOL_FLOOR: z.coerce.number().int().min(0).max(50).default(6),
   // Pause between consecutive device queue adds (gentle API pacing).
   SPOTIFY_QUEUE_ADD_DELAY_MS: z.coerce.number().int().min(0).max(2000).default(150),
+  // Vielfalts-Doktrin: harter Artist-Bann auf Basis des recent_plays-Ledgers.
+  ARTIST_BAN_PLAYS: z.coerce.number().int().min(0).default(2),
+  ARTIST_BAN_WINDOW_HOURS: z.coerce.number().min(1).default(168),
+  ARTIST_AVOID_PROMPT_LIMIT: z.coerce.number().int().min(1).max(100).default(40),
   TESLA_FLEET_ENABLED: envBoolean(false),
   TESLA_CLIENT_ID: z.string().optional(),
   TESLA_CLIENT_SECRET: z.string().optional(),

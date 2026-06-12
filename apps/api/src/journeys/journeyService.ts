@@ -1123,6 +1123,16 @@ export class JourneyService {
         ),
       );
     }
+    const banWindowMs = this.config.ARTIST_BAN_WINDOW_HOURS * 60 * 60 * 1000;
+    const ledgerCounts =
+      this.config.ARTIST_BAN_PLAYS > 0
+        ? this.store.artistPlayCounts(banWindowMs)
+        : new Map<string, number>();
+    const bannedArtists = new Set<string>(
+      [...ledgerCounts.entries()]
+        .filter(([, count]) => count >= this.config.ARTIST_BAN_PLAYS)
+        .map(([artist]) => artist),
+    );
     const wishArtists = activeMusicWishes
       .flatMap((wish) => wish.intents)
       .flatMap((intent) =>
@@ -1135,7 +1145,10 @@ export class JourneyService {
     const groundedContext: JourneyContext = {
       ...contextWithWishes,
       varietyAngle: seededExplorationAngle(variety.seed),
-      recentlyPlayedArtists: [...recentArtistPenalty.keys()].slice(0, 12),
+      recentlyPlayedArtists: [...ledgerCounts.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, this.config.ARTIST_AVOID_PROMPT_LIMIT)
+        .map(([artist]) => artist),
     };
 
     // Cost control: only the LLM lenses cost tokens. Run them when the vibe actually changes;
@@ -1282,6 +1295,26 @@ export class JourneyService {
     const consumedArtistKeys = new Set(
       consumedTracks.map((track) => normalizeText(track.artist)),
     );
+
+    // Musik vor Doktrin: drückt der Bann die spielbare Auswahl unter den Buffer-Bedarf,
+    // wird er für diesen Pass gelockert (Fatigue-Malus wirkt weiter) und auditiert.
+    const playableUnbanned = stored.filter(
+      (track) =>
+        track.providerUri &&
+        track.isPlayable !== false &&
+        !bannedArtists.has(normalizeText(track.artist)),
+    ).length;
+    const effectiveBannedArtists =
+      playableUnbanned >= 5 ? bannedArtists : new Set<string>();
+    if (bannedArtists.size > 0 && effectiveBannedArtists.size === 0) {
+      this.store.audit(
+        journeyId,
+        "variety.ban_relaxed",
+        "Artist ban relaxed for this pass; pool too small.",
+        { banned: bannedArtists.size, playableUnbanned },
+      );
+    }
+
     const rankedStored = rankResolvedTracksForPolicy(
       stored,
       {
@@ -1298,6 +1331,7 @@ export class JourneyService {
         recentArtistPenalty,
         recentSongPenalty,
         fatigueExemptArtists: wishArtists,
+        bannedArtists: effectiveBannedArtists,
       },
     );
     const immediateWishKeys = this.immediateWishSongKeys(activeMusicWishes);
@@ -1386,6 +1420,7 @@ export class JourneyService {
           recentArtistPenalty,
           recentSongPenalty,
           fatigueExemptArtists: wishArtists,
+          bannedArtists: effectiveBannedArtists,
         },
       );
       const alreadyQueued = new Set([
