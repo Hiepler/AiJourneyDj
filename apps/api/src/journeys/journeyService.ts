@@ -103,6 +103,8 @@ export class JourneyService {
   private analyzeGlobalChain: Promise<void> = Promise.resolve();
   /** Last autoplay-reclaim attempt per journey — prevents fighting a user who chose Spotify. */
   private readonly reclaimAttemptAt = new Map<string, number>();
+  /** Journeys with a candidate-pool pre-warm in flight (dedupe; never two at once). */
+  private readonly prewarmInFlight = new Set<string>();
 
   constructor(
     private readonly config: AppConfig,
@@ -349,12 +351,121 @@ export class JourneyService {
       }
     });
     this.analyzeByJourney.set(journeyId, tracked);
+    // The pool only shrinks during analysis passes, so post-analysis is complete trigger
+    // coverage for pre-warming (fire-and-forget; runs after the in-flight map cleared).
+    void tracked
+      .catch(() => undefined)
+      .then(() => this.maybePrewarmCandidatePool(journeyId))
+      .catch(() => undefined);
     return tracked;
   }
 
   /** True while a (re-)curation pass for this journey is in flight. */
   isAnalysisPending(journeyId: string): boolean {
     return this.analyzeByJourney.has(journeyId);
+  }
+
+  /**
+   * Keeps a reserve of unused, playable resolved tracks per journey so refills never have
+   * to wait for LLM generation mid-drive. Cost-neutral: gated by the same shouldRegenerate
+   * throttle as refills — generation is only moved EARLIER, never made more frequent.
+   */
+  private async maybePrewarmCandidatePool(journeyId: string): Promise<void> {
+    if (this.config.CANDIDATE_POOL_FLOOR <= 0) return;
+    if (this.prewarmInFlight.has(journeyId)) return;
+    if (this.analyzeByJourney.has(journeyId)) return;
+    const journey = this.store.getJourney(journeyId);
+    if (!journey || journey.provider !== "spotify" || journey.status !== "active") return;
+
+    const session = this.store.getPlaybackSession(journeyId);
+    const stored = this.store
+      .listResolvedTracks(journeyId)
+      .filter((track) => track.provider === "spotify");
+    const consumed = new Set<string>([
+      ...(session?.queuedTrackIds ?? []),
+      ...(session?.playedTrackIds ?? []),
+      ...(session?.activeTrack?.id ? [session.activeTrack.id] : []),
+    ]);
+    const unused = stored.filter(
+      (track) =>
+        track.providerUri &&
+        track.isPlayable !== false &&
+        !track.addedToPlaylist &&
+        !consumed.has(track.id),
+    );
+    if (unused.length >= this.config.CANDIDATE_POOL_FLOOR) return;
+
+    const last = this.store.latestPlaylistUpdate(journeyId);
+    const minIntervalMs = this.config.SPOTIFY_REFILL_MIN_INTERVAL_SECONDS * 1000;
+    if (!shouldRegenerate(last?.createdAtIso, Date.now(), minIntervalMs)) return;
+
+    this.prewarmInFlight.add(journeyId);
+    try {
+      const telemetry = this.store.latestTelemetry(journeyId);
+      const context = contextFromJourney(
+        journey,
+        telemetry,
+        this.store.recentTelemetry(journeyId),
+      );
+      const activeMusicWishes = this.store.listActiveMusicWishes(journeyId);
+      const variety = makeVarietyContext({
+        journeyId,
+        elapsedMinutes: context.elapsedMinutes,
+        bucketMinutes: this.config.VARIETY_BUCKET_MINUTES,
+        phase: context.phase,
+        speedBucket: context.speedBucket,
+        driveMode: context.driveState?.mode ?? journey.driveMode,
+      });
+      const prewarmContext: JourneyContext = {
+        ...context,
+        activeMusicWishes,
+        varietyAngle: seededExplorationAngle(variety.seed),
+      };
+      const policy = applyMusicWishesToPolicy(
+        buildRecommendationPolicy(prewarmContext),
+        activeMusicWishes,
+      );
+      const accessToken = await this.spotifyAuth.getAccessToken();
+      const candidates = await this.generateAndStoreCandidateSet(
+        journeyId,
+        prewarmContext,
+        policy,
+        8,
+        variety.seed,
+      );
+      const resolver = new SpotifyResolver(this.spotifyAdapter, {
+        accessToken,
+        market: this.config.SPOTIFY_MARKET,
+        searchTimeoutMs: 8_000,
+        targetResolveCount: policy.cleanRequired ? 12 : 10,
+        cache: {
+          get: (key) => this.store.getCachedSpotifySearch(key),
+          set: (key, value) => this.store.saveCachedSpotifySearch(key, value),
+        },
+      });
+      const storedBefore = this.store
+        .listResolvedTracks(journeyId)
+        .filter((track) => track.provider === "spotify").length;
+      const resolved = await resolver.resolveCandidates(candidates);
+      this.storeResolved(journeyId, candidates, resolved);
+      const added =
+        this.store
+          .listResolvedTracks(journeyId)
+          .filter((track) => track.provider === "spotify").length - storedBefore;
+      this.store.audit(
+        journeyId,
+        "recommendation.pool_prewarmed",
+        `Pre-warmed the candidate pool (+${added} new resolved tracks).`,
+        { resolved: resolved.length, added, floor: this.config.CANDIDATE_POOL_FLOOR },
+      );
+    } catch (error) {
+      this.logger.warn(
+        { journeyId, err: error instanceof Error ? error.message : String(error) },
+        "recommendation.prewarm_failed",
+      );
+    } finally {
+      this.prewarmInFlight.delete(journeyId);
+    }
   }
 
   private async analyzeJourneyBody(
@@ -1082,6 +1193,15 @@ export class JourneyService {
       vibeChangingReasons.has(reason) ||
       reason.startsWith("drive-state:") ||
       unusedPool.length < neededNow;
+    if (unusedPool.length < neededNow) {
+      // Observability: pre-warming should keep this from ever happening mid-drive.
+      this.store.audit(
+        journeyId,
+        "recommendation.pool_exhausted",
+        "Refill found an exhausted candidate pool; generation will block this pass.",
+        { poolSize: unusedPool.length, needed: neededNow, reason },
+      );
+    }
 
     const tokenStartedAt = Date.now();
     const accessToken = await this.spotifyAuth.getAccessToken();
