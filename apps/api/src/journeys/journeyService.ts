@@ -1821,7 +1821,9 @@ export class JourneyService {
           deviceId: args.deviceId,
           createdAtIso: new Date().toISOString(),
         });
-        await new Promise((resolve) => setTimeout(resolve, 400));
+        await new Promise((resolve) =>
+          setTimeout(resolve, this.config.SPOTIFY_QUEUE_ADD_DELAY_MS),
+        );
       } catch (error) {
         if (isSpotifyDeviceNotFoundError(error)) {
           return "unreachable";
@@ -1862,13 +1864,18 @@ export class JourneyService {
       preferredDeviceId: args.deviceId,
     });
 
+    const priorSession = this.store.getPlaybackSession(args.journeyId);
+    const deviceChanged = priorSession?.deviceId !== deviceId;
     let transferFailed = false;
     try {
       await this.spotifyAdapter.transferPlayback({
         accessToken: args.accessToken,
         deviceId,
       });
-      await new Promise((resolve) => setTimeout(resolve, 600));
+      // Spotify needs a settle moment only when playback actually moves between devices.
+      if (deviceChanged) {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+      }
     } catch (error) {
       if (isSpotifyDeviceNotFoundError(error)) {
         transferFailed = true;
