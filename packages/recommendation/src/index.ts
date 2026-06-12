@@ -1246,6 +1246,8 @@ export function rankResolvedTracksForPolicy<T extends ResolvedTrack>(
     recentSongPenalty?: Map<string, number>;
     /** Normalized artists exempt from fatigue (active wish / pinned). */
     fatigueExemptArtists?: Iterable<string>;
+    /** Hart gebannte (normalisierte) Artisten — Vielfalts-Doktrin; Exempts gewinnen. */
+    bannedArtists?: ReadonlySet<string>;
   } = {},
 ): T[] {
   const consumedArtists = new Set(
@@ -1271,11 +1273,16 @@ export function rankResolvedTracksForPolicy<T extends ResolvedTrack>(
   const fatigueExempt = new Set(
     [...(options.fatigueExemptArtists ?? [])].map((artist) => normalizeText(artist)),
   );
+  const bannedArtists = options.bannedArtists ?? new Set<string>();
   const jitterStrength = options.seed !== undefined ? options.jitterStrength ?? 0.06 : 0;
   return [...tracks]
     .filter((track) => track.providerUri && track.isPlayable !== false)
     .filter((track) => !(policy.cleanRequired && track.explicit === true))
     .filter((track) => !avoidedSongs.has(songKey(track.artist, track.title)))
+    .filter((track) => {
+      const artist = normalizeText(track.artist);
+      return !bannedArtists.has(artist) || fatigueExempt.has(artist);
+    })
     .map((track, index) => {
       const popularity =
         typeof track.popularity === "number"

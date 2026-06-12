@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { songKey } from "@ai-journey-dj/core";
+import { normalizeText, songKey } from "@ai-journey-dj/core";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { migrate, openDatabase } from "../src/db/database.js";
@@ -46,6 +46,29 @@ describe("recent plays store", () => {
     expect(keys).toContain(songKey("Dua Lipa", "Levitating"));
     expect(keys).not.toContain(songKey("Old Artist", "Old Song")); // outside window
     expect(recent.every((r) => r.ageMs >= 0)).toBe(true);
+  });
+
+  it("counts artist appearances inside the window for the ban ledger", () => {
+    const store = freshStore();
+    const now = Date.parse("2026-06-12T10:00:00.000Z");
+    store.recordRecentPlays(
+      "j1",
+      [
+        { artist: "Repeat Artist", title: "Song A" },
+        { artist: "Repeat Artist", title: "Song B" },
+        { artist: "Fresh Artist", title: "Song C" },
+      ],
+      new Date(now - 60 * 60 * 1000).toISOString(),
+    );
+    store.recordRecentPlays(
+      "j2",
+      [{ artist: "Repeat Artist", title: "Song D" }],
+      new Date(now - 200 * 60 * 60 * 1000).toISOString(), // außerhalb 168h
+    );
+
+    const counts = store.artistPlayCounts(168 * 60 * 60 * 1000, now);
+    expect(counts.get(normalizeText("Repeat Artist"))).toBe(2);
+    expect(counts.get(normalizeText("Fresh Artist"))).toBe(1);
   });
 
   it("prunes rows older than the 30-day hard cap on record", () => {

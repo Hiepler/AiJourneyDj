@@ -15,7 +15,7 @@ import type {
   TasteProfile,
   TemperatureBucket,
 } from "@ai-journey-dj/core";
-import { songKey } from "@ai-journey-dj/core";
+import { normalizeText, songKey } from "@ai-journey-dj/core";
 import { speedBucket, temperatureBucket } from "@ai-journey-dj/telemetry";
 import { assessDriveState } from "@ai-journey-dj/recommendation";
 
@@ -562,6 +562,21 @@ export class Store {
         songKey: row.song_key,
         ageMs: Math.max(0, nowMs - Date.parse(row.surfaced_at)),
       }));
+  }
+
+  /** Auftritte pro (normalisiertem) Artist im Fenster — Grundlage des Vielfalts-Banns. */
+  artistPlayCounts(windowMs: number, nowMs: number = Date.now()): Map<string, number> {
+    const cutoff = new Date(nowMs - windowMs).toISOString();
+    const rows = this.db.all<any>(
+      "SELECT artist FROM recent_plays WHERE surfaced_at >= ?",
+      [cutoff],
+    );
+    const counts = new Map<string, number>();
+    for (const row of rows) {
+      const key = normalizeText(row.artist);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return counts;
   }
 
   listResolvedTracks(
