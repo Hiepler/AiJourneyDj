@@ -101,6 +101,10 @@ export class JourneyService {
     Promise<PlaylistUpdate>
   >();
   private analyzeGlobalChain: Promise<void> = Promise.resolve();
+  /** Last autoplay-reclaim attempt per journey — prevents fighting a user who chose Spotify. */
+  private readonly reclaimAttemptAt = new Map<string, number>();
+  /** Journeys with a candidate-pool pre-warm in flight (dedupe; never two at once). */
+  private readonly prewarmInFlight = new Set<string>();
 
   constructor(
     private readonly config: AppConfig,
@@ -262,7 +266,7 @@ export class JourneyService {
   async createMusicWish(
     journeyId: string,
     input: { text: string; source: MusicWishSource; apply?: boolean },
-  ): Promise<{ wish: MusicWish; update?: PlaylistUpdate }> {
+  ): Promise<{ wish: MusicWish }> {
     const journey = this.getJourneyOrThrow(journeyId);
     if (journey.status !== "active") {
       throw new Error("Cannot add a music wish to a stopped journey.");
@@ -289,11 +293,12 @@ export class JourneyService {
       wishId: wish.id,
       status: wish.status,
     });
-    const update =
-      wish.status === "active" && input.apply !== false
-        ? await this.analyzeJourney(journeyId, "music-wish")
-        : undefined;
-    return { wish: this.store.getMusicWish(journeyId, wish.id) ?? wish, update };
+    if (wish.status === "active" && input.apply !== false) {
+      // Curation runs in the background — the wish response must be instant. Failures land
+      // in the existing analysis.failed audit; analysisPending clears via the in-flight map.
+      void this.analyzeJourney(journeyId, "music-wish").catch(() => undefined);
+    }
+    return { wish: this.store.getMusicWish(journeyId, wish.id) ?? wish };
   }
 
   async updateMusicWish(
@@ -318,7 +323,7 @@ export class JourneyService {
     // Re-curate only while the journey is still running; the undo itself is
     // already persisted, so a stopped journey must not surface as a failed undo.
     if (this.getJourneyOrThrow(journeyId).status === "active") {
-      await this.analyzeJourney(journeyId, "music-wish-undo");
+      void this.analyzeJourney(journeyId, "music-wish-undo").catch(() => undefined);
     }
     return wish;
   }
@@ -346,7 +351,121 @@ export class JourneyService {
       }
     });
     this.analyzeByJourney.set(journeyId, tracked);
+    // The pool only shrinks during analysis passes, so post-analysis is complete trigger
+    // coverage for pre-warming (fire-and-forget; runs after the in-flight map cleared).
+    void tracked
+      .catch(() => undefined)
+      .then(() => this.maybePrewarmCandidatePool(journeyId))
+      .catch(() => undefined);
     return tracked;
+  }
+
+  /** True while a (re-)curation pass for this journey is in flight. */
+  isAnalysisPending(journeyId: string): boolean {
+    return this.analyzeByJourney.has(journeyId);
+  }
+
+  /**
+   * Keeps a reserve of unused, playable resolved tracks per journey so refills never have
+   * to wait for LLM generation mid-drive. Cost-neutral: gated by the same shouldRegenerate
+   * throttle as refills — generation is only moved EARLIER, never made more frequent.
+   */
+  private async maybePrewarmCandidatePool(journeyId: string): Promise<void> {
+    if (this.config.CANDIDATE_POOL_FLOOR <= 0) return;
+    if (this.prewarmInFlight.has(journeyId)) return;
+    if (this.analyzeByJourney.has(journeyId)) return;
+    const journey = this.store.getJourney(journeyId);
+    if (!journey || journey.provider !== "spotify" || journey.status !== "active") return;
+
+    const session = this.store.getPlaybackSession(journeyId);
+    const stored = this.store
+      .listResolvedTracks(journeyId)
+      .filter((track) => track.provider === "spotify");
+    const consumed = new Set<string>([
+      ...(session?.queuedTrackIds ?? []),
+      ...(session?.playedTrackIds ?? []),
+      ...(session?.activeTrack?.id ? [session.activeTrack.id] : []),
+    ]);
+    const unused = stored.filter(
+      (track) =>
+        track.providerUri &&
+        track.isPlayable !== false &&
+        !track.addedToPlaylist &&
+        !consumed.has(track.id),
+    );
+    if (unused.length >= this.config.CANDIDATE_POOL_FLOOR) return;
+
+    const last = this.store.latestPlaylistUpdate(journeyId);
+    const minIntervalMs = this.config.SPOTIFY_REFILL_MIN_INTERVAL_SECONDS * 1000;
+    if (!shouldRegenerate(last?.createdAtIso, Date.now(), minIntervalMs)) return;
+
+    this.prewarmInFlight.add(journeyId);
+    try {
+      const telemetry = this.store.latestTelemetry(journeyId);
+      const context = contextFromJourney(
+        journey,
+        telemetry,
+        this.store.recentTelemetry(journeyId),
+      );
+      const activeMusicWishes = this.store.listActiveMusicWishes(journeyId);
+      const variety = makeVarietyContext({
+        journeyId,
+        elapsedMinutes: context.elapsedMinutes,
+        bucketMinutes: this.config.VARIETY_BUCKET_MINUTES,
+        phase: context.phase,
+        speedBucket: context.speedBucket,
+        driveMode: context.driveState?.mode ?? journey.driveMode,
+      });
+      const prewarmContext: JourneyContext = {
+        ...context,
+        activeMusicWishes,
+        varietyAngle: seededExplorationAngle(variety.seed),
+      };
+      const policy = applyMusicWishesToPolicy(
+        buildRecommendationPolicy(prewarmContext),
+        activeMusicWishes,
+      );
+      const accessToken = await this.spotifyAuth.getAccessToken();
+      const candidates = await this.generateAndStoreCandidateSet(
+        journeyId,
+        prewarmContext,
+        policy,
+        8,
+        variety.seed,
+      );
+      const resolver = new SpotifyResolver(this.spotifyAdapter, {
+        accessToken,
+        market: this.config.SPOTIFY_MARKET,
+        searchTimeoutMs: 8_000,
+        targetResolveCount: policy.cleanRequired ? 12 : 10,
+        cache: {
+          get: (key) => this.store.getCachedSpotifySearch(key),
+          set: (key, value) => this.store.saveCachedSpotifySearch(key, value),
+        },
+      });
+      const storedBefore = this.store
+        .listResolvedTracks(journeyId)
+        .filter((track) => track.provider === "spotify").length;
+      const resolved = await resolver.resolveCandidates(candidates);
+      this.storeResolved(journeyId, candidates, resolved);
+      const added =
+        this.store
+          .listResolvedTracks(journeyId)
+          .filter((track) => track.provider === "spotify").length - storedBefore;
+      this.store.audit(
+        journeyId,
+        "recommendation.pool_prewarmed",
+        `Pre-warmed the candidate pool (+${added} new resolved tracks).`,
+        { resolved: resolved.length, added, floor: this.config.CANDIDATE_POOL_FLOOR },
+      );
+    } catch (error) {
+      this.logger.warn(
+        { journeyId, err: error instanceof Error ? error.message : String(error) },
+        "recommendation.prewarm_failed",
+      );
+    } finally {
+      this.prewarmInFlight.delete(journeyId);
+    }
   }
 
   private async analyzeJourneyBody(
@@ -497,15 +616,33 @@ export class JourneyService {
     journeyId: string,
     deviceId: string,
     status: PlaybackSession["status"] = "ready",
-    options: { syncOnly?: boolean } = {},
+    options: { syncOnly?: boolean; transfer?: boolean } = {},
   ): Promise<PlaybackSession> {
     const journey = this.getJourneyOrThrow(journeyId);
     if (journey.provider !== "spotify") {
       throw new Error("Cannot register a Spotify device for a TIDAL journey.");
     }
 
-    this.store.updateJourneySpotifyDevice(journeyId, deviceId);
     const existing = this.store.getPlaybackSession(journeyId);
+    // Device affinity: a passive registration (page load, refresh) must never steal playback
+    // from a device that is actively playing (e.g. the Tesla via Connect). Only an explicit
+    // user choice (transfer: true) may switch devices.
+    if (
+      !options.transfer &&
+      existing?.status === "playing" &&
+      existing.deviceId &&
+      existing.deviceId !== deviceId
+    ) {
+      this.store.audit(
+        journeyId,
+        "spotify.device_register_skipped",
+        "Device registration skipped; another device is actively playing.",
+        { requestedDeviceId: deviceId, activeDeviceId: existing.deviceId },
+      );
+      return existing;
+    }
+
+    this.store.updateJourneySpotifyDevice(journeyId, deviceId);
     this.saveSession({
       journeyId,
       provider: "spotify",
@@ -1056,6 +1193,15 @@ export class JourneyService {
       vibeChangingReasons.has(reason) ||
       reason.startsWith("drive-state:") ||
       unusedPool.length < neededNow;
+    if (unusedPool.length < neededNow) {
+      // Observability: pre-warming should keep this from ever happening mid-drive.
+      this.store.audit(
+        journeyId,
+        "recommendation.pool_exhausted",
+        "Refill found an exhausted candidate pool; generation will block this pass.",
+        { poolSize: unusedPool.length, needed: neededNow, reason },
+      );
+    }
 
     const tokenStartedAt = Date.now();
     const accessToken = await this.spotifyAuth.getAccessToken();
@@ -1675,7 +1821,9 @@ export class JourneyService {
           deviceId: args.deviceId,
           createdAtIso: new Date().toISOString(),
         });
-        await new Promise((resolve) => setTimeout(resolve, 400));
+        await new Promise((resolve) =>
+          setTimeout(resolve, this.config.SPOTIFY_QUEUE_ADD_DELAY_MS),
+        );
       } catch (error) {
         if (isSpotifyDeviceNotFoundError(error)) {
           return "unreachable";
@@ -1716,13 +1864,18 @@ export class JourneyService {
       preferredDeviceId: args.deviceId,
     });
 
+    const priorSession = this.store.getPlaybackSession(args.journeyId);
+    const deviceChanged = priorSession?.deviceId !== deviceId;
     let transferFailed = false;
     try {
       await this.spotifyAdapter.transferPlayback({
         accessToken: args.accessToken,
         deviceId,
       });
-      await new Promise((resolve) => setTimeout(resolve, 600));
+      // Spotify needs a settle moment only when playback actually moves between devices.
+      if (deviceChanged) {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+      }
     } catch (error) {
       if (isSpotifyDeviceNotFoundError(error)) {
         transferFailed = true;
@@ -1910,8 +2063,12 @@ export class JourneyService {
 
     const now = new Date().toISOString();
 
-    // Nothing playing → leave the model untouched, just back the poller off.
+    // Nothing playing → leave the model untouched, just back the poller off. A session that
+    // was playing is now truthfully "paused" so the UI doesn't show a stopped journey as live.
     if (!state.isPlaying || !state.activeProviderTrackId) {
+      if (session.status === "playing") {
+        this.saveSession({ ...session, status: "paused", lastHeartbeatAt: now });
+      }
       return "idle";
     }
 
@@ -1979,6 +2136,67 @@ export class JourneyService {
           },
         );
         return "playing";
+      }
+    }
+
+    if (result.kind === "external") {
+      // Heuristic: a foreign track right after our queue drained is Spotify AUTOPLAY taking
+      // over, not a deliberate user choice — reclaim with the next unused curated track.
+      const lastReclaim = this.reclaimAttemptAt.get(journeyId) ?? 0;
+      const cooldownMs = this.config.PLAYBACK_RECLAIM_COOLDOWN_SECONDS * 1000;
+      const queueDrained = session.queuedTrackIds.length <= 1;
+      if (
+        this.config.PLAYBACK_RECLAIM_ENABLED &&
+        queueDrained &&
+        session.deviceId &&
+        Date.now() - lastReclaim > cooldownMs
+      ) {
+        const consumedIds = new Set<string>([
+          ...(session.playedTrackIds ?? []),
+          ...session.queuedTrackIds,
+          ...(session.activeTrack?.id ? [session.activeTrack.id] : []),
+        ]);
+        const nextTrack = stored.find(
+          (track) =>
+            track.providerUri &&
+            track.isPlayable !== false &&
+            !consumedIds.has(track.id),
+        );
+        if (nextTrack) {
+          this.reclaimAttemptAt.set(journeyId, Date.now());
+          const applied = await this.playExact({
+            journeyId,
+            accessToken,
+            deviceId: session.deviceId,
+            activeTrack: nextTrack,
+            queueTracks: [],
+          });
+          if (applied.deviceReachable) {
+            this.saveSession({
+              journeyId,
+              provider: "spotify",
+              deviceId: session.deviceId,
+              status: "playing",
+              activeTrack: nextTrack,
+              queuedTrackIds: [],
+              playedTrackIds: [
+                ...(session.playedTrackIds ?? []),
+                ...(session.activeTrack?.id ? [session.activeTrack.id] : []),
+              ],
+              targetBufferSize: 5,
+              lastHeartbeatAt: now,
+            });
+            this.store.audit(
+              journeyId,
+              "spotify.playback_reclaimed",
+              "Reclaimed playback after autoplay took over a drained queue.",
+              { activeProviderTrackId: nextTrack.providerTrackId },
+            );
+            // Refill the now-empty queue in the background.
+            void this.analyzeJourney(journeyId, "skip-refill").catch(() => undefined);
+            return "playing";
+          }
+        }
       }
     }
 

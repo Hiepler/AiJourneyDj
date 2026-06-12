@@ -222,6 +222,28 @@ describe("reconcileSpotifyPlayback", () => {
     await expect(service.reconcileSpotifyPlayback("does-not-exist")).resolves.toBe("idle");
   });
 
+  it("marks the session paused when the remote device stops playing, and resumes", async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+    const model = modelOf(store, journey.id);
+    expect(store.getPlaybackSession(journey.id)!.status).toBe("playing");
+
+    // Tesla miniplayer pause → Spotify reports nothing playing.
+    adapter.playbackState = { isPlaying: false, queuedProviderTrackIds: [] };
+    const outcome = await service.reconcileSpotifyPlayback(journey.id);
+    expect(outcome).toBe("idle");
+    expect(store.getPlaybackSession(journey.id)!.status).toBe("paused");
+
+    // Resume in the miniplayer on the curated track → back to playing.
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: model[0].providerTrackId,
+      queuedProviderTrackIds: [],
+    };
+    await service.reconcileSpotifyPlayback(journey.id);
+    expect(store.getPlaybackSession(journey.id)!.status).toBe("playing");
+  });
+
   it("re-anchors instead of pausing when one of OUR tracks plays outside the model", async () => {
     const { service, store, adapter } = buildService();
     const journey = await startSpotifyJourney(service);
@@ -250,6 +272,146 @@ describe("reconcileSpotifyPlayback", () => {
     );
     // The modeled queue stays upcoming instead of being wiped.
     expect(after.queuedTrackIds.length).toBeGreaterThan(0);
+  });
+
+  it("reclaims playback when autoplay takes over after the queue drained", async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+    const session = store.getPlaybackSession(journey.id)!;
+
+    // Simulate a drained queue: everything modeled was consumed.
+    store.savePlaybackSession({
+      ...session,
+      queuedTrackIds: [],
+      playedTrackIds: [...(session.playedTrackIds ?? []), ...session.queuedTrackIds],
+    });
+    adapter.startCalls.length = 0;
+
+    // Spotify autoplay put a foreign track on air.
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: "spotify-autoplay-foreign",
+      queuedProviderTrackIds: [],
+    };
+    const outcome = await service.reconcileSpotifyPlayback(journey.id);
+
+    expect(outcome).toBe("playing");
+    // Assert immediately after reconcile — before any background work.
+    expect(adapter.startCalls.length).toBe(1);
+    expect(adapter.startCalls[0].uris).toHaveLength(1);
+    const after = store.getPlaybackSession(journey.id)!;
+    expect(after.status).toBe("playing");
+    expect(after.activeTrack?.providerUri).toBe(adapter.startCalls[0].uris[0]);
+
+    // Wait for any in-flight background analyze to finish before afterEach cleanup.
+    const deadline = Date.now() + 20_000;
+    while (service.isAnalysisPending(journey.id)) {
+      if (Date.now() > deadline) throw new Error("wish analysis did not finish");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  });
+
+  it("respects a deliberate external choice when the queue is healthy", async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+    adapter.startCalls.length = 0;
+
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: "foreign-deliberate",
+      queuedProviderTrackIds: [],
+    };
+    const outcome = await service.reconcileSpotifyPlayback(journey.id);
+
+    expect(outcome).toBe("external");
+    expect(adapter.startCalls.length).toBe(0);
+    expect(store.getPlaybackSession(journey.id)!.status).toBe("external");
+  });
+
+  it("does not steal playback when registering a second device passively", async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+    expect(store.getPlaybackSession(journey.id)!.status).toBe("playing");
+    adapter.startCalls.length = 0;
+
+    // Browser reopens and passively registers its webplayer while the Tesla plays.
+    const result = await service.registerSpotifyDevice(
+      journey.id,
+      "browser-webplayer",
+      "ready",
+      { syncOnly: true },
+    );
+
+    expect(adapter.startCalls.length).toBe(0); // no transfer/start
+    expect(result.deviceId).toBe("tesla-web-device"); // current session returned
+    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("tesla-web-device");
+
+    // Explicit user choice still switches.
+    await service.registerSpotifyDevice(journey.id, "browser-webplayer", "ready", {
+      syncOnly: true,
+      transfer: true,
+    });
+    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("browser-webplayer");
+    expect(adapter.startCalls.length).toBeGreaterThan(0);
+  });
+
+  it("does not reclaim twice within the cooldown window", async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+    const session = store.getPlaybackSession(journey.id)!;
+    store.savePlaybackSession({ ...session, queuedTrackIds: [] });
+
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: "autoplay-1",
+      queuedProviderTrackIds: [],
+    };
+    await service.reconcileSpotifyPlayback(journey.id);
+    adapter.startCalls.length = 0;
+
+    // Drain again immediately; second foreign track within cooldown → respect it.
+    const again = store.getPlaybackSession(journey.id)!;
+    store.savePlaybackSession({ ...again, queuedTrackIds: [] });
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: "autoplay-2",
+      queuedProviderTrackIds: [],
+    };
+    const outcome = await service.reconcileSpotifyPlayback(journey.id);
+
+    expect(outcome).toBe("external");
+    expect(adapter.startCalls.length).toBe(0);
+  });
+
+  it("pre-warms the candidate pool after analysis when it falls below the floor", { timeout: 20_000 }, async () => {
+    // Floor high enough that the post-start pool is always below it; refill throttle off so
+    // the pre-warm is not blocked by the just-finished initial analysis. In mock mode the
+    // deterministic scout regenerates identical tracks (dedup → no row growth), so the
+    // observable contract is the pool_prewarmed audit proving the full pipeline ran.
+    const { service, store } = buildService({
+      CANDIDATE_POOL_FLOOR: "50",
+      SPOTIFY_REFILL_MIN_INTERVAL_SECONDS: "0",
+    });
+    const journey = await startSpotifyJourney(service);
+
+    const deadline = Date.now() + 15_000;
+    for (;;) {
+      if (store.latestAuditEvent(journey.id, "recommendation.pool_prewarmed")) break;
+      if (Date.now() > deadline) throw new Error("pool did not pre-warm");
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  });
+
+  it("skips pre-warming when disabled via a zero floor", async () => {
+    const { service, store } = buildService({
+      CANDIDATE_POOL_FLOOR: "0",
+      SPOTIFY_REFILL_MIN_INTERVAL_SECONDS: "0",
+    });
+    const journey = await startSpotifyJourney(service);
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    expect(
+      store.latestAuditEvent(journey.id, "recommendation.pool_prewarmed"),
+    ).toBeUndefined();
   });
 });
 
@@ -291,8 +453,8 @@ describe("connect-mode queue sync", () => {
     expect(adapter.startCalls.length).toBe(startCallsBefore);
   });
 
-  // Two full analysis passes (initial + wish rebuild) with real per-add pacing → allow 15s.
-  it("keeps every wish-rebuild queue add inside the visible model", { timeout: 15_000 }, async () => {
+  // Two full analysis passes (initial + wish rebuild) with real per-add pacing → allow 30s.
+  it("keeps every wish-rebuild queue add inside the visible model", { timeout: 30_000 }, async () => {
     const { service, store, adapter } = buildService();
     const journey = await startSpotifyJourney(service);
     const before = adapter.queueCalls.length;
@@ -301,6 +463,12 @@ describe("connect-mode queue sync", () => {
       text: "mehr Taylor Swift",
       source: "text",
     });
+
+    const deadline = Date.now() + 20_000;
+    while (service.isAnalysisPending(journey.id)) {
+      if (Date.now() > deadline) throw new Error("wish analysis did not finish");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
 
     const model = modelOf(store, journey.id);
     const modelUris = new Set(

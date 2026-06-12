@@ -34,6 +34,7 @@ const deviceSchema = z.object({
     ])
     .default("ready"),
   syncOnly: z.boolean().optional(),
+  transfer: z.boolean().optional(),
 });
 
 const musicWishSchema = z.object({
@@ -111,6 +112,7 @@ export async function registerJourneyRoutes(
       latestUpdate,
       tracks,
       activeMusicWishes: store.listActiveMusicWishes(id),
+      analysisPending: service.isAnalysisPending(id),
       recentMusicWishes: store.listRecentMusicWishes(id),
       playbackSession: store.getPlaybackSession(id),
       needsAnalysis:
@@ -232,6 +234,7 @@ export async function registerJourneyRoutes(
     const payload = deviceSchema.parse(request.body);
     return service.registerSpotifyDevice(id, payload.deviceId, payload.status, {
       syncOnly: payload.syncOnly,
+      transfer: payload.transfer,
     });
   });
 

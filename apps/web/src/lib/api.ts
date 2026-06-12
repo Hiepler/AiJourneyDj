@@ -78,6 +78,7 @@ export interface JourneyDetail {
   };
   needsAnalysis?: boolean;
   analysisError?: string;
+  analysisPending?: boolean;
   tracks: Track[];
   playbackSession?: {
     journeyId: string;
@@ -247,7 +248,7 @@ export const api = {
     }),
   registerSpotifyDevice: (
     id: string,
-    payload: { deviceId: string; status?: string; syncOnly?: boolean },
+    payload: { deviceId: string; status?: string; syncOnly?: boolean; transfer?: boolean },
   ) =>
     request<JourneyDetail["playbackSession"]>(
       `/journeys/${id}/playback/device`,
