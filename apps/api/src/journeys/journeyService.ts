@@ -1577,6 +1577,7 @@ export class JourneyService {
         fatigueExemptArtists: wishArtists,
         bannedArtists: effectiveBannedArtists,
         softMoodPenalty: skipEntry.moodTags,
+        excludeSpokenWord: this.config.SPOKEN_WORD_FILTER_ENABLED,
       },
     );
     const immediateWishKeys = this.immediateWishSongKeys(activeMusicWishes);
@@ -1683,6 +1684,7 @@ export class JourneyService {
           fatigueExemptArtists: wishArtists,
           bannedArtists: effectiveBannedArtists,
         softMoodPenalty: skipEntry.moodTags,
+        excludeSpokenWord: this.config.SPOKEN_WORD_FILTER_ENABLED,
         },
       );
       const alreadyQueued = new Set([

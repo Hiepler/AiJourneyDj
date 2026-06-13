@@ -2,6 +2,7 @@ import type { SongCandidate } from "@ai-journey-dj/core";
 import { normalizeText } from "@ai-journey-dj/core";
 
 import { mulberry32 } from "./variety.js";
+import { looksLikeSpokenWord } from "./spokenWord.js";
 
 /** Minimaler Last.fm-Ausschnitt, den das Radio braucht (testbar per Stub). */
 export interface SimilarSource {
@@ -66,6 +67,8 @@ export async function momentumRadioCandidates(args: {
     const key = normalizeText(artist);
     if (!artist || !title) return;
     if (args.bannedArtists.has(key) || seenArtists.has(key)) return;
+    // The similar graph surfaces Hörspiele around German seeds — keep spoken-word out.
+    if (looksLikeSpokenWord(artist, title)) return;
     seenArtists.add(key);
     out.push({
       artist,
