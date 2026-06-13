@@ -101,6 +101,8 @@ export interface JourneyContext {
   storyDirective?: string;
   /** Momente-Direktive für den LLM-Brief. */
   momentDirective?: string;
+  /** "Kids am Steuer": Disney/Film/Animations-Singalongs erlauben, die Family-Mode sonst meidet. */
+  kidsMode?: boolean;
 }
 
 export type SongCandidateRole =
@@ -301,6 +303,8 @@ export interface JourneyRecord {
   driveMode?: DriveMode;
   /** Per-journey master switch for Adaptive Drive Mode (default on). */
   adaptiveModeEnabled?: boolean;
+  /** "Kids am Steuer": bias toward Disney/film/animated singalongs kids love (still clean). */
+  kidsMode?: boolean;
   createdAtIso: string;
   stoppedAtIso?: string;
   /** Planned total trip duration in minutes, snapshotted from the first ETA. */

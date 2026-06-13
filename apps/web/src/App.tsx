@@ -59,6 +59,29 @@ const DRIVE_MODE_REASON_LABELS: Record<string, string> = {
   "long night drive": "Nachtfahrt"
 };
 
+// Celebratory family-event copy for a freshly-fired journey moment (shown briefly in the cockpit).
+function momentEventLabel(moment: {
+  type: string;
+  country?: string;
+}): { emoji: string; text: string } {
+  switch (moment.type) {
+    case "border_crossing":
+      return { emoji: "🎉", text: moment.country ? `Willkommen in ${moment.country}!` : "Neues Land!" };
+    case "traffic_release":
+      return { emoji: "🚀", text: "Freie Fahrt — der Stau ist durch!" };
+    case "traffic_jam":
+      return { emoji: "🧘", text: "Stau — wir bleiben entspannt" };
+    case "golden_hour":
+      return { emoji: "🌇", text: "Golden Hour" };
+    case "temp_swing":
+      return { emoji: "🌡️", text: "Das Wetter dreht" };
+    case "arrival":
+      return { emoji: "🏁", text: "Gleich da!" };
+    default:
+      return { emoji: "✨", text: "Neuer Moment" };
+  }
+}
+
 const PHASES: { key: string; label: string; Icon: typeof Navigation }[] = [
   { key: "departure", label: "Departure", Icon: Navigation },
   { key: "cruise", label: "Cruise", Icon: Route },
@@ -104,6 +127,15 @@ export function App() {
   const [destination, setDestination] = useState("Lago di Garda");
   const [liveTelemetry, setLiveTelemetry] = useState<LiveTelemetry>();
   const [liveLoading, setLiveLoading] = useState(false);
+  const [momentBanner, setMomentBanner] = useState<{ type: string; country?: string; atIso: string }>();
+  const [karaokeOn, setKaraokeOn] = useState(false);
+  const [lyrics, setLyrics] = useState<{
+    trackId: string;
+    synced: { timeMs: number; text: string }[] | null;
+    plain: string | null;
+  }>();
+  const [lyricsLoading, setLyricsLoading] = useState(false);
+  const [lyricsPositionMs, setLyricsPositionMs] = useState(0);
   const [selectedMood, setSelectedMood] = useState(MOOD_PRESETS[0].key);
   const [passengerMode, setPassengerMode] = useState("couple");
   const [spotifyStatus, setSpotifyStatus] = useState<SpotifySdkStatus>("idle");
@@ -116,6 +148,7 @@ export function App() {
   const [wishText, setWishText] = useState("");
   const [wishDrawerOpen, setWishDrawerOpen] = useState(false);
   const [wishLoading, setWishLoading] = useState(false);
+  const [kidsBusy, setKidsBusy] = useState(false);
   const [listening, setListening] = useState(false);
   const speechSupported = typeof window !== "undefined" && isSpeechRecognitionSupported();
   const [loading, setLoading] = useState(false);
@@ -131,6 +164,10 @@ export function App() {
   // Guards the start-screen auto-pull to one Tesla read per session (reset when a journey starts), so
   // a health re-fetch toggling teslaConnected can't re-trigger billed reads.
   const liveAutoFetchedRef = useRef(false);
+  // Last journey moment shown as a banner — so the same fired moment isn't celebrated twice.
+  const shownMomentAtRef = useRef<string | undefined>(undefined);
+  // The currently-sung karaoke line, kept scrolled into view.
+  const activeLineRef = useRef<HTMLParagraphElement | null>(null);
   // Holds the latest playback actions so MediaSession / visibility handlers never call stale closures.
   const playbackActionsRef = useRef({
     next: () => {},
@@ -211,6 +248,16 @@ export function App() {
     liveAutoFetchedRef.current = true;
     refreshLiveTelemetry();
   }, [activeJourneyId, health?.teslaConnected]);
+
+  // Celebrate a freshly-fired journey moment as a brief, auto-dismissing family-event banner.
+  useEffect(() => {
+    const moment = detail?.context?.moment;
+    if (!moment || shownMomentAtRef.current === moment.atIso) return;
+    shownMomentAtRef.current = moment.atIso;
+    setMomentBanner(moment);
+    const timer = setTimeout(() => setMomentBanner(undefined), 7000);
+    return () => clearTimeout(timer);
+  }, [detail?.context?.moment?.atIso]);
 
   const queuedIds = detail?.playbackSession?.queuedTrackIds ?? [];
   const bufferTracks = useMemo(() => {
@@ -509,6 +556,20 @@ export function App() {
     }
   }
 
+  async function toggleKidsMode() {
+    if (!activeJourneyId || kidsBusy) return;
+    setKidsBusy(true);
+    setError(undefined);
+    try {
+      await api.setKidsMode(activeJourneyId, !detail?.journey.kidsMode);
+      setDetail(await api.journey(activeJourneyId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setKidsBusy(false);
+    }
+  }
+
   function startWishSpeech() {
     const Ctor = getSpeechRecognitionCtor();
     if (!Ctor) return;
@@ -726,7 +787,71 @@ export function App() {
       : "Start Journey";
 
   const heroTrack = activeTrack ?? displayTracks[0];
+  const heroTrackId = heroTrack?.id;
   const upcoming = displayTracks.filter((track) => track.id !== heroTrack?.id).slice(0, 5);
+
+  // Fetch lyrics for the current track when karaoke is open (cached server-side; once per track).
+  useEffect(() => {
+    if (!karaokeOn || !activeJourneyId || !heroTrackId) return;
+    if (lyrics?.trackId === heroTrackId) return;
+    let cancelled = false;
+    setLyricsLoading(true);
+    api
+      .lyrics(activeJourneyId, heroTrackId)
+      .then((res) => {
+        if (!cancelled) setLyrics({ trackId: heroTrackId, synced: res.synced, plain: res.plain });
+      })
+      .catch(() => {
+        if (!cancelled) setLyrics({ trackId: heroTrackId, synced: null, plain: null });
+      })
+      .finally(() => {
+        if (!cancelled) setLyricsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [karaokeOn, activeJourneyId, heroTrackId, lyrics?.trackId]);
+
+  // Poll the browser player's position to drive synced highlighting. Non-browser playback (car/phone)
+  // has no position → the panel just shows static lyrics instead.
+  useEffect(() => {
+    if (!karaokeOn || !lyrics?.synced || lyrics.synced.length === 0) return;
+    const player = playerRef.current;
+    if (!player?.getCurrentState) return;
+    let active = true;
+    const tick = () => {
+      player
+        .getCurrentState?.()
+        .then((state) => {
+          if (active && state && typeof state.position === "number") {
+            setLyricsPositionMs(state.position);
+          }
+        })
+        .catch(() => undefined);
+    };
+    tick();
+    const timer = setInterval(tick, 400);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [karaokeOn, lyrics?.synced, lyrics?.trackId]);
+
+  const activeLyricIndex = useMemo(() => {
+    const synced = lyrics?.synced;
+    if (!synced || synced.length === 0) return -1;
+    let index = -1;
+    // +250ms lookahead so a line lights up just before it's sung — feels natural to follow.
+    for (let i = 0; i < synced.length; i += 1) {
+      if (synced[i].timeMs <= lyricsPositionMs + 250) index = i;
+      else break;
+    }
+    return index;
+  }, [lyrics?.synced, lyricsPositionMs]);
+
+  useEffect(() => {
+    activeLineRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [activeLyricIndex]);
   const currentPhase = phaseMeta(detail?.journey.phase);
   const PhaseIcon = currentPhase.Icon;
   const activeVibe = nearestVibe(detail?.journey.tasteWeight);
@@ -1058,6 +1183,14 @@ export function App() {
           </section>
         ) : (
           <section className="cockpit">
+            {momentBanner ? (
+              <div className={`moment-banner moment-${momentBanner.type}`} role="status">
+                <span className="moment-emoji" aria-hidden="true">
+                  {momentEventLabel(momentBanner).emoji}
+                </span>
+                <span className="moment-text">{momentEventLabel(momentBanner).text}</span>
+              </div>
+            ) : null}
             <div className="stage glass">
               <div className="stage-head">
                 <span className="now-label">{nowLabel}</span>
@@ -1091,6 +1224,13 @@ export function App() {
                       )?.whyLine;
                       return why ? <p className="why-line">{why}</p> : null;
                     })()}
+                    <button
+                      className={`lyrics-toggle${karaokeOn ? " on" : ""}`}
+                      onClick={() => setKaraokeOn((on) => !on)}
+                      type="button"
+                    >
+                      <Mic size={14} /> {karaokeOn ? "Lyrics aus" : "Mitsingen"}
+                    </button>
                   </div>
                 </div>
               ) : tracksFailed ? (
@@ -1108,6 +1248,32 @@ export function App() {
               ) : (
                 <p className="muted big">{loading || tracksPending ? "Finding songs for your journey…" : "No tracks yet."}</p>
               )}
+
+              {karaokeOn && heroTrack ? (
+                <div className="karaoke" aria-label="Songtext zum Mitsingen">
+                  {lyricsLoading && lyrics?.trackId !== heroTrack.id ? (
+                    <p className="karaoke-empty">
+                      <Loader2 className="spin" size={16} /> Songtext wird geladen…
+                    </p>
+                  ) : lyrics?.synced && lyrics.synced.length > 0 ? (
+                    <div className="karaoke-lines">
+                      {lyrics.synced.map((line, index) => (
+                        <p
+                          className={`karaoke-line${index === activeLyricIndex ? " active" : ""}`}
+                          key={`${line.timeMs}-${index}`}
+                          ref={index === activeLyricIndex ? activeLineRef : undefined}
+                        >
+                          {line.text || "♪"}
+                        </p>
+                      ))}
+                    </div>
+                  ) : lyrics?.plain ? (
+                    <pre className="karaoke-plain">{lyrics.plain}</pre>
+                  ) : (
+                    <p className="karaoke-empty">Kein Songtext gefunden — einfach mitsummen 🎶</p>
+                  )}
+                </div>
+              ) : null}
 
               <div className="transport">
                 {demo ? (
@@ -1228,6 +1394,15 @@ export function App() {
                     </button>
                   );
                 })}
+                <button
+                  className={`vibe-toggle${detail?.journey.kidsMode ? " on" : ""}`}
+                  disabled={kidsBusy || !activeJourneyId}
+                  onClick={toggleKidsMode}
+                  title="Kids am Steuer — Disney- & Film-Singalongs für die Kleinen"
+                  type="button"
+                >
+                  🧸 Kids
+                </button>
               </div>
 
               <div className="wish-bar">

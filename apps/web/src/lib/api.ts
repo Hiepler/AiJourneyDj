@@ -10,6 +10,7 @@ export interface Journey {
   phase: string;
   status: "active" | "stopped";
   tasteWeight?: number;
+  kidsMode?: boolean;
   spotifyDeviceId?: string;
   spotifyPlaylistId?: string;
   spotifyPlaylistUrl?: string;
@@ -113,6 +114,12 @@ export interface JourneyDetail {
     driveModeSignals?: string[];
     adaptiveModeEnabled?: boolean;
     telemetrySource?: "streaming" | "polling";
+    /** Freshly-fired journey moment for the family-event banner. */
+    moment?: {
+      type: "traffic_jam" | "traffic_release" | "golden_hour" | "temp_swing" | "border_crossing" | "arrival";
+      country?: string;
+      atIso: string;
+    };
   };
   taste?: {
     topGenres: string[];
@@ -243,6 +250,10 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   journey: (id: string) => request<JourneyDetail>(`/journeys/${id}`),
+  lyrics: (journeyId: string, trackId: string) =>
+    request<{ synced: { timeMs: number; text: string }[] | null; plain: string | null }>(
+      `/journeys/${journeyId}/tracks/${trackId}/lyrics`,
+    ),
   analyze: (id: string) =>
     request<{ id: string; batchSize: number; status: string }>(
       `/journeys/${id}/analyze`,
@@ -266,6 +277,11 @@ export const api = {
     }),
   setAdaptiveMode: (id: string, enabled: boolean) =>
     request<Journey>(`/journeys/${id}/adaptive-mode`, {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    }),
+  setKidsMode: (id: string, enabled: boolean) =>
+    request<Journey>(`/journeys/${id}/kids-mode`, {
       method: "POST",
       body: JSON.stringify({ enabled }),
     }),

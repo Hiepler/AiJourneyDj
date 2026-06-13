@@ -172,6 +172,11 @@ faster, complete responses. A persistent search cache means a 10-hour drive neve
 - **Tap-to-steer** — vibe toggles (⚡🎤☀️), drive-phase and Vibe-Mix (Familiar ↔ Discover) controls
   re-tune the queue with a visible "re-tuning" moment.
 - **Journey Moments & Drive Story** — situational re-curation and a narrative arc, on by default.
+  Moments also surface as **celebratory cockpit banners** ("Welcome to Italy!", "Jam's cleared!")
+  so the whole car shares the moment.
+- **Family fun** — a **🧸 Kids mode** that welcomes clean Disney/film/animated singalongs the whole
+  car enjoys (overriding family mode's usual avoidance), and a **synced karaoke / singalong view**
+  with scrolling, line-by-line lyrics (via LRCLIB; static fallback when no synced version exists).
 - **Adaptive Drive Mode** — automatic calm/focus selection bias from live telemetry. A comfort
   feature, explicitly not a safety system.
 - **Spotify Connect device picker** — play on the in-browser player, your phone, or the car's native
