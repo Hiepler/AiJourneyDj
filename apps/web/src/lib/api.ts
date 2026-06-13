@@ -250,10 +250,19 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   journey: (id: string) => request<JourneyDetail>(`/journeys/${id}`),
-  lyrics: (journeyId: string, trackId: string) =>
+  lyrics: (journeyId: string, trackId: string, durationSec?: number) =>
     request<{ synced: { timeMs: number; text: string }[] | null; plain: string | null }>(
-      `/journeys/${journeyId}/tracks/${trackId}/lyrics`,
+      `/journeys/${journeyId}/tracks/${trackId}/lyrics${
+        durationSec ? `?durationSec=${Math.round(durationSec)}` : ""
+      }`,
     ),
+  playbackProgress: (journeyId: string) =>
+    request<{
+      progressMs?: number;
+      durationMs?: number;
+      isPlaying: boolean;
+      activeProviderTrackId?: string;
+    }>(`/journeys/${journeyId}/playback-progress`),
   analyze: (id: string) =>
     request<{ id: string; batchSize: number; status: string }>(
       `/journeys/${id}/analyze`,

@@ -786,6 +786,39 @@ export class JourneyService {
     return this.getJourneyOrThrow(journeyId);
   }
 
+  /**
+   * Device-independent playback position for the karaoke view — works on the car's / phone's native
+   * Spotify (Connect) too, not just the in-browser SDK player. Best-effort: degrades to not-playing on
+   * any error so the cockpit simply shows static lyrics. `activeProviderTrackId`/`durationMs` let the
+   * client request a duration-matched lyrics version for the *actually playing* track.
+   */
+  async getPlaybackProgress(journeyId: string): Promise<{
+    progressMs?: number;
+    durationMs?: number;
+    isPlaying: boolean;
+    activeProviderTrackId?: string;
+  }> {
+    const journey = this.store.getJourney(journeyId);
+    if (!journey || journey.provider !== "spotify") {
+      return { isPlaying: false };
+    }
+    try {
+      const accessToken = await this.spotifyAuth.getAccessToken();
+      const state = await this.spotifyAdapter.getPlaybackState({
+        accessToken,
+        market: this.config.SPOTIFY_MARKET,
+      });
+      return {
+        progressMs: state.progressMs,
+        durationMs: state.durationMs,
+        isPlaying: state.isPlaying,
+        activeProviderTrackId: state.activeProviderTrackId,
+      };
+    } catch {
+      return { isPlaying: false };
+    }
+  }
+
   /** Per-journey master switch for Adaptive Drive Mode. Disabling clears any engaged mode. */
   async setAdaptiveMode(
     journeyId: string,
