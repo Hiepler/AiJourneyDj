@@ -11,6 +11,10 @@ import {
 } from "../telemetry/streamSource.js";
 import type { JourneyService } from "./journeyService.js";
 import { composeWhyLine } from "./whyLine.js";
+import { getLyrics } from "../lyrics/lrclib.js";
+
+/** How long after firing a journey moment is still surfaced for the cockpit family-event banner. */
+const MOMENT_BANNER_WINDOW_MS = 45_000;
 
 const startSchema = z.object({
   destination: z.string().min(2),
@@ -156,6 +160,15 @@ export async function registerJourneyRoutes(
         driveModeSignals: ctx.driveState?.signals,
         adaptiveModeEnabled: journey.adaptiveModeEnabled !== false,
         telemetrySource: ctx.telemetrySource,
+        // Freshly-fired journey moment for the cockpit family-event banner. Only surfaced briefly
+        // (the client shows + auto-dismisses); stale moments are dropped server-side.
+        moment: (() => {
+          const m = store.latestMomentEvent(id);
+          if (!m) return undefined;
+          const ageMs = Date.now() - new Date(m.createdAtIso).getTime();
+          if (!(ageMs >= 0) || ageMs > MOMENT_BANNER_WINDOW_MS) return undefined;
+          return { type: m.type, country: m.country, atIso: m.createdAtIso };
+        })(),
       },
       // Personalization readout from the 24h taste cache (only top genres exposed).
       taste: taste ? { topGenres: taste.topGenres } : undefined,
@@ -166,6 +179,45 @@ export async function registerJourneyRoutes(
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const { enabled } = z.object({ enabled: z.boolean() }).parse(request.body);
     return service.setAdaptiveMode(id, enabled);
+  });
+
+  app.post("/journeys/:id/kids-mode", async (request) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const { enabled } = z.object({ enabled: z.boolean() }).parse(request.body);
+    return service.setKidsMode(id, enabled);
+  });
+
+  // Device-independent playback position for synced karaoke (works on car/phone Connect, not just
+  // the browser SDK). The client interpolates between polls with a local clock for smooth highlighting.
+  app.get("/journeys/:id/playback-progress", async (request) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    service.getJourneyOrThrow(id);
+    return service.getPlaybackProgress(id);
+  });
+
+  // Synced lyrics for the karaoke/singalong view. Degrades to nulls when disabled or not found.
+  app.get("/journeys/:id/tracks/:trackId/lyrics", async (request, reply) => {
+    const { id, trackId } = z
+      .object({ id: z.string(), trackId: z.string() })
+      .parse(request.params);
+    const { durationSec } = z
+      .object({ durationSec: z.coerce.number().positive().optional() })
+      .parse(request.query);
+    if (!config.LYRICS_ENABLED) return { synced: null, plain: null };
+    service.getJourneyOrThrow(id);
+    const track = store
+      .listResolvedTracksDetailed(id)
+      .find((item) => item.id === trackId);
+    if (!track) {
+      return reply.code(404).send({ error: "Track not found." });
+    }
+    const lyrics = await getLyrics({
+      artist: track.artist,
+      title: track.title,
+      durationSec,
+      baseUrl: config.LRCLIB_BASE_URL,
+    });
+    return { synced: lyrics?.synced ?? null, plain: lyrics?.plain ?? null };
   });
 
   app.post("/journeys/:id/stop", async (request) => {

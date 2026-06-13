@@ -181,6 +181,9 @@ const schema = z.object({
   WHY_LINE_ENABLED: envBoolean(true),
   // Hard-Filter gegen Hörspiele/Hörbücher/Spoken-Word in der finalen Auswahl (Musik-DJ).
   SPOKEN_WORD_FILTER_ENABLED: envBoolean(true),
+  // Karaoke/Singalong: synchronisierte Songtexte über LRCLIB (kostenlos, kein Key). Degradiert sauber.
+  LYRICS_ENABLED: envBoolean(true),
+  LRCLIB_BASE_URL: z.string().url().default("https://lrclib.net"),
   TESLA_FLEET_ENABLED: envBoolean(false),
   TESLA_CLIENT_ID: z.string().optional(),
   TESLA_CLIENT_SECRET: z.string().optional(),

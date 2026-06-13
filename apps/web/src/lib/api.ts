@@ -10,6 +10,7 @@ export interface Journey {
   phase: string;
   status: "active" | "stopped";
   tasteWeight?: number;
+  kidsMode?: boolean;
   spotifyDeviceId?: string;
   spotifyPlaylistId?: string;
   spotifyPlaylistUrl?: string;
@@ -113,12 +114,38 @@ export interface JourneyDetail {
     driveModeSignals?: string[];
     adaptiveModeEnabled?: boolean;
     telemetrySource?: "streaming" | "polling";
+    /** Freshly-fired journey moment for the family-event banner. */
+    moment?: {
+      type: "traffic_jam" | "traffic_release" | "golden_hour" | "temp_swing" | "border_crossing" | "arrival";
+      country?: string;
+      atIso: string;
+    };
   };
   taste?: {
     topGenres: string[];
   };
   activeMusicWishes?: MusicWish[];
   recentMusicWishes?: MusicWish[];
+}
+
+/** Privacy-safe live snapshot from an on-demand Tesla read, used to pre-fill the start screen. */
+export interface LiveTelemetry {
+  /** True when Fleet polling is enabled and the car is connected (a read could be attempted). */
+  available: boolean;
+  /** The fresh reading, or null when the car is asleep/offline or the read timed out. */
+  reading: {
+    timestampIso: string;
+    destination?: string;
+    etaMinutes?: number;
+    coarseRegion?: string;
+    countryName?: string;
+    countryCode?: string;
+    geoSource?: "reverse-geocode" | "manual" | "simulated";
+    speedBucket?: string;
+    temperatureBucket?: string;
+    autopilotState?: "off" | "available" | "active" | "unknown";
+    batteryPercent?: number;
+  } | null;
 }
 
 export interface SpotifyDevice {
@@ -209,6 +236,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   health: () => request<Health>("/health"),
+  liveTelemetry: () => request<LiveTelemetry>("/telemetry/live"),
   history: () => request<{ journeys: Journey[] }>("/history"),
   startJourney: (payload: {
     destination: string;
@@ -222,6 +250,19 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   journey: (id: string) => request<JourneyDetail>(`/journeys/${id}`),
+  lyrics: (journeyId: string, trackId: string, durationSec?: number) =>
+    request<{ synced: { timeMs: number; text: string }[] | null; plain: string | null }>(
+      `/journeys/${journeyId}/tracks/${trackId}/lyrics${
+        durationSec ? `?durationSec=${Math.round(durationSec)}` : ""
+      }`,
+    ),
+  playbackProgress: (journeyId: string) =>
+    request<{
+      progressMs?: number;
+      durationMs?: number;
+      isPlaying: boolean;
+      activeProviderTrackId?: string;
+    }>(`/journeys/${journeyId}/playback-progress`),
   analyze: (id: string) =>
     request<{ id: string; batchSize: number; status: string }>(
       `/journeys/${id}/analyze`,
@@ -245,6 +286,11 @@ export const api = {
     }),
   setAdaptiveMode: (id: string, enabled: boolean) =>
     request<Journey>(`/journeys/${id}/adaptive-mode`, {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    }),
+  setKidsMode: (id: string, enabled: boolean) =>
+    request<Journey>(`/journeys/${id}/kids-mode`, {
       method: "POST",
       body: JSON.stringify({ enabled }),
     }),
