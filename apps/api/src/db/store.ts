@@ -142,6 +142,13 @@ export class Store {
     ]);
   }
 
+  setKidsMode(journeyId: string, enabled: boolean): void {
+    this.db.run("UPDATE journeys SET kids_mode = ? WHERE id = ?", [
+      enabled ? 1 : 0,
+      journeyId,
+    ]);
+  }
+
   /** Snapshot the planned trip duration once; subsequent calls are no-ops. */
   setPlannedDurationMinutes(journeyId: string, minutes: number): void {
     if (!Number.isFinite(minutes) || minutes <= 0) return;
@@ -844,6 +851,32 @@ export class Store {
     ]);
   }
 
+  /**
+   * Most recent fired journey moment (type + optional country from the payload) for the family-event
+   * banner. Returns undefined when none, or the payload can't be parsed.
+   */
+  latestMomentEvent(
+    journeyId: string,
+  ): { type: string; country?: string; createdAtIso: string } | undefined {
+    const row = this.db.get<{ payload_json: string | null; created_at: string }>(
+      "SELECT payload_json, created_at FROM audit_events WHERE journey_id = ? AND type = 'moment.triggered' ORDER BY id DESC LIMIT 1",
+      [journeyId],
+    );
+    if (!row) return undefined;
+    let payload: { type?: string; country?: string } = {};
+    try {
+      payload = row.payload_json ? JSON.parse(row.payload_json) : {};
+    } catch {
+      payload = {};
+    }
+    if (!payload.type) return undefined;
+    return {
+      type: payload.type,
+      country: payload.country,
+      createdAtIso: row.created_at,
+    };
+  }
+
   auditEvents(
     journeyId: string,
     sinceId = 0,
@@ -888,6 +921,7 @@ function mapJourney(row: any): JourneyRecord {
         ? undefined
         : row.adaptive_mode_enabled !== 0,
     plannedDurationMinutes: row.planned_duration_minutes ?? undefined,
+    kidsMode: row.kids_mode === 1,
     createdAtIso: row.created_at,
     stoppedAtIso: row.stopped_at,
   };
@@ -998,6 +1032,7 @@ export function contextFromJourney(
     phase: journey.phase,
     userPrompt: journey.userPrompt,
     passengerMode: journey.passengerMode,
+    kidsMode: journey.kidsMode === true,
     driveState: driveStateForBrief(journey, recentTelemetry),
     telemetrySource,
     plannedDurationMinutes: journey.plannedDurationMinutes,

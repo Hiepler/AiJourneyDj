@@ -1211,6 +1211,140 @@ button:disabled,
   color: var(--text-faint);
 }
 
+/* ---------- Karaoke / singalong lyrics ---------- */
+
+.lyrics-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  height: 34px;
+  padding: 0 13px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-dim);
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 0.24s var(--ease), color 0.24s var(--ease);
+}
+
+.lyrics-toggle:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.lyrics-toggle.on {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(47, 227, 192, 0.1);
+}
+
+.karaoke {
+  margin: 4px 0 8px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 14px 18px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.28);
+  text-align: center;
+  scrollbar-width: thin;
+}
+
+.karaoke-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.karaoke-line {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text-faint);
+  transition: color 0.2s var(--ease), transform 0.2s var(--ease);
+}
+
+.karaoke-line.active {
+  color: var(--accent);
+  font-weight: 800;
+  transform: scale(1.04);
+}
+
+.karaoke-plain {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: inherit;
+  font-size: 1rem;
+  line-height: 1.6;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+.karaoke-empty {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 0.95rem;
+}
+
+/* ---------- Journey-moment family event banner ---------- */
+
+.moment-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 14px 20px;
+  margin-bottom: 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(47, 227, 192, 0.45);
+  background: linear-gradient(120deg, rgba(47, 227, 192, 0.18), rgba(47, 227, 192, 0.06));
+  box-shadow: 0 10px 30px rgba(47, 227, 192, 0.15);
+  animation: moment-pop 0.45s var(--ease) both;
+}
+
+.moment-emoji {
+  font-size: 1.7rem;
+  line-height: 1;
+}
+
+.moment-text {
+  font-size: 1.15rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.moment-traffic_jam {
+  border-color: rgba(255, 207, 122, 0.45);
+  background: linear-gradient(120deg, rgba(255, 207, 122, 0.16), rgba(255, 207, 122, 0.05));
+  box-shadow: 0 10px 30px rgba(255, 207, 122, 0.12);
+}
+
+@keyframes moment-pop {
+  0% {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.96);
+  }
+  60% {
+    transform: translateY(0) scale(1.02);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .moment-banner {
+    animation: none;
+  }
+}
+
 /* ---------- Live-context strip (cockpit) ---------- */
 
 .context-strip {

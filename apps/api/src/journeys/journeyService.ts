@@ -339,6 +339,11 @@ export class JourneyService {
     this.activeMoment.set(journeyId, moment);
     this.store.audit(journeyId, "moment.triggered", moment.directive, {
       type: moment.type,
+      // Surfaced to the cockpit family-event banner (e.g. "Welcome to Italy!").
+      country:
+        moment.candidateRequest?.kind === "geo-charts"
+          ? moment.candidateRequest.country
+          : undefined,
     });
     if (moment.type === "arrival") {
       this.store.audit(
@@ -755,6 +760,29 @@ export class JourneyService {
       },
     );
     await this.analyzeJourney(journeyId, "taste-override");
+    return this.getJourneyOrThrow(journeyId);
+  }
+
+  /**
+   * "Kids am Steuer": toggle the kids bias and re-curate immediately so the change is felt at once.
+   * Lets Disney/film/animated singalongs in (which family mode otherwise avoids) while staying clean.
+   */
+  async setKidsMode(
+    journeyId: string,
+    enabled: boolean,
+  ): Promise<JourneyRecord> {
+    const journey = this.getJourneyOrThrow(journeyId);
+    if (journey.status !== "active") {
+      throw new Error("Cannot change kids mode of a stopped journey.");
+    }
+    this.store.setKidsMode(journeyId, enabled);
+    this.store.audit(
+      journeyId,
+      "kids_mode.toggled",
+      `Kids mode ${enabled ? "enabled" : "disabled"}.`,
+      { enabled },
+    );
+    await this.analyzeJourney(journeyId, "kids-mode");
     return this.getJourneyOrThrow(journeyId);
   }
 
