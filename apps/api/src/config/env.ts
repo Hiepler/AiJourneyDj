@@ -165,6 +165,9 @@ const schema = z.object({
   // Deep-Cut-Explorer-Lens (zusätzlicher grounded Scout-Call) + Genre-Spread im Buffer.
   EXPLORER_LENS_ENABLED: envBoolean(true),
   GENRE_SPREAD_ENABLED: envBoolean(true),
+  // Drive-Story-Akte (Erzählbogen) + Ankunfts-/Moment-Fenster in Minuten.
+  DRIVE_STORY_ENABLED: envBoolean(true),
+  ARRIVAL_MOMENT_MINUTES: z.coerce.number().int().min(2).default(10),
   TESLA_FLEET_ENABLED: envBoolean(false),
   TESLA_CLIENT_ID: z.string().optional(),
   TESLA_CLIENT_SECRET: z.string().optional(),

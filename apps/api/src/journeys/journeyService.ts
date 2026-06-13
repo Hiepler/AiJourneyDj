@@ -41,6 +41,7 @@ import {
   deriveTasteProfile,
   fallbackCandidates,
   lastfmTracksToCandidates,
+  driveStoryAct,
   makeVarietyContext,
   momentumRadioCandidates,
   parseMusicWish,
@@ -1144,6 +1145,16 @@ export class JourneyService {
             : [],
       );
     const priorSession = this.store.getPlaybackSession(journeyId);
+    const isFirstPass = !this.store.latestPlaylistUpdate(journeyId);
+    const story = this.config.DRIVE_STORY_ENABLED
+      ? driveStoryAct({
+          elapsedMinutes: contextWithWishes.elapsedMinutes,
+          plannedDurationMinutes: contextWithWishes.plannedDurationMinutes,
+          etaMinutes: contextWithWishes.etaMinutes,
+          isFirstPass,
+          arrivalWindowMinutes: this.config.ARRIVAL_MOMENT_MINUTES,
+        })
+      : undefined;
     const groundedContext: JourneyContext = {
       ...contextWithWishes,
       varietyAngle: seededExplorationAngle(variety.seed),
@@ -1157,6 +1168,8 @@ export class JourneyService {
         priorSession.activeTrack.title
           ? { artist: priorSession.activeTrack.artist, title: priorSession.activeTrack.title }
           : undefined,
+      storyDirective: story?.directive,
+      energyBias: story?.energyOffset ?? 0,
     };
 
     // Cost control: only the LLM lenses cost tokens. Run them when the vibe actually changes;
@@ -1260,6 +1273,19 @@ export class JourneyService {
         ),
         consumedSongKeys,
       );
+      if (isFirstPass && story?.act === "opening") {
+        const anchor = await this.tasteAnchorCandidate(
+          "opening",
+          scoutContext.tasteProfile?.representativeArtists ?? [],
+          variety.seed,
+        );
+        if (anchor) {
+          candidates = [
+            ...(await this.enrichAndStoreCandidates(journeyId, [anchor])),
+            ...candidates,
+          ];
+        }
+      }
     } else {
       this.logger.info(
         { journeyId, reason, poolSize: unusedPool.length, needed: neededNow },
@@ -1352,8 +1378,22 @@ export class JourneyService {
       reason === "music-wish" || reason === "music-wish-undo";
     const shouldRebuildQueueForWish =
       isWishApplicationPass || (reason === "manual" && activeMusicWishes.length > 0);
+    const anchorKeys = new Set(
+      candidates
+        .filter((candidate) =>
+          candidate.lens?.startsWith("taste-anchor:opening"),
+        )
+        .map((candidate) => songKey(candidate.artist, candidate.title)),
+    );
+    const openingAnchorTrack =
+      isFirstPass && anchorKeys.size > 0
+        ? rankedStored.find((track) =>
+            anchorKeys.has(songKey(track.artist, track.title)),
+          )
+        : undefined;
     let activeTrack =
       immediateWishTrack ??
+      openingAnchorTrack ??
       (session?.activeTrack && session.activeTrack.provider === "spotify"
         ? stored.find((track) => track.id === session?.activeTrack?.id)
         : undefined);
@@ -1647,6 +1687,37 @@ export class JourneyService {
       wishSlots += 1;
     }
     return selected;
+  }
+
+  /** Taste-Anchor-Kandidat (Opening/Arrival): realer Top-Track via Last.fm, sonst Radio-Fallback. */
+  private async tasteAnchorCandidate(
+    kind: "opening" | "arrival",
+    tasteArtists: string[],
+    seed: number,
+  ): Promise<SongCandidate | undefined> {
+    const artist = tasteArtists[seed % Math.max(1, tasteArtists.length)];
+    if (!artist) return undefined;
+    let title = `${artist} radio`;
+    if (this.lastfmCharts) {
+      const top = await this.lastfmCharts
+        .getArtistTopTracks(artist, 6)
+        .catch(() => []);
+      const pick = top[seed % Math.max(1, top.length)];
+      if (pick?.title) title = pick.title;
+    }
+    return {
+      artist,
+      title,
+      lens: `taste-anchor:${kind}`,
+      role: "anchor",
+      reason:
+        kind === "opening"
+          ? "Opening title: vertrauter Einstieg passend zur Ziel-Stimmung"
+          : "Arrival anthem: vertrautes Finale vor der Ankunft",
+      source: "fallback",
+      confidence: 0.9,
+      moodTags: ["anchor"],
+    };
   }
 
   private pickSpotifyPlaybackTracks(
