@@ -323,4 +323,36 @@ describe("music wish journey application", () => {
 
     await app.close();
   });
+
+  it("creates a pinned vibe directive in one call", async () => {
+    const { app } = await buildApp(testConfig());
+    const journey = (
+      await app.inject({
+        method: "POST",
+        url: "/journeys",
+        payload: {
+          destination: "Dijon",
+          userPrompt: "drive",
+          passengerMode: "solo",
+          provider: "spotify",
+          deviceId: "mock-webplayer",
+        },
+      })
+    ).json<{ id: string }>();
+
+    const created = (
+      await app.inject({
+        method: "POST",
+        url: `/journeys/${journey.id}/music-wishes`,
+        payload: { text: "schneller", source: "chip", pinned: true },
+      })
+    ).json<{ wish: { pinned: boolean; intents: unknown[]; summary: string } }>();
+
+    expect(created.wish.pinned).toBe(true);
+    expect(created.wish.intents).toEqual([
+      { type: "tempo", direction: "faster", strength: 0.8 },
+    ]);
+
+    await app.close();
+  });
 });

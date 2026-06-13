@@ -138,6 +138,11 @@ export function musicWishSummary(intents: MusicWishIntent[]): string {
       calm_down: "Ruhiger für die nächsten Songs",
     }[first.role];
   }
+  if (first.type === "tempo") {
+    return first.direction === "faster"
+      ? "Schneller & energiegeladener"
+      : "Langsamer & entspannter";
+  }
   if (first.type === "avoid") {
     const avoid = [
       ...(first.artists ?? []),
@@ -169,6 +174,23 @@ export function parseMusicWish(rawText: string): ParsedMusicWish {
       intents.push({ type: "song", title: subject, immediate: true });
     }
     return { rawText: text, status: "active", confidence: 0.9, summary: musicWishSummary(intents), intents };
+  }
+
+  const tempoFaster = /^(schneller|faster|mehr tempo|more tempo)\b/i.test(text);
+  const tempoSlower = /^(langsamer|slower)\b/i.test(text);
+  if (tempoFaster || tempoSlower) {
+    intents.push({
+      type: "tempo",
+      direction: tempoFaster ? "faster" : "slower",
+      strength: 0.8,
+    });
+    return {
+      rawText: text,
+      status: "active",
+      confidence: 0.85,
+      summary: musicWishSummary(intents),
+      intents,
+    };
   }
 
   const moreMatch = text.match(/^(mehr|more)\s+(.+)$/i);
@@ -280,6 +302,12 @@ export function applyMusicWishesToPolicy(
         avoidMoodTags.push(...(intent.moodTags ?? []));
       } else if (intent.type === "role") {
         moodTags.push(...roleTagsForWish(intent.role));
+      } else if (intent.type === "tempo") {
+        moodTags.push(
+          ...(intent.direction === "faster"
+            ? ["uptempo", "high-energy"]
+            : ["mellow", "downtempo"]),
+        );
       }
     }
   }

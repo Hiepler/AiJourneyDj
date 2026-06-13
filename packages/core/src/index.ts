@@ -145,7 +145,8 @@ export type MusicWishIntent =
       type: "role";
       role: "singalong" | "wake_up" | "kids" | "calm_down";
       strength: number;
-    };
+    }
+  | { type: "tempo"; direction: "faster" | "slower"; strength: number };
 
 export interface MusicWish {
   id: string;
