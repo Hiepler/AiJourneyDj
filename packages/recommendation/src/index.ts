@@ -1077,6 +1077,10 @@ export interface MusicalBrief {
   explorationAngle?: string;
   /** Recently-played artists to avoid (cross-journey fatigue, surfaced to the LLM). */
   avoidRecentArtists?: string[];
+  /** Drive-story act directive for the LLM (narrative arc). */
+  storyDirective?: string;
+  /** Moment directive for the LLM (arrival/sunset/etc). */
+  momentDirective?: string;
 }
 
 /**
@@ -1676,6 +1680,8 @@ export function buildMusicalBrief(
     weatherFeel: context.weatherFeel,
     explorationAngle: context.varietyAngle,
     avoidRecentArtists: context.recentlyPlayedArtists ?? [],
+    storyDirective: context.storyDirective,
+    momentDirective: context.momentDirective,
   };
 }
 
@@ -1892,6 +1898,8 @@ export function buildLensPrompt(
       : "",
     brief.weatherFeel ? `Weather right now: ${brief.weatherFeel}.` : "",
     brief.explorationAngle ? `Freshness directive: ${brief.explorationAngle}.` : "",
+    brief.storyDirective ? `Drive story: ${brief.storyDirective}` : "",
+    brief.momentDirective ? `Moment: ${brief.momentDirective}` : "",
     brief.avoidRecentArtists && brief.avoidRecentArtists.length > 0
       ? `Avoid these recently played artists: ${brief.avoidRecentArtists.slice(0, 12).join(", ")}.`
       : "",
@@ -2427,3 +2435,9 @@ export {
   similarRankWindow,
   type SimilarSource,
 } from "./momentumRadio.js";
+
+export {
+  driveStoryAct,
+  type StoryAct,
+  type StoryBeat,
+} from "./driveStory.js";

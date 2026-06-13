@@ -480,4 +480,26 @@ describe("connect-mode queue sync", () => {
       expect(modelUris.has(uri)).toBe(true);
     }
   });
+
+  it("opens the journey with a taste-anchor track", { timeout: 20_000 }, async () => {
+    const { service, store } = buildService();
+    // The reconcile harness adapter has no getTopArtists, so seed the taste profile
+    // directly — the opening anchor is drawn from representativeArtists.
+    const tasteArtists = [
+      "Bonobo",
+      "Tame Impala",
+      "Khruangbin",
+      "Tycho",
+      "The War on Drugs",
+    ];
+    store.saveCachedTasteProfile("local", {
+      topGenres: ["downtempo", "indie"],
+      representativeArtists: tasteArtists,
+    });
+
+    const journey = await startSpotifyJourney(service);
+    const session = store.getPlaybackSession(journey.id)!;
+    expect(session.activeTrack?.artist).toBeDefined();
+    expect(tasteArtists).toContain(session.activeTrack!.artist);
+  });
 });
