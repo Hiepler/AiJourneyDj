@@ -19,6 +19,10 @@ import {
   reconcilePlaybackModel,
   shouldRegenerate,
 } from "../playback/reconcile.js";
+import {
+  detectJourneyMoment,
+  type JourneyMoment,
+} from "../playback/moments.js";
 import { TidalResolver, type TidalAdapter } from "@ai-journey-dj/tidal";
 import {
   SpotifyResolver,
@@ -107,6 +111,10 @@ export class JourneyService {
   private readonly reclaimAttemptAt = new Map<string, number>();
   /** Journeys with a candidate-pool pre-warm in flight (dedupe; never two at once). */
   private readonly prewarmInFlight = new Set<string>();
+  /** Per-journey, per-moment-type last-fire timestamp (cooldown enforcement). */
+  private readonly lastMomentAt = new Map<string, Map<string, number>>();
+  /** Pending journey moment consumed by the next analysis pass. */
+  private readonly activeMoment = new Map<string, JourneyMoment>();
 
   constructor(
     private readonly config: AppConfig,
@@ -204,6 +212,77 @@ export class JourneyService {
         continue; // the phase re-curation already reflects the latest telemetry
       }
       await this.evaluateDriveMode(journey.id);
+      await this.evaluateJourneyMoments(journey.id).catch(() => undefined);
+    }
+  }
+
+  /** Momente-Erkennung am Telemetrie-Ingest; feuert eine vibe-changing Analyse. */
+  async evaluateJourneyMoments(journeyId: string): Promise<void> {
+    if (!this.config.MOMENTS_ENABLED) return;
+    const journey = this.store.getJourney(journeyId);
+    if (
+      !journey ||
+      journey.provider !== "spotify" ||
+      journey.status !== "active"
+    )
+      return;
+    const telemetry = this.store.latestTelemetry(journeyId);
+    const history = this.store.recentTelemetry(journeyId, 6);
+    const context = contextFromJourney(journey, telemetry, history);
+    const perJourney =
+      this.lastMomentAt.get(journeyId) ?? new Map<string, number>();
+    this.lastMomentAt.set(journeyId, perJourney);
+    const story = driveStoryAct({
+      elapsedMinutes: context.elapsedMinutes,
+      plannedDurationMinutes: context.plannedDurationMinutes,
+      etaMinutes: context.etaMinutes,
+      isFirstPass: !this.store.latestPlaylistUpdate(journeyId),
+      arrivalWindowMinutes: this.config.ARRIVAL_MOMENT_MINUTES,
+    });
+    const moment = detectJourneyMoment({
+      context,
+      history,
+      previousPhase: journey.phase,
+      act: story.act,
+      lastMomentAt: perJourney,
+      nowMs: Date.now(),
+      config: {
+        jamDelayMinutes: this.config.TRAFFIC_JAM_DELAY_MINUTES,
+        releaseDelayMinutes: this.config.TRAFFIC_RELEASE_DELAY_MINUTES,
+        cooldownMs: this.config.MOMENT_COOLDOWN_MINUTES * 60 * 1000,
+        arrivalWindowMinutes: this.config.ARRIVAL_MOMENT_MINUTES,
+      },
+    });
+    if (!moment) return;
+    if (
+      moment.type === "arrival" &&
+      this.store.latestAuditEvent(journeyId, "moment.arrival_fired")
+    ) {
+      return; // einmal pro Journey
+    }
+    perJourney.set(moment.type, Date.now());
+    this.activeMoment.set(journeyId, moment);
+    this.store.audit(journeyId, "moment.triggered", moment.directive, {
+      type: moment.type,
+    });
+    if (moment.type === "arrival") {
+      this.store.audit(
+        journeyId,
+        "moment.arrival_fired",
+        "Arrival anthem scheduled.",
+        {},
+      );
+    }
+    try {
+      await this.analyzeJourney(journeyId, `moment:${moment.type}`);
+    } catch (error) {
+      this.logger.warn(
+        {
+          journeyId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        "moment.recurate_error",
+      );
     }
   }
 
@@ -1155,6 +1234,8 @@ export class JourneyService {
           arrivalWindowMinutes: this.config.ARRIVAL_MOMENT_MINUTES,
         })
       : undefined;
+    const moment = this.activeMoment.get(journeyId);
+    this.activeMoment.delete(journeyId);
     const groundedContext: JourneyContext = {
       ...contextWithWishes,
       varietyAngle: seededExplorationAngle(variety.seed),
@@ -1169,7 +1250,11 @@ export class JourneyService {
           ? { artist: priorSession.activeTrack.artist, title: priorSession.activeTrack.title }
           : undefined,
       storyDirective: story?.directive,
-      energyBias: story?.energyOffset ?? 0,
+      momentDirective: moment?.directive,
+      energyBias: Math.max(
+        -0.3,
+        Math.min(0.3, (story?.energyOffset ?? 0) + (moment?.energyBias ?? 0)),
+      ),
     };
 
     // Cost control: only the LLM lenses cost tokens. Run them when the vibe actually changes;
@@ -1225,6 +1310,7 @@ export class JourneyService {
     const mustGenerate =
       vibeChangingReasons.has(reason) ||
       reason.startsWith("drive-state:") ||
+      reason.startsWith("moment:") ||
       unusedPool.length < neededNow;
     if (unusedPool.length < neededNow) {
       // Observability: pre-warming should keep this from ever happening mid-drive.
@@ -1250,6 +1336,12 @@ export class JourneyService {
       buildRecommendationPolicy(groundedContext),
       activeMusicWishes,
     );
+    if (moment?.moodTagBias.length) {
+      policy = {
+        ...policy,
+        moodTags: [...policy.moodTags, ...moment.moodTagBias],
+      };
+    }
     let candidates: SongCandidate[] = [];
     if (mustGenerate) {
       const tasteProfile = await this.loadTasteProfile(accessToken);
@@ -1262,6 +1354,12 @@ export class JourneyService {
         buildRecommendationPolicy(scoutContext),
         activeMusicWishes,
       );
+      if (moment?.moodTagBias.length) {
+        policy = {
+          ...policy,
+          moodTags: [...policy.moodTags, ...moment.moodTagBias],
+        };
+      }
       candidates = this.filterFreshCandidates(
         await this.generateAndStoreCandidateSet(
           journeyId,
@@ -1282,6 +1380,35 @@ export class JourneyService {
         if (anchor) {
           candidates = [
             ...(await this.enrichAndStoreCandidates(journeyId, [anchor])),
+            ...candidates,
+          ];
+        }
+      }
+      if (moment?.candidateRequest) {
+        let momentCandidates: SongCandidate[] = [];
+        if (moment.candidateRequest.kind === "geo-charts" && this.lastfmCharts) {
+          const localTracks = await this.lastfmCharts
+            .getGeoTopTracks(moment.candidateRequest.country, 20, 1)
+            .catch(() => []);
+          momentCandidates = lastfmTracksToCandidates(
+            localTracks,
+            scoutContext,
+            policy.moodTags,
+          )
+            .slice(0, 3)
+            .map((candidate) => ({ ...candidate, lens: `moment:${moment.type}` }));
+        } else if (moment.candidateRequest.kind === "taste-anchor") {
+          const anchor = await this.tasteAnchorCandidate(
+            "arrival",
+            scoutContext.tasteProfile?.representativeArtists ?? [],
+            variety.seed,
+          );
+          if (anchor)
+            momentCandidates = [{ ...anchor, lens: "taste-anchor:arrival" }];
+        }
+        if (momentCandidates.length > 0) {
+          candidates = [
+            ...(await this.enrichAndStoreCandidates(journeyId, momentCandidates)),
             ...candidates,
           ];
         }
@@ -1504,11 +1631,27 @@ export class JourneyService {
       }
     }
 
-    const quotaSelected = this.enforceWishQuota({
+    const momentKeys = new Set(
+      candidates
+        .filter(
+          (candidate) =>
+            candidate.lens?.startsWith("moment:") ||
+            candidate.lens === "taste-anchor:arrival",
+        )
+        .map((candidate) => songKey(candidate.artist, candidate.title)),
+    );
+    const priorityTrack =
+      momentKeys.size > 0
+        ? rankedStored.find((track) =>
+            momentKeys.has(songKey(track.artist, track.title)),
+          )
+        : undefined;
+    const quotaSelected = this.enforcePrioritySlots({
       selected,
       rankedStored,
       wishes: activeMusicWishes,
       excludeProviderIds: consumedProviderIds,
+      priorityTrack,
     });
     selected.length = 0;
     selected.push(...quotaSelected);
@@ -1631,20 +1774,32 @@ export class JourneyService {
   }
 
   /**
-   * Enforces the hard wish quota: ensures at least WISH_QUOTA_MIN tracks per active
-   * artist wish are in the next queue, capped at WISH_QUOTA_MAX_SLOTS total wish slots,
-   * by swapping the lowest-ranked non-wish, non-pinned selected tracks for the top-ranked
-   * unused wish-artist tracks. Returns the (possibly modified) selected list.
+   * Enforces priority slots and the hard wish quota. A priorityTrack (journey moment /
+   * arrival anthem) takes the FIRST queue slot, beating the wish quota for that one slot.
+   * Then ensures at least WISH_QUOTA_MIN tracks per active artist wish are in the next
+   * queue, capped at WISH_QUOTA_MAX_SLOTS total wish slots, by swapping the lowest-ranked
+   * non-wish selected tracks for the top-ranked unused wish-artist tracks. Returns the
+   * (possibly modified) selected list.
    */
-  private enforceWishQuota<T extends ResolvedTrack & { id: string }>(args: {
+  private enforcePrioritySlots<T extends ResolvedTrack & { id: string }>(args: {
     selected: T[];
     rankedStored: T[];
     wishes: MusicWish[];
     excludeProviderIds: Set<string>;
+    /** Track, der den ERSTEN Queue-Slot bekommt (Moment/Anthem); schlägt die Wunsch-Quote für einen Slot. */
+    priorityTrack?: T;
   }): T[] {
+    let selected = [...args.selected];
+    if (args.priorityTrack) {
+      const id = args.priorityTrack.providerTrackId;
+      selected = [
+        args.priorityTrack,
+        ...selected.filter((t) => t.providerTrackId !== id),
+      ].slice(0, Math.max(selected.length, 1));
+    }
     const min = this.config.WISH_QUOTA_MIN;
     const maxSlots = this.config.WISH_QUOTA_MAX_SLOTS;
-    if (min <= 0 || maxSlots <= 0) return [...args.selected];
+    if (min <= 0 || maxSlots <= 0) return selected;
 
     const wishArtistKeys = new Set(
       args.wishes
@@ -1656,12 +1811,11 @@ export class JourneyService {
           intent.type === "artist" ? [normalizeText(intent.artist)] : [],
         ),
     );
-    if (wishArtistKeys.size === 0) return [...args.selected];
+    if (wishArtistKeys.size === 0) return selected;
 
     const isWishTrack = (track: ResolvedTrack) =>
       wishArtistKeys.has(normalizeText(track.artist));
 
-    const selected = [...args.selected];
     const inQueueIds = new Set(selected.map((track) => track.providerTrackId));
     let wishSlots = selected.filter(isWishTrack).length;
 
@@ -1680,7 +1834,10 @@ export class JourneyService {
       const victimIndex = [...selected]
         .map((track, index) => ({ track, index }))
         .reverse()
-        .find(({ track }) => !isWishTrack(track))?.index;
+        .find(
+          ({ track, index }) =>
+            !isWishTrack(track) && !(args.priorityTrack && index === 0),
+        )?.index;
       if (victimIndex === undefined) break;
       selected[victimIndex] = candidate;
       inQueueIds.add(candidate.providerTrackId);

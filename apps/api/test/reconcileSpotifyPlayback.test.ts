@@ -502,4 +502,43 @@ describe("connect-mode queue sync", () => {
     expect(session.activeTrack?.artist).toBeDefined();
     expect(tasteArtists).toContain(session.activeTrack!.artist);
   });
+
+  it("a border crossing schedules local hits with a priority slot", { timeout: 20_000 }, async () => {
+    const { service, store } = buildService({
+      SPOTIFY_REFILL_MIN_INTERVAL_SECONDS: "0",
+    });
+    const journey = await startSpotifyJourney(service);
+
+    // Telemetrie-Historie: Deutschland → Italien (älterer Snapshot zuerst gespeichert).
+    store.saveTelemetry(
+      journey.id,
+      {
+        timestampIso: new Date(Date.now() - 60_000).toISOString(),
+        countryCode: "DE",
+        countryName: "Germany",
+      } as any,
+      "cruise",
+    );
+    store.saveTelemetry(
+      journey.id,
+      {
+        timestampIso: new Date().toISOString(),
+        countryCode: "IT",
+        countryName: "Italy",
+      } as any,
+      "cruise",
+    );
+
+    await service.evaluateJourneyMoments(journey.id);
+    // moment:border_crossing ist vibe-changing → Analyse lief; Moment-Kandidaten gespeichert.
+    const deadline = Date.now() + 15_000;
+    while (service.isAnalysisPending(journey.id)) {
+      if (Date.now() > deadline) throw new Error("moment analysis did not finish");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const candidates = store.listResolvedTracks(journey.id);
+    expect(candidates.length).toBeGreaterThan(0);
+    const audit = store.latestAuditEvent(journey.id, "moment.triggered");
+    expect(audit).toBeDefined();
+  });
 });
