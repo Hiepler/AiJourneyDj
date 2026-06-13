@@ -165,9 +165,20 @@ faster, complete responses. A persistent search cache means a 10-hour drive neve
 - **Cockpit UI** built for the landscape touchscreen — large tap targets, glanceable live context
   (phase · pace + trend · ETA + trend · weather · region), a live-telemetry badge, and a "why this
   song" line; no typing while driving (mood **presets**, recent-destination quick-picks, voice wishes).
+- **Live start screen** — when the car is connected, the journey form pulls a fresh reading
+  **on demand** (not at the next poll): it pre-fills the destination from the car's navigation, shows a
+  live-telemetry badge + glanceable context (ETA · region · weather), and **seeds the very first queue**
+  with real region/ETA/phase so the opening set is context-aware from track one.
 - **Tap-to-steer** — vibe toggles (⚡🎤☀️), drive-phase and Vibe-Mix (Familiar ↔ Discover) controls
   re-tune the queue with a visible "re-tuning" moment.
 - **Journey Moments & Drive Story** — situational re-curation and a narrative arc, on by default.
+  Moments also surface as **celebratory cockpit banners** ("Welcome to Italy!", "Jam's cleared!")
+  so the whole car shares the moment.
+- **Family fun** — a **🧸 Kids mode** that welcomes clean Disney/film/animated singalongs the whole
+  car enjoys (overriding family mode's usual avoidance), and a **synced karaoke / singalong view**:
+  time-synced, line-by-line highlighting that follows playback on the car's or phone's native Spotify
+  too (not just the in-browser player), duration-matched to the right recording, with a static
+  fallback when no synced lyrics exist (via LRCLIB — free, no API key).
 - **Adaptive Drive Mode** — automatic calm/focus selection bias from live telemetry. A comfort
   feature, explicitly not a safety system.
 - **Spotify Connect device picker** — play on the in-browser player, your phone, or the car's native

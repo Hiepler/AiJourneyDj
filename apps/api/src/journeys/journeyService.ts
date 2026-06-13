@@ -78,6 +78,7 @@ import type { AppConfig } from "../config/env.js";
 import { contextFromJourney, type Store } from "../db/store.js";
 import type { TidalAuthService } from "../auth/tidalAuth.js";
 import type { SpotifyAuthService } from "../auth/spotifyAuth.js";
+import type { TeslaLiveReader } from "../telemetry/teslaFleetPoller.js";
 
 export interface StartJourneyInput {
   destination: string;
@@ -125,6 +126,8 @@ export class JourneyService {
     string,
     { artists: Map<string, number>; moodTags: Map<string, number> }
   >();
+  /** On-demand live telemetry reader (injected post-construction; absent in mock/tests). */
+  private liveTelemetryReader?: TeslaLiveReader;
 
   constructor(
     private readonly config: AppConfig,
@@ -138,6 +141,73 @@ export class JourneyService {
     private readonly lastfmCharts?: LastfmChartClient,
     private readonly logger: JourneyLogger = noopLogger,
   ) {}
+
+  /**
+   * Wires the on-demand Tesla reader after construction so a journey can seed its first queue with a
+   * live reading. Optional: without it (mock mode, tests) the engine just waits for the poller.
+   */
+  setLiveTelemetryReader(reader: TeslaLiveReader): void {
+    this.liveTelemetryReader = reader;
+  }
+
+  /**
+   * Best-effort: pull one live telemetry reading *now* and persist it, so the journey's very first
+   * analysis already reflects real region / ETA / phase instead of waiting up to a full
+   * `TESLA_POLL_SECONDS` for the background poller. Never throws and never triggers a recurate — the
+   * `initial` analyze that follows consumes the freshly saved telemetry.
+   */
+  private async seedLiveTelemetry(journeyId: string): Promise<void> {
+    const reader = this.liveTelemetryReader;
+    if (!reader?.available()) return;
+    // Fully guarded: a slow/failed read or any store write must never abort journey creation. The
+    // tighter timeout keeps the worst-case stall on the "Start" tap small (often a cache hit anyway,
+    // since the start screen just read moments earlier).
+    try {
+      const event = await reader.read(3_000);
+      if (!event) return;
+      const journey = this.store.getJourney(journeyId);
+      if (!journey) return;
+      this.persistTelemetryReading(journey, event);
+      this.store.audit(
+        journeyId,
+        "telemetry.seeded",
+        "Seeded the first queue with a live telemetry reading.",
+      );
+    } catch (error) {
+      this.logger.warn(
+        {
+          journeyId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        "telemetry.seed_error",
+      );
+    }
+  }
+
+  /**
+   * Persists one telemetry reading for a journey: derives the phase, captures the planned trip
+   * duration on the first usable ETA, saves the reading, and advances the stored phase if it changed.
+   * Pure store writes — no analysis — so both the live poll/ingest path and the start-up seed share
+   * exactly one persistence rule. Returns the derived phase so callers can decide whether to recurate.
+   */
+  private persistTelemetryReading(
+    journey: JourneyRecord,
+    event: NormalizedTelemetryEvent,
+  ): JourneyPhase {
+    const phase = derivePhase(event, journey.phase);
+    if (
+      journey.plannedDurationMinutes === undefined &&
+      typeof event.etaMinutes === "number" &&
+      event.etaMinutes > 0
+    ) {
+      this.store.setPlannedDurationMinutes(journey.id, event.etaMinutes);
+    }
+    this.store.saveTelemetry(journey.id, event, phase);
+    if (phase !== journey.phase) {
+      this.store.updateJourneyPhase(journey.id, phase);
+    }
+    return phase;
+  }
 
   async startJourney(input: StartJourneyInput): Promise<JourneyRecord> {
     const provider = input.provider ?? "spotify";
@@ -176,6 +246,10 @@ export class JourneyService {
       });
     }
 
+    // Pull a live reading right now so the first queue is context-aware (region / ETA / phase),
+    // rather than blind until the next background poll. Best-effort and time-boxed; degrades silently.
+    await this.seedLiveTelemetry(id);
+
     try {
       await this.analyzeJourney(id, "initial");
     } catch (error) {
@@ -202,17 +276,8 @@ export class JourneyService {
   async ingestTelemetry(event: NormalizedTelemetryEvent): Promise<void> {
     const active = this.store.listActiveJourneys();
     for (const journey of active) {
-      const phase = derivePhase(event, journey.phase);
-      if (
-        journey.plannedDurationMinutes === undefined &&
-        typeof event.etaMinutes === "number" &&
-        event.etaMinutes > 0
-      ) {
-        this.store.setPlannedDurationMinutes(journey.id, event.etaMinutes);
-      }
-      this.store.saveTelemetry(journey.id, event, phase);
+      const phase = this.persistTelemetryReading(journey, event);
       if (phase !== journey.phase) {
-        this.store.updateJourneyPhase(journey.id, phase);
         this.store.audit(
           journey.id,
           "telemetry.phase_changed",
@@ -274,6 +339,11 @@ export class JourneyService {
     this.activeMoment.set(journeyId, moment);
     this.store.audit(journeyId, "moment.triggered", moment.directive, {
       type: moment.type,
+      // Surfaced to the cockpit family-event banner (e.g. "Welcome to Italy!").
+      country:
+        moment.candidateRequest?.kind === "geo-charts"
+          ? moment.candidateRequest.country
+          : undefined,
     });
     if (moment.type === "arrival") {
       this.store.audit(
@@ -691,6 +761,62 @@ export class JourneyService {
     );
     await this.analyzeJourney(journeyId, "taste-override");
     return this.getJourneyOrThrow(journeyId);
+  }
+
+  /**
+   * "Kids am Steuer": toggle the kids bias and re-curate immediately so the change is felt at once.
+   * Lets Disney/film/animated singalongs in (which family mode otherwise avoids) while staying clean.
+   */
+  async setKidsMode(
+    journeyId: string,
+    enabled: boolean,
+  ): Promise<JourneyRecord> {
+    const journey = this.getJourneyOrThrow(journeyId);
+    if (journey.status !== "active") {
+      throw new Error("Cannot change kids mode of a stopped journey.");
+    }
+    this.store.setKidsMode(journeyId, enabled);
+    this.store.audit(
+      journeyId,
+      "kids_mode.toggled",
+      `Kids mode ${enabled ? "enabled" : "disabled"}.`,
+      { enabled },
+    );
+    await this.analyzeJourney(journeyId, "kids-mode");
+    return this.getJourneyOrThrow(journeyId);
+  }
+
+  /**
+   * Device-independent playback position for the karaoke view — works on the car's / phone's native
+   * Spotify (Connect) too, not just the in-browser SDK player. Best-effort: degrades to not-playing on
+   * any error so the cockpit simply shows static lyrics. `activeProviderTrackId`/`durationMs` let the
+   * client request a duration-matched lyrics version for the *actually playing* track.
+   */
+  async getPlaybackProgress(journeyId: string): Promise<{
+    progressMs?: number;
+    durationMs?: number;
+    isPlaying: boolean;
+    activeProviderTrackId?: string;
+  }> {
+    const journey = this.store.getJourney(journeyId);
+    if (!journey || journey.provider !== "spotify") {
+      return { isPlaying: false };
+    }
+    try {
+      const accessToken = await this.spotifyAuth.getAccessToken();
+      const state = await this.spotifyAdapter.getPlaybackState({
+        accessToken,
+        market: this.config.SPOTIFY_MARKET,
+      });
+      return {
+        progressMs: state.progressMs,
+        durationMs: state.durationMs,
+        isPlaying: state.isPlaying,
+        activeProviderTrackId: state.activeProviderTrackId,
+      };
+    } catch {
+      return { isPlaying: false };
+    }
   }
 
   /** Per-journey master switch for Adaptive Drive Mode. Disabling clears any engaged mode. */

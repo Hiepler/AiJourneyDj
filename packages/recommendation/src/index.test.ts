@@ -425,6 +425,32 @@ describe("recommendation", () => {
     ]);
   });
 
+  it("kids mode stays clean, leads with the kids lens, and welcomes Disney/film singalongs", () => {
+    const kidsContext = {
+      ...context,
+      kidsMode: true,
+      userPrompt: "feel-good family drive",
+    };
+    const policy = buildRecommendationPolicy(kidsContext);
+    const brief = buildMusicalBrief(kidsContext);
+
+    // Inherits family's all-ages guardrails.
+    expect(policy.cleanRequired).toBe(true);
+    expect(brief.kidsMode).toBe(true);
+    expect(brief.moodWords).toEqual(
+      expect.arrayContaining(["disney", "kids", "singalong"]),
+    );
+
+    const lenses = selectJourneyLenses(brief);
+    expect(lenses[0].key).toBe("kids_hits");
+    expect(lenses.map((lens) => lens.key)).toContain("singalong_classics");
+
+    // The prompt must explicitly ALLOW Disney/film picks (overriding family-mode's avoidance).
+    const prompt = buildLensPrompt(lenses[0], brief, 5);
+    expect(prompt).toMatch(/Disney/i);
+    expect(prompt).not.toMatch(/novelty children-song/i);
+  });
+
   it("lastfmTracksToCandidates maps geo/tag chart tracks into chart-aware candidates", () => {
     const candidates = lastfmTracksToCandidates(
       [

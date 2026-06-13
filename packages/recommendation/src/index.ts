@@ -1056,6 +1056,8 @@ export interface MusicalBrief {
   countryName?: string;
   userPrompt: string;
   passengerMode: string;
+  /** "Kids am Steuer": allow Disney/film/animated singalongs that family mode otherwise avoids. */
+  kidsMode?: boolean;
   /** Adaptive Drive Mode applied to this brief (comfort feature; selection bias only). */
   driveMode: DriveMode;
   /** Human-readable cause when driveMode is not neutral (for prompts/diagnostics). */
@@ -1177,7 +1179,9 @@ export function buildRecommendationPolicy(
   overrides: Partial<RecommendationPolicy> = {},
 ): RecommendationPolicy {
   const prompt = normalizeText(context.userPrompt);
-  const familyMode = context.passengerMode === "family";
+  const kidsMode = context.kidsMode === true;
+  // Kids mode inherits family's all-ages guardrails (clean, broadly-known, distinct artists).
+  const familyMode = context.passengerMode === "family" || kidsMode;
   const nostalgic =
     prompt.includes("nostalgic") || prompt.includes("throwback");
   const highAcceptance =
@@ -1188,7 +1192,8 @@ export function buildRecommendationPolicy(
   return {
     cleanRequired: familyMode,
     targetPopularity: familyMode ? 72 : highAcceptance ? 66 : 58,
-    recencyBias: familyMode ? 0.78 : nostalgic ? 0.18 : 0.42,
+    // Kids singalongs are often catalog (Disney classics), so don't over-bias toward fresh releases.
+    recencyBias: kidsMode ? 0.4 : familyMode ? 0.78 : nostalgic ? 0.18 : 0.42,
     moodTags: moodTagsForContext(context),
     avoidArtists: [],
     avoidSongKeys: [],
@@ -1567,6 +1572,15 @@ export function buildMusicalBrief(
     moodWords.push("clean", "upbeat", "singalong", "good-mood", "current-pop");
   }
 
+  // "Kids am Steuer": lean into Disney/film/animated singalongs kids adore (still clean), independent
+  // of passengerMode — a parent can flip it on a solo-with-kids drive too.
+  if (context.kidsMode) {
+    targetEnergy = clamp01(Math.max(0.6, Math.min(0.8, targetEnergy + 0.06)));
+    intensityLabel = "bright";
+    tasteWeight = clamp01(Math.min(tasteWeight, 0.35));
+    moodWords.push("disney", "movie", "animated", "kids", "singalong", "fun");
+  }
+
   // Fatigue-aware floor — applied last so it wins on the energy lower bound,
   // even after Adaptive Drive Mode "calm" lowered the character.
   const energyFloor = alertnessFloor(
@@ -1688,6 +1702,7 @@ export function buildMusicalBrief(
     countryName: context.countryName,
     userPrompt: context.userPrompt,
     passengerMode: context.passengerMode,
+    kidsMode: context.kidsMode === true,
     driveMode,
     driveReason:
       assessment?.mode && assessment.mode !== "neutral"
@@ -1804,6 +1819,12 @@ const CINEMATIC_LENSES: Record<string, SongLens> = {
     instruction:
       "Find familiar clean singalong pop classics that children and adults can both recognize.",
   },
+  kids_hits: {
+    key: "kids_hits",
+    grounded: true,
+    instruction:
+      "Kids mode: find clean, joyful, widely-loved singalong hits from Disney / Pixar / animated films and modern family movie soundtracks that BOTH children and adults enjoy in the car. Real, well-produced songs only — no lo-fi nursery rhymes, no 'Folge/Kapitel/Teil N' audio-drama episodes, nothing babyish or annoying to adults.",
+  },
   taste_anchor: {
     key: "taste_anchor",
     grounded: false,
@@ -1827,6 +1848,16 @@ export function selectJourneyLenses(
     const lens = CINEMATIC_LENSES[key];
     if (!picked.some((item) => item.key === lens.key)) picked.push(lens);
   };
+
+  // "Kids am Steuer" leads with the Disney/film singalong lens, then the all-ages good-mood set.
+  if (brief.kidsMode) {
+    add("kids_hits");
+    add("singalong_classics");
+    add("good_mood");
+    add("current_pop_hits");
+    add("taste_anchor");
+    return picked.slice(0, 5);
+  }
 
   if (brief.passengerMode === "family") {
     add("current_pop_hits");
@@ -1929,9 +1960,11 @@ export function buildLensPrompt(
       : "",
     tasteSteeringLine(lens, brief),
     `Listener mode: ${brief.passengerMode}. Direction: "${brief.userPrompt}".`,
-    brief.passengerMode === "family"
-      ? "Family mode: prefer clean/radio-friendly current pop, dance-pop, upbeat singalong tracks; avoid explicit, aggressive, gloomy, sleepy, or novelty children-song picks."
-      : "",
+    brief.kidsMode
+      ? "Kids mode: clean, joyful, all-ages picks the WHOLE car enjoys — Disney/Pixar/animated-film and modern family-movie singalongs are explicitly welcome. Still NO explicit lyrics; avoid babyish nursery rhymes, audio-drama/Hörspiel episodes, and anything grating for adults."
+      : brief.passengerMode === "family"
+        ? "Family mode: prefer clean/radio-friendly current pop, dance-pop, upbeat singalong tracks; avoid explicit, aggressive, gloomy, sleepy, or novelty children-song picks."
+        : "",
     `Return ONLY JSON {"songs":[{"artist","title","year","genre","reason","role"}]} with exactly ${count} real, released songs.`,
     `If you include role, use one of: ${SET_ROLES.join(", ")}.`,
     "Vary artists; no duplicates. Keep 'reason' to one short clause tying the pick to the drive.",

@@ -5,7 +5,12 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
-import { makeVehicleIdResolver, pollTeslaOnce } from "../src/telemetry/teslaFleetPoller.js";
+import {
+  createTeslaLiveReader,
+  makeVehicleIdResolver,
+  pollTeslaOnce,
+  readLiveTeslaReading
+} from "../src/telemetry/teslaFleetPoller.js";
 import { loadConfig } from "../src/config/env.js";
 import { migrate, openDatabase } from "../src/db/database.js";
 import { Store } from "../src/db/store.js";
@@ -360,6 +365,146 @@ describe("tesla fleet poller (single tick)", () => {
       fetchImpl
     });
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("on-demand live telemetry (start-screen pre-fill + first-queue seed)", () => {
+  function vehicleDataFetch(state: "online" | "asleep"): { calls: string[]; fetchImpl: typeof fetch } {
+    const calls: string[] = [];
+    const fetchImpl: typeof fetch = async (input) => {
+      calls.push(String(input));
+      if (state === "asleep") return new Response("{}", { status: 408 });
+      return new Response(
+        JSON.stringify({
+          response: {
+            vin: "VIN1",
+            drive_state: { speed: 60, latitude: 48.137, longitude: 11.575, active_route_minutes_to_arrival: 42 },
+            charge_state: { usable_battery_level: 70 },
+            climate_state: { outside_temp: 18 }
+          }
+        }),
+        { status: 200 }
+      );
+    };
+    return { calls, fetchImpl };
+  }
+
+  it("readLiveTeslaReading returns a normalized reading with exactly one request (no list call)", async () => {
+    const { calls, fetchImpl } = vehicleDataFetch("online");
+    const event = await readLiveTeslaReading({
+      apiBaseUrl: "https://fleet.test",
+      accessToken: "t",
+      resolveVehicleId: async () => "1",
+      geocode: async () => "Bavaria, Germany",
+      appSecret: "s",
+      fetchImpl
+    });
+    expect(event?.speedKph).toBe(97);
+    expect(event?.coarseRegion).toBe("Bavaria, Germany");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain("vehicle_data");
+  });
+
+  it("readLiveTeslaReading yields undefined for an asleep car (408), without waking it", async () => {
+    const { fetchImpl } = vehicleDataFetch("asleep");
+    const event = await readLiveTeslaReading({
+      apiBaseUrl: "https://fleet.test",
+      accessToken: "t",
+      resolveVehicleId: async () => "1",
+      geocode: async () => undefined,
+      appSecret: "s",
+      fetchImpl
+    });
+    expect(event).toBeUndefined();
+  });
+
+  it("createTeslaLiveReader is unavailable (and never calls the API) when the car is disconnected", async () => {
+    const { config } = build({ TESLA_FLEET_ENABLED: "true", TESLA_VEHICLE_ID: "VID" });
+    const calls: string[] = [];
+    const reader = createTeslaLiveReader({
+      config,
+      teslaAuth: { isConnected: () => false, getAccessToken: async () => "t" },
+      fetchImpl: async (input) => {
+        calls.push(String(input));
+        return new Response("{}", { status: 200 });
+      }
+    });
+    expect(reader.available()).toBe(false);
+    expect(await reader.read()).toBeUndefined();
+    expect(calls).toHaveLength(0);
+  });
+
+  it("createTeslaLiveReader reads on demand when enabled + connected", async () => {
+    const { config } = build({ TESLA_FLEET_ENABLED: "true", TESLA_VEHICLE_ID: "VID" });
+    const { calls, fetchImpl } = vehicleDataFetch("online");
+    const reader = createTeslaLiveReader({
+      config,
+      teslaAuth: { isConnected: () => true, getAccessToken: async () => "t" },
+      fetchImpl
+    });
+    expect(reader.available()).toBe(true);
+    const event = await reader.read();
+    expect(event?.speedKph).toBe(97);
+    expect(event?.etaMinutes).toBe(42);
+    // Configured vehicle id → only the vehicle_data call, never the billed list endpoint.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain("vehicle_data");
+  });
+
+  it("throttles reads so an awake, parked car is touched at most once per interval (drain guard)", async () => {
+    const { config } = build({ TESLA_FLEET_ENABLED: "true", TESLA_VEHICLE_ID: "VID" });
+    const { calls, fetchImpl } = vehicleDataFetch("online");
+    let clock = 1_000;
+    const reader = createTeslaLiveReader({
+      config,
+      teslaAuth: { isConnected: () => true, getAccessToken: async () => "t" },
+      fetchImpl,
+      minIntervalMs: 30_000,
+      now: () => clock
+    });
+    await reader.read();
+    await reader.read(); // within the window → served from cache, no new vehicle_data call
+    await reader.read();
+    expect(calls).toHaveLength(1);
+    clock += 30_000; // window elapsed → one more read is allowed
+    await reader.read();
+    expect(calls).toHaveLength(2);
+  });
+
+  it("never calls a wake/command endpoint — only vehicle_data (and at most a cached list discovery)", async () => {
+    const { config } = build({ TESLA_FLEET_ENABLED: "true" }); // no TESLA_VEHICLE_ID → must discover
+    const calls: string[] = [];
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.endsWith("/api/1/vehicles")) {
+        return new Response(JSON.stringify({ response: [{ id_s: "7" }] }), { status: 200 });
+      }
+      return new Response(
+        JSON.stringify({ response: { drive_state: { speed: 10 } } }),
+        { status: 200 }
+      );
+    };
+    const reader = createTeslaLiveReader({
+      config,
+      teslaAuth: { isConnected: () => true, getAccessToken: async () => "t" },
+      fetchImpl,
+      minIntervalMs: 0 // disable throttle so we can observe discovery caching across reads
+    });
+    await reader.read();
+    await reader.read();
+    expect(calls.some((u) => /wake_up|\/command\//.test(u))).toBe(false);
+    // The list discovery happens at most once (cached); every other call is vehicle_data.
+    expect(calls.filter((u) => u.endsWith("/api/1/vehicles"))).toHaveLength(1);
+    expect(calls.filter((u) => u.includes("vehicle_data"))).toHaveLength(2);
+  });
+
+  it("GET /telemetry/live reports unavailable when Fleet polling is off", async () => {
+    const { app } = await buildApp(build().config);
+    const res = await app.inject({ method: "GET", url: "/telemetry/live" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ available: false, reading: null });
+    await app.close();
   });
 });
 
