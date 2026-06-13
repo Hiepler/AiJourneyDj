@@ -42,6 +42,7 @@ import {
   fallbackCandidates,
   lastfmTracksToCandidates,
   makeVarietyContext,
+  momentumRadioCandidates,
   parseMusicWish,
   rankResolvedTracksForPolicy,
   rotateWindow,
@@ -1142,6 +1143,7 @@ export class JourneyService {
             ? [intent.artist]
             : [],
       );
+    const priorSession = this.store.getPlaybackSession(journeyId);
     const groundedContext: JourneyContext = {
       ...contextWithWishes,
       varietyAngle: seededExplorationAngle(variety.seed),
@@ -1149,6 +1151,12 @@ export class JourneyService {
         .sort((a, b) => b[1] - a[1])
         .slice(0, this.config.ARTIST_AVOID_PROMPT_LIMIT)
         .map(([artist]) => artist),
+      nowPlaying:
+        priorSession?.activeTrack?.provider === "spotify" &&
+        priorSession.activeTrack.artist &&
+        priorSession.activeTrack.title
+          ? { artist: priorSession.activeTrack.artist, title: priorSession.activeTrack.title }
+          : undefined,
     };
 
     // Cost control: only the LLM lenses cost tokens. Run them when the vibe actually changes;
@@ -1163,7 +1171,6 @@ export class JourneyService {
       "music-wish",
       "music-wish-undo",
     ]);
-    const priorSession = this.store.getPlaybackSession(journeyId);
     const storedForGate = this.store
       .listResolvedTracks(journeyId)
       .filter((track) => track.provider === "spotify");
@@ -1249,6 +1256,7 @@ export class JourneyService {
           policy,
           8,
           variety.seed,
+          { bannedArtists },
         ),
         consumedSongKeys,
       );
@@ -1395,6 +1403,7 @@ export class JourneyService {
           policy,
           8,
           variety.seed,
+          { bannedArtists },
         ),
         consumedSongKeys,
       );
@@ -2467,12 +2476,33 @@ export class JourneyService {
     policy: RecommendationPolicy,
     targetCount: number,
     seed = 0,
+    extras: { bannedArtists?: ReadonlySet<string> } = {},
   ): Promise<SongCandidate[]> {
     const wishCandidates = await this.enrichAndStoreCandidates(
       journeyId,
       candidatesFromMusicWishes(context.activeMusicWishes ?? []),
     );
-    const [chartCandidates, aiCandidates] = await Promise.all([
+    // Dritte Quelle: Momentum-Radio aus dem Last.fm-Similar-Graph — umkreist den
+    // aktuellen Moment (Now-Playing, Wünsche, Taste) statt der üblichen Chart-Tops.
+    const similarPromise: Promise<SongCandidate[]> =
+      this.config.SIMILAR_SOURCE_ENABLED && this.lastfmCharts
+        ? momentumRadioCandidates({
+            lastfm: this.lastfmCharts,
+            nowPlaying: context.nowPlaying,
+            wishArtists: (context.activeMusicWishes ?? [])
+              .flatMap((wish) => wish.intents)
+              .flatMap((intent) => (intent.type === "artist" ? [intent.artist] : [])),
+            tasteArtists: context.tasteProfile?.representativeArtists ?? [],
+            tasteWeight: context.tasteWeight ?? 0.5,
+            seed,
+            bannedArtists: extras.bannedArtists ?? new Set(),
+            moodTags: policy.moodTags,
+            limit: 8,
+            rankMin: this.config.SIMILAR_RANK_MIN,
+            rankMax: this.config.SIMILAR_RANK_MAX,
+          }).catch(() => [] as SongCandidate[])
+        : Promise.resolve([] as SongCandidate[]);
+    const [chartCandidates, aiCandidates, similarCandidates] = await Promise.all([
       this.generateAndStoreLastfmCandidates(
         journeyId,
         context,
@@ -2481,9 +2511,15 @@ export class JourneyService {
         seed,
       ),
       this.generateAndStoreCandidates(journeyId, context, targetCount, policy),
+      similarPromise.then((items) => this.enrichAndStoreCandidates(journeyId, items)),
     ]);
     const seen = new Set<string>();
-    return [...wishCandidates, ...chartCandidates, ...aiCandidates].filter((candidate) => {
+    return [
+      ...wishCandidates,
+      ...similarCandidates,
+      ...chartCandidates,
+      ...aiCandidates,
+    ].filter((candidate) => {
       const key = songKey(candidate.artist, candidate.title);
       if (seen.has(key)) return false;
       seen.add(key);

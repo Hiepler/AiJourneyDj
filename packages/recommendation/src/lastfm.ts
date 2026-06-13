@@ -14,6 +14,7 @@ export interface LastfmChartClientOptions {
   enabled?: boolean;
   chartCacheHours?: number;
   tagCacheHours?: number;
+  similarCacheHours?: number;
   fetchImpl?: typeof fetch;
 }
 
@@ -86,6 +87,7 @@ export class LastfmChartClient {
   private readonly enabled: boolean;
   private readonly chartTtlMs: number;
   private readonly tagTtlMs: number;
+  private readonly similarTtlMs: number;
   private readonly cache = new Map<string, Cached<unknown>>();
 
   constructor(private readonly options: LastfmChartClientOptions) {
@@ -94,6 +96,7 @@ export class LastfmChartClient {
     this.enabled = options.enabled !== false && Boolean(options.apiKey);
     this.chartTtlMs = (options.chartCacheHours ?? 6) * 60 * 60 * 1000;
     this.tagTtlMs = (options.tagCacheHours ?? 12) * 60 * 60 * 1000;
+    this.similarTtlMs = (options.similarCacheHours ?? 168) * 60 * 60 * 1000;
   }
 
   async getGeoTopTracks(
@@ -141,6 +144,73 @@ export class LastfmChartClient {
       0,
       limit,
     );
+  }
+
+  /** Ähnliche Tracks zu einem Seed-Track (track.getSimilar). */
+  async getSimilarTracks(
+    artist: string | undefined,
+    title: string | undefined,
+    limit = 30,
+  ): Promise<Array<{ artist: string; title: string; match: number }>> {
+    const a = artist?.trim();
+    const t = title?.trim();
+    if (!this.enabled || !a || !t) return [];
+    const url = this.url("track.getSimilar", { artist: a, track: t, limit, autocorrect: 1 });
+    const payload = await this.fetchCached(
+      `simtrack:${a.toLowerCase()}:${t.toLowerCase()}:${limit}`,
+      url,
+      this.similarTtlMs,
+    );
+    const items = asArray((payload as any)?.similartracks?.track);
+    return items
+      .map((item: any) => ({
+        artist: typeof item?.artist?.name === "string" ? item.artist.name : "",
+        title: typeof item?.name === "string" ? item.name : "",
+        match: Number(item?.match ?? 0),
+      }))
+      .filter((item) => item.artist && item.title)
+      .slice(0, limit);
+  }
+
+  /** Ähnliche Artisten zu einem Seed-Artist (artist.getSimilar). */
+  async getSimilarArtists(artist: string | undefined, limit = 30): Promise<string[]> {
+    const a = artist?.trim();
+    if (!this.enabled || !a) return [];
+    const url = this.url("artist.getSimilar", { artist: a, limit, autocorrect: 1 });
+    const payload = await this.fetchCached(
+      `simartist:${a.toLowerCase()}:${limit}`,
+      url,
+      this.similarTtlMs,
+    );
+    const items = asArray((payload as any)?.similarartists?.artist);
+    return items
+      .map((item: any) => (typeof item?.name === "string" ? item.name : ""))
+      .filter(Boolean)
+      .slice(0, limit);
+  }
+
+  /** Top-Tracks eines Artists (artist.getTopTracks). */
+  async getArtistTopTracks(
+    artist: string | undefined,
+    limit = 10,
+  ): Promise<Array<{ artist: string; title: string; rank: number }>> {
+    const a = artist?.trim();
+    if (!this.enabled || !a) return [];
+    const url = this.url("artist.getTopTracks", { artist: a, limit, autocorrect: 1 });
+    const payload = await this.fetchCached(
+      `arttop:${a.toLowerCase()}:${limit}`,
+      url,
+      this.similarTtlMs,
+    );
+    const items = asArray((payload as any)?.toptracks?.track);
+    return items
+      .map((item: any, index: number) => ({
+        artist: typeof item?.artist?.name === "string" ? item.artist.name : a,
+        title: typeof item?.name === "string" ? item.name : "",
+        rank: Number(item?.["@attr"]?.rank ?? index + 1),
+      }))
+      .filter((item) => item.title)
+      .slice(0, limit);
   }
 
   private url(method: string, params: Record<string, string | number>): URL {

@@ -105,6 +105,7 @@ export async function buildApp(config: AppConfig) {
     enabled: config.LASTFM_ENABLED,
     chartCacheHours: config.LASTFM_CHART_CACHE_HOURS,
     tagCacheHours: config.LASTFM_TAG_CACHE_HOURS,
+    similarCacheHours: config.LASTFM_SIMILAR_CACHE_HOURS,
   });
   const app = Fastify({
     logger: {
