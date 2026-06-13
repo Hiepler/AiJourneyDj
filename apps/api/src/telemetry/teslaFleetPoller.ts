@@ -149,16 +149,22 @@ export function startTeslaFleetPoller(
   journeyService: JourneyService,
   liveness: StreamLiveness,
   logger: { warn: (obj: Record<string, unknown>, msg?: string) => void },
+  context?: TeslaReadContext,
 ): NodeJS.Timeout | undefined {
   if (!config.TESLA_FLEET_ENABLED) return undefined;
-  const geocode = makeGeocodeResolver({ baseUrl: config.GEOCODER_URL });
+  // Reuse the shared read context when provided so the vehicle id is discovered ONCE per process
+  // (and the geocode cache is shared) across the poller and the on-demand reader — otherwise each
+  // would make its own billed `/api/1/vehicles` discovery call.
+  const geocode = context?.geocode ?? makeGeocodeResolver({ baseUrl: config.GEOCODER_URL });
   // Resolver persists across ticks so the vehicle id is discovered at most once.
-  const resolveVehicleId = makeVehicleIdResolver({
-    apiBaseUrl: config.TESLA_API_BASE_URL,
-    configuredVehicleId: config.TESLA_VEHICLE_ID,
-    getAccessToken: () => teslaAuth.getAccessToken(),
-    fetchImpl: fetch,
-  });
+  const resolveVehicleId =
+    context?.resolveVehicleId ??
+    makeVehicleIdResolver({
+      apiBaseUrl: config.TESLA_API_BASE_URL,
+      configuredVehicleId: config.TESLA_VEHICLE_ID,
+      getAccessToken: () => teslaAuth.getAccessToken(),
+      fetchImpl: fetch,
+    });
 
   const tick = async () => {
     try {
@@ -197,6 +203,47 @@ export interface LiveReaderAuth {
   getAccessToken(): Promise<string>;
 }
 
+/**
+ * Shared vehicle-id resolver + geocoder, created once and handed to BOTH the poller and the
+ * on-demand reader so the vehicle id is discovered at most once per process and the geocode cache is
+ * reused. Building these per-consumer would double the billed `/api/1/vehicles` discovery call.
+ */
+export interface TeslaReadContext {
+  resolveVehicleId: () => Promise<string | undefined>;
+  geocode: (
+    lat: number,
+    lon: number,
+  ) => Promise<string | GeocodeResult | undefined>;
+}
+
+export function createTeslaReadContext(opts: {
+  apiBaseUrl: string;
+  configuredVehicleId?: string;
+  getAccessToken: () => Promise<string>;
+  geocoderUrl?: string;
+  fetchImpl?: typeof fetch;
+}): TeslaReadContext {
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  return {
+    resolveVehicleId: makeVehicleIdResolver({
+      apiBaseUrl: opts.apiBaseUrl,
+      configuredVehicleId: opts.configuredVehicleId,
+      getAccessToken: opts.getAccessToken,
+      fetchImpl,
+    }),
+    geocode: makeGeocodeResolver({ baseUrl: opts.geocoderUrl }),
+  };
+}
+
+/**
+ * Minimum spacing between on-demand reads that actually touch the car. A `vehicle_data` read never
+ * wakes a SLEEPING car (Tesla returns 408), but reads against an already-awake, parked car reset its
+ * sleep timer — so unbounded reads could keep it awake and drain the battery at standstill. This
+ * throttle caps how often the start screen / journey seed can reach the car, regardless of how often
+ * the route is hit, the page re-renders, or a journey is started right after a pre-fill.
+ */
+export const LIVE_READ_MIN_INTERVAL_MS = 30_000;
+
 /** On-demand live telemetry: a one-shot read, independent of the background poll cadence. */
 export interface TeslaLiveReader {
   /** True when Fleet polling is enabled and the car is connected, so a read can be attempted. */
@@ -208,53 +255,88 @@ export interface TeslaLiveReader {
 /**
  * Builds a reader that fetches the car's *current* state on demand — used to pre-fill the start
  * screen and to seed a journey's very first queue with live context, instead of waiting up to a full
- * `TESLA_POLL_SECONDS` for the background poller. The vehicle id is discovered once and cached, so
- * repeated reads cost a single `vehicle_data` call. Degrades silently: a missing vehicle, an asleep
- * car (408), a timeout, or any error resolves to `undefined` so callers can fall back gracefully.
+ * `TESLA_POLL_SECONDS` for the background poller.
+ *
+ * Safety: reads only ever hit `GET vehicle_data` (and a cached `GET /api/1/vehicles` discovery) —
+ * never `/wake_up` or any command — so a sleeping car stays asleep (408 → `undefined`). A
+ * `minIntervalMs` throttle additionally bounds how often an *awake* car is touched, preventing
+ * standstill drain. Degrades silently: missing vehicle, asleep car, timeout, or any error → `undefined`.
  */
 export function createTeslaLiveReader(deps: {
   config: AppConfig;
   teslaAuth: LiveReaderAuth;
+  /** Shared resolver/geocoder; built privately when omitted (e.g. in tests). */
+  context?: TeslaReadContext;
   logger?: { warn: (obj: Record<string, unknown>, msg?: string) => void };
   fetchImpl?: typeof fetch;
+  /** Read throttle window; defaults to LIVE_READ_MIN_INTERVAL_MS. */
+  minIntervalMs?: number;
+  /** Injected clock for deterministic throttle tests. */
+  now?: () => number;
 }): TeslaLiveReader {
   const fetchImpl = deps.fetchImpl ?? fetch;
-  const geocode = makeGeocodeResolver({ baseUrl: deps.config.GEOCODER_URL });
-  const resolveVehicleId = makeVehicleIdResolver({
-    apiBaseUrl: deps.config.TESLA_API_BASE_URL,
-    configuredVehicleId: deps.config.TESLA_VEHICLE_ID,
-    getAccessToken: () => deps.teslaAuth.getAccessToken(),
-    fetchImpl,
-  });
+  const now = deps.now ?? Date.now;
+  const minIntervalMs = deps.minIntervalMs ?? LIVE_READ_MIN_INTERVAL_MS;
+  const context =
+    deps.context ??
+    createTeslaReadContext({
+      apiBaseUrl: deps.config.TESLA_API_BASE_URL,
+      configuredVehicleId: deps.config.TESLA_VEHICLE_ID,
+      getAccessToken: () => deps.teslaAuth.getAccessToken(),
+      geocoderUrl: deps.config.GEOCODER_URL,
+      fetchImpl,
+    });
 
   const available = () =>
     deps.config.TESLA_FLEET_ENABLED && deps.teslaAuth.isConnected();
+
+  // Throttle cache: the most recent outcome (a reading OR a miss) re-served within the window so
+  // back-to-back callers never translate into back-to-back `vehicle_data` calls against the car.
+  let cache: { value: NormalizedTelemetryEvent | undefined; at: number } | undefined;
 
   return {
     available,
     async read(timeoutMs = 4000) {
       if (!available()) return undefined;
+      if (cache && now() - cache.at < minIntervalMs) return cache.value;
+
+      // One timer both aborts the in-flight data fetch AND wins the race, so a hung vehicle-id
+      // discovery (which uses the context's un-aborted fetch) can never make read() outlive timeoutMs.
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<undefined>((resolve) => {
+        timeoutHandle = setTimeout(() => {
+          controller.abort();
+          resolve(undefined);
+        }, timeoutMs);
+      });
+      // Never rejects: any failure (abort, 408, parse, token) degrades to `undefined`.
+      const work = async (): Promise<NormalizedTelemetryEvent | undefined> => {
+        try {
+          const accessToken = await deps.teslaAuth.getAccessToken();
+          return await readLiveTeslaReading({
+            apiBaseUrl: deps.config.TESLA_API_BASE_URL,
+            accessToken,
+            resolveVehicleId: context.resolveVehicleId,
+            geocode: context.geocode,
+            appSecret: deps.config.APP_SECRET,
+            fetchImpl: (input, init) =>
+              fetchImpl(input, { ...init, signal: controller.signal }),
+          });
+        } catch (error) {
+          deps.logger?.warn(
+            { err: error instanceof Error ? error.message : String(error) },
+            "tesla.live_read_error",
+          );
+          return undefined;
+        }
+      };
       try {
-        const accessToken = await deps.teslaAuth.getAccessToken();
-        return await readLiveTeslaReading({
-          apiBaseUrl: deps.config.TESLA_API_BASE_URL,
-          accessToken,
-          resolveVehicleId,
-          geocode,
-          appSecret: deps.config.APP_SECRET,
-          fetchImpl: (input, init) =>
-            fetchImpl(input, { ...init, signal: controller.signal }),
-        });
-      } catch (error) {
-        deps.logger?.warn(
-          { err: error instanceof Error ? error.message : String(error) },
-          "tesla.live_read_error",
-        );
-        return undefined;
+        const value = await Promise.race([work(), timeout]);
+        cache = { value, at: now() };
+        return value;
       } finally {
-        clearTimeout(timer);
+        if (timeoutHandle) clearTimeout(timeoutHandle);
       }
     },
   };

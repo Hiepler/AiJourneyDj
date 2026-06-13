@@ -11,10 +11,18 @@ import { startTeslaFleetPoller } from "./telemetry/teslaFleetPoller.js";
 import { startSpotifyPlaybackPoller } from "./playback/spotifyPlaybackPoller.js";
 
 const config = loadConfig();
-const { app, store, journeyService, teslaAuth, streamLiveness } = await buildApp(config);
+const { app, store, journeyService, teslaAuth, streamLiveness, teslaReadContext } = await buildApp(config);
 
 const mqttConsumer = startMqttTelemetryConsumer(config, journeyService, streamLiveness, app.log);
-const teslaPoller = startTeslaFleetPoller(config, store, teslaAuth, journeyService, streamLiveness, app.log);
+const teslaPoller = startTeslaFleetPoller(
+  config,
+  store,
+  teslaAuth,
+  journeyService,
+  streamLiveness,
+  app.log,
+  teslaReadContext,
+);
 const spotifyPoller = startSpotifyPlaybackPoller(config, store, journeyService, app.log);
 
 const runJourneyWorker = () => {

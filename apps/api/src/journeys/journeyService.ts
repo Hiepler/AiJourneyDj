@@ -159,27 +159,54 @@ export class JourneyService {
   private async seedLiveTelemetry(journeyId: string): Promise<void> {
     const reader = this.liveTelemetryReader;
     if (!reader?.available()) return;
-    const event = await reader.read().catch(() => undefined);
-    if (!event) return;
-    const journey = this.store.getJourney(journeyId);
-    if (!journey) return;
+    // Fully guarded: a slow/failed read or any store write must never abort journey creation. The
+    // tighter timeout keeps the worst-case stall on the "Start" tap small (often a cache hit anyway,
+    // since the start screen just read moments earlier).
+    try {
+      const event = await reader.read(3_000);
+      if (!event) return;
+      const journey = this.store.getJourney(journeyId);
+      if (!journey) return;
+      this.persistTelemetryReading(journey, event);
+      this.store.audit(
+        journeyId,
+        "telemetry.seeded",
+        "Seeded the first queue with a live telemetry reading.",
+      );
+    } catch (error) {
+      this.logger.warn(
+        {
+          journeyId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        "telemetry.seed_error",
+      );
+    }
+  }
+
+  /**
+   * Persists one telemetry reading for a journey: derives the phase, captures the planned trip
+   * duration on the first usable ETA, saves the reading, and advances the stored phase if it changed.
+   * Pure store writes — no analysis — so both the live poll/ingest path and the start-up seed share
+   * exactly one persistence rule. Returns the derived phase so callers can decide whether to recurate.
+   */
+  private persistTelemetryReading(
+    journey: JourneyRecord,
+    event: NormalizedTelemetryEvent,
+  ): JourneyPhase {
     const phase = derivePhase(event, journey.phase);
     if (
       journey.plannedDurationMinutes === undefined &&
       typeof event.etaMinutes === "number" &&
       event.etaMinutes > 0
     ) {
-      this.store.setPlannedDurationMinutes(journeyId, event.etaMinutes);
+      this.store.setPlannedDurationMinutes(journey.id, event.etaMinutes);
     }
-    this.store.saveTelemetry(journeyId, event, phase);
+    this.store.saveTelemetry(journey.id, event, phase);
     if (phase !== journey.phase) {
-      this.store.updateJourneyPhase(journeyId, phase);
+      this.store.updateJourneyPhase(journey.id, phase);
     }
-    this.store.audit(
-      journeyId,
-      "telemetry.seeded",
-      "Seeded the first queue with a live telemetry reading.",
-    );
+    return phase;
   }
 
   async startJourney(input: StartJourneyInput): Promise<JourneyRecord> {
@@ -249,17 +276,8 @@ export class JourneyService {
   async ingestTelemetry(event: NormalizedTelemetryEvent): Promise<void> {
     const active = this.store.listActiveJourneys();
     for (const journey of active) {
-      const phase = derivePhase(event, journey.phase);
-      if (
-        journey.plannedDurationMinutes === undefined &&
-        typeof event.etaMinutes === "number" &&
-        event.etaMinutes > 0
-      ) {
-        this.store.setPlannedDurationMinutes(journey.id, event.etaMinutes);
-      }
-      this.store.saveTelemetry(journey.id, event, phase);
+      const phase = this.persistTelemetryReading(journey, event);
       if (phase !== journey.phase) {
-        this.store.updateJourneyPhase(journey.id, phase);
         this.store.audit(
           journey.id,
           "telemetry.phase_changed",
