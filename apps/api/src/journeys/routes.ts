@@ -10,6 +10,7 @@ import {
   type StreamLiveness,
 } from "../telemetry/streamSource.js";
 import type { JourneyService } from "./journeyService.js";
+import { composeWhyLine } from "./whyLine.js";
 
 const startSchema = z.object({
   destination: z.string().min(2),
@@ -83,7 +84,17 @@ export async function registerJourneyRoutes(
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const journey = service.getJourneyOrThrow(id);
     const latestUpdate = store.latestPlaylistUpdate(id);
-    const tracks = store.listResolvedTracks(id);
+    const tracks = store.listResolvedTracksDetailed(id).map((track) => ({
+      ...track,
+      whyLine: config.WHY_LINE_ENABLED
+        ? composeWhyLine({
+            lens: track.candidateLens,
+            reason: track.candidateReason,
+            source: track.candidateSource,
+            chartCountry: track.candidateChartCountry ?? track.chartCountry,
+          })
+        : undefined,
+    }));
     const hasTracks = tracks.length > 0;
     const analysisFailed = store.latestAuditEvent(id, "analysis.failed");
     const lastUpdateFailed = latestUpdate?.status === "failed";

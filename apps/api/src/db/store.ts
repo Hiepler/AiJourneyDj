@@ -628,6 +628,37 @@ export class Store {
       }));
   }
 
+  /** Resolved Tracks inkl. Kandidaten-Attribution für die whyLine. */
+  listResolvedTracksDetailed(journeyId: string): Array<
+    ReturnType<Store["listResolvedTracks"]>[number] & {
+      candidateLens?: string;
+      candidateReason?: string;
+      candidateSource?: string;
+      candidateChartCountry?: string;
+    }
+  > {
+    const base = this.listResolvedTracks(journeyId);
+    const rows = this.db.all<any>(
+      `SELECT rt.id as rid, sc.lens, sc.reason, sc.source, sc.chart_country
+       FROM resolved_tracks rt JOIN song_candidates sc ON sc.id = rt.candidate_id
+       WHERE rt.journey_id = ?`,
+      [journeyId],
+    );
+    const byId = new Map(rows.map((row) => [row.rid, row]));
+    return base.map((track) => {
+      const meta = byId.get(track.id);
+      return meta
+        ? {
+            ...track,
+            candidateLens: meta.lens ?? undefined,
+            candidateReason: meta.reason ?? undefined,
+            candidateSource: meta.source ?? undefined,
+            candidateChartCountry: meta.chart_country ?? undefined,
+          }
+        : track;
+    });
+  }
+
   markTracksAdded(ids: string[]): void {
     for (const id of ids) {
       this.db.run(
