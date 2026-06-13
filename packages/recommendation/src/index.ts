@@ -505,6 +505,7 @@ export function createSongScout(input: {
     perLensCount?: number;
     maxOutputTokens?: number;
     lenses?: SongLens[];
+    includeDeepCuts?: boolean;
   };
 }): { scout: SongScout; info: SongScoutInfo } {
   const geminiUsable = input.mock || Boolean(input.gemini.apiKey);
@@ -523,6 +524,7 @@ export function createSongScout(input: {
         lenses,
         perLensCount: input.multilens?.perLensCount,
         maxOutputTokens: input.multilens?.maxOutputTokens,
+        includeDeepCuts: input.multilens?.includeDeepCuts,
       }),
       info: {
         provider: "multilens",
@@ -1075,6 +1077,10 @@ export interface MusicalBrief {
   explorationAngle?: string;
   /** Recently-played artists to avoid (cross-journey fatigue, surfaced to the LLM). */
   avoidRecentArtists?: string[];
+  /** Drive-story act directive for the LLM (narrative arc). */
+  storyDirective?: string;
+  /** Moment directive for the LLM (arrival/sunset/etc). */
+  momentDirective?: string;
 }
 
 /**
@@ -1246,6 +1252,10 @@ export function rankResolvedTracksForPolicy<T extends ResolvedTrack>(
     recentSongPenalty?: Map<string, number>;
     /** Normalized artists exempt from fatigue (active wish / pinned). */
     fatigueExemptArtists?: Iterable<string>;
+    /** Hart gebannte (normalisierte) Artisten — Vielfalts-Doktrin; Exempts gewinnen. */
+    bannedArtists?: ReadonlySet<string>;
+    /** Weicher Mood-Tag-Malus (Session-Lernsignal aus Skips). */
+    softMoodPenalty?: Map<string, number>;
   } = {},
 ): T[] {
   const consumedArtists = new Set(
@@ -1271,11 +1281,16 @@ export function rankResolvedTracksForPolicy<T extends ResolvedTrack>(
   const fatigueExempt = new Set(
     [...(options.fatigueExemptArtists ?? [])].map((artist) => normalizeText(artist)),
   );
+  const bannedArtists = options.bannedArtists ?? new Set<string>();
   const jitterStrength = options.seed !== undefined ? options.jitterStrength ?? 0.06 : 0;
   return [...tracks]
     .filter((track) => track.providerUri && track.isPlayable !== false)
     .filter((track) => !(policy.cleanRequired && track.explicit === true))
     .filter((track) => !avoidedSongs.has(songKey(track.artist, track.title)))
+    .filter((track) => {
+      const artist = normalizeText(track.artist);
+      return !bannedArtists.has(artist) || fatigueExempt.has(artist);
+    })
     .map((track, index) => {
       const popularity =
         typeof track.popularity === "number"
@@ -1297,6 +1312,13 @@ export function rankResolvedTracksForPolicy<T extends ResolvedTrack>(
         ? 0
         : (recentSongPenalty.get(trackSongKey) ?? 0) +
           (recentArtistPenalty.get(artist) ?? 0);
+      const moodSoft = Math.max(
+        0,
+        ...(track.moodTags ?? []).map(
+          (tag) => options.softMoodPenalty?.get(normalizeText(tag)) ?? 0,
+        ),
+        0,
+      );
       const jitter =
         jitterStrength > 0
           ? seededJitter(options.seed as number, trackSongKey) * jitterStrength
@@ -1318,6 +1340,7 @@ export function rankResolvedTracksForPolicy<T extends ResolvedTrack>(
         jitter -
         fatiguePenalty -
         recentPenalty -
+        moodSoft -
         index * 0.0001;
       return { track, score };
     })
@@ -1542,6 +1565,20 @@ export function buildMusicalBrief(
   targetEnergy = Math.max(targetEnergy, energyFloor);
   if (energyFloor > 0) moodWords.push("alert", "wakeful");
 
+  // Telemetry fusion: a single energy stellschraube. Heavy traffic dampens energy
+  // (unless a wake-up bias is active); the vibe/story energyBias shifts it directly.
+  const trafficDamp =
+    typeof context.trafficDelayMinutes === "number" &&
+    context.trafficDelayMinutes >= 10 &&
+    (context.energyBias ?? 0) < 0.1
+      ? 0.1
+      : 0;
+  const fusedBias = Math.max(
+    -0.3,
+    Math.min(0.3, (context.energyBias ?? 0) - trafficDamp),
+  );
+  targetEnergy = Math.max(0.1, Math.min(1, targetEnergy + fusedBias));
+
   const focusLevel = clamp01(
     (context.phase === "focus" ? 0.75 : 0.35) +
       (context.autopilotState === "active" ? 0.15 : 0),
@@ -1599,6 +1636,12 @@ export function buildMusicalBrief(
     context.autopilotState,
     band === "deep_night" || band === "night" ? "night" : undefined,
     socialEnergy,
+    typeof context.trafficDelayMinutes === "number" &&
+    context.trafficDelayMinutes >= 10
+      ? "heavy_traffic"
+      : undefined,
+    context.accelStyle,
+    context.quietCabin ? "quiet_cabin" : undefined,
   ].filter((value): value is string => Boolean(value));
   const genres =
     context.passengerMode === "family"
@@ -1647,6 +1690,8 @@ export function buildMusicalBrief(
     weatherFeel: context.weatherFeel,
     explorationAngle: context.varietyAngle,
     avoidRecentArtists: context.recentlyPlayedArtists ?? [],
+    storyDirective: context.storyDirective,
+    momentDirective: context.momentDirective,
   };
 }
 
@@ -1680,7 +1725,7 @@ export const DEFAULT_LENSES: SongLens[] = [
     key: "regional",
     grounded: true,
     instruction:
-      "Favor artists connected to, or culturally evocative of, the journey's region/destination.",
+      "Geo soundtrack lens: use web search to find music with a REAL connection to the journey's region, route and destination — artists born or based there, songs naming these places or landscapes, local scenes. The drive should sound like the geography it passes through.",
   },
 ];
 
@@ -1701,7 +1746,7 @@ const CINEMATIC_LENSES: Record<string, SongLens> = {
     key: "regional_texture",
     grounded: true,
     instruction:
-      "Use the region or destination as cultural texture, not a gimmick; favor real local or evocative artists.",
+      "Geo soundtrack lens: use web search to find music with a REAL connection to the journey's region, route and destination — artists born or based there, songs naming these places or landscapes, local scenes. The drive should sound like the geography it passes through.",
   },
   timeless_anchor: {
     key: "timeless_anchor",
@@ -1751,9 +1796,18 @@ const CINEMATIC_LENSES: Record<string, SongLens> = {
     instruction:
       "Find one familiar anchor that lightly reflects listener taste without becoming niche.",
   },
+  deep_cuts: {
+    key: "deep_cuts",
+    grounded: true,
+    instruction:
+      "Explorer lens: NO global superstars or evergreen chart staples. Surface B-sides, album deep cuts, regional scenes and fresh releases that genuinely fit the mood. Every artist must be distinct, lesser-known, and NOT on the avoid list.",
+  },
 };
 
-export function selectJourneyLenses(brief: MusicalBrief): SongLens[] {
+export function selectJourneyLenses(
+  brief: MusicalBrief,
+  options: { includeDeepCuts?: boolean } = {},
+): SongLens[] {
   const picked: SongLens[] = [];
   const add = (key: keyof typeof CINEMATIC_LENSES): void => {
     const lens = CINEMATIC_LENSES[key];
@@ -1796,7 +1850,9 @@ export function selectJourneyLenses(brief: MusicalBrief): SongLens[] {
   if (picked.length < 5) add("cinematic_warmth");
   if (picked.length < 5) add("resolving_arrival");
 
-  return picked.slice(0, 5);
+  const base = picked.slice(0, 5);
+  if (options.includeDeepCuts) base.push(CINEMATIC_LENSES.deep_cuts);
+  return base;
 }
 
 /**
@@ -1852,6 +1908,8 @@ export function buildLensPrompt(
       : "",
     brief.weatherFeel ? `Weather right now: ${brief.weatherFeel}.` : "",
     brief.explorationAngle ? `Freshness directive: ${brief.explorationAngle}.` : "",
+    brief.storyDirective ? `Drive story: ${brief.storyDirective}` : "",
+    brief.momentDirective ? `Moment: ${brief.momentDirective}` : "",
     brief.avoidRecentArtists && brief.avoidRecentArtists.length > 0
       ? `Avoid these recently played artists: ${brief.avoidRecentArtists.slice(0, 12).join(", ")}.`
       : "",
@@ -2168,6 +2226,8 @@ export interface MultiLensSongScoutOptions {
   perLensCount?: number;
   /** Output-token cap per lens call (cost lever). */
   maxOutputTokens?: number;
+  /** Appends the deep_cuts explorer lens (extra grounded call) when true. */
+  includeDeepCuts?: boolean;
   requestTimeoutMs?: number;
   fetchImpl?: typeof fetch;
   /** Test seam: overrides the real Gemini call per lens. */
@@ -2210,7 +2270,11 @@ export class MultiLensSongScout implements SongScout {
       const runner =
         this.options.lensRunner ??
         ((lens, b, count) => this.runLens(lens, b, count));
-      const lenses = this.options.lenses ?? selectJourneyLenses(brief);
+      const lenses =
+        this.options.lenses ??
+        selectJourneyLenses(brief, {
+          includeDeepCuts: this.options.includeDeepCuts,
+        });
       const settled = await Promise.all(
         lenses.map((lens) =>
           runner(lens, brief, this.perLensCount).catch(
@@ -2375,3 +2439,15 @@ export {
   type VarietyContext,
   type VarietyInput,
 } from "./variety.js";
+
+export {
+  momentumRadioCandidates,
+  similarRankWindow,
+  type SimilarSource,
+} from "./momentumRadio.js";
+
+export {
+  driveStoryAct,
+  type StoryAct,
+  type StoryBeat,
+} from "./driveStory.js";
