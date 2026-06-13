@@ -162,6 +162,9 @@ const schema = z.object({
   SIMILAR_RANK_MIN: z.coerce.number().int().min(1).default(5),
   SIMILAR_RANK_MAX: z.coerce.number().int().min(2).default(30),
   LASTFM_SIMILAR_CACHE_HOURS: z.coerce.number().min(1).default(168),
+  // Deep-Cut-Explorer-Lens (zusätzlicher grounded Scout-Call) + Genre-Spread im Buffer.
+  EXPLORER_LENS_ENABLED: envBoolean(true),
+  GENRE_SPREAD_ENABLED: envBoolean(true),
   TESLA_FLEET_ENABLED: envBoolean(false),
   TESLA_CLIENT_ID: z.string().optional(),
   TESLA_CLIENT_SECRET: z.string().optional(),

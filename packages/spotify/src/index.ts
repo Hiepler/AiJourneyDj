@@ -946,9 +946,13 @@ export function queueTracksForBuffer<T extends ResolvedTrack>(
     /** Artist keys already consumed or currently in use. Preferred distinctness, not a hard fail when the pool is small. */
     excludeArtistKeys?: Set<string>;
     preferDistinctArtists?: boolean;
+    /** Reorders the result so equal mood keys avoid sitting adjacent (soft, pool-permitting). */
+    preferDistinctGenres?: boolean;
     cleanRequired?: boolean;
   },
 ): T[] {
+  const finish = (picked: T[]): T[] =>
+    spreadGenres(picked, args.preferDistinctGenres);
   const target = args.targetBufferSize ?? 5;
   // A non-positive target means the buffer is already full: select nothing. Without this
   // guard the early-return below (`selected.length === target`) can never fire and the
@@ -981,10 +985,34 @@ export function queueTracksForBuffer<T extends ResolvedTrack>(
       seenKeys.add(key);
       seenArtists.add(artist);
       selected.push(track);
-      if (selected.length === target) return selected;
+      if (selected.length === target) return finish(selected);
     }
   }
-  return selected;
+  return finish(selected);
+}
+
+/**
+ * Genre-Spread: greedy reorder so no two equal mood keys sit adjacent, as long as the
+ * pool allows it (soft — if impossible the existing ranking order is preserved).
+ */
+function spreadGenres<T extends ResolvedTrack>(
+  selected: T[],
+  enabled?: boolean,
+): T[] {
+  if (!enabled || selected.length < 3) return selected;
+  const genreOf = (track: T): string =>
+    normalizeText(track.moodTags?.[0] ?? "unknown");
+  const pool = [...selected];
+  const ordered: T[] = [];
+  while (pool.length > 0) {
+    const prev = ordered[ordered.length - 1];
+    const index = prev
+      ? pool.findIndex((track) => genreOf(track) !== genreOf(prev))
+      : 0;
+    const pick = pool.splice(index === -1 ? 0 : index, 1)[0];
+    ordered.push(pick);
+  }
+  return ordered;
 }
 
 function mapSpotifyTrack(item: any, market?: string): SpotifyTrackSearchResult {

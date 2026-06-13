@@ -89,6 +89,7 @@ export async function buildApp(config: AppConfig) {
     multilens: {
       perLensCount: config.SONG_SCOUT_PER_LENS,
       maxOutputTokens: config.SONG_SCOUT_MAX_OUTPUT_TOKENS,
+      includeDeepCuts: config.EXPLORER_LENS_ENABLED,
     },
   });
   const openMusic = config.XAI_MOCK

@@ -1386,6 +1386,7 @@ export class JourneyService {
       excludeSongKeys: consumedSongKeys,
       excludeArtistKeys: consumedArtistKeys,
       preferDistinctArtists: policy.preferDistinctArtists,
+      preferDistinctGenres: this.config.GENRE_SPREAD_ENABLED,
       cleanRequired: policy.cleanRequired,
       targetBufferSize: needed,
     });

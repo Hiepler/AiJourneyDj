@@ -729,6 +729,38 @@ describe("spotify playback helpers", () => {
     ]);
   });
 
+  it("spreads genres so no two equal mood keys sit adjacent when the pool allows", () => {
+    const mk = (id: string, tag: string) => ({
+      provider: "spotify" as const,
+      providerTrackId: id,
+      providerUri: `spotify:track:${id}`,
+      artist: `Artist ${id}`,
+      title: `Track ${id}`,
+      moodTags: [tag],
+      matchConfidence: 0.9,
+      matchReason: "test",
+    });
+    const tracks = [
+      mk("a", "pop"),
+      mk("b", "pop"),
+      mk("c", "rock"),
+      mk("d", "pop"),
+      mk("e", "jazz"),
+      mk("f", "rock"),
+    ];
+
+    const selected = queueTracksForBuffer(tracks, {
+      alreadyQueuedProviderIds: new Set<string>(),
+      targetBufferSize: 5,
+      preferDistinctGenres: true,
+    });
+
+    for (let i = 1; i < selected.length; i += 1) {
+      expect(selected[i].moodTags?.[0]).not.toBe(selected[i - 1].moodTags?.[0]);
+    }
+    expect(selected).toHaveLength(5);
+  });
+
   it("adds tracks to a playlist via POST /playlists/{id}/tracks", async () => {
     const calls: { method: string; url: string; body: unknown }[] = [];
     const fetchImpl: typeof fetch = async (input, init) => {

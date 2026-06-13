@@ -505,6 +505,7 @@ export function createSongScout(input: {
     perLensCount?: number;
     maxOutputTokens?: number;
     lenses?: SongLens[];
+    includeDeepCuts?: boolean;
   };
 }): { scout: SongScout; info: SongScoutInfo } {
   const geminiUsable = input.mock || Boolean(input.gemini.apiKey);
@@ -523,6 +524,7 @@ export function createSongScout(input: {
         lenses,
         perLensCount: input.multilens?.perLensCount,
         maxOutputTokens: input.multilens?.maxOutputTokens,
+        includeDeepCuts: input.multilens?.includeDeepCuts,
       }),
       info: {
         provider: "multilens",
@@ -1687,7 +1689,7 @@ export const DEFAULT_LENSES: SongLens[] = [
     key: "regional",
     grounded: true,
     instruction:
-      "Favor artists connected to, or culturally evocative of, the journey's region/destination.",
+      "Geo soundtrack lens: use web search to find music with a REAL connection to the journey's region, route and destination — artists born or based there, songs naming these places or landscapes, local scenes. The drive should sound like the geography it passes through.",
   },
 ];
 
@@ -1708,7 +1710,7 @@ const CINEMATIC_LENSES: Record<string, SongLens> = {
     key: "regional_texture",
     grounded: true,
     instruction:
-      "Use the region or destination as cultural texture, not a gimmick; favor real local or evocative artists.",
+      "Geo soundtrack lens: use web search to find music with a REAL connection to the journey's region, route and destination — artists born or based there, songs naming these places or landscapes, local scenes. The drive should sound like the geography it passes through.",
   },
   timeless_anchor: {
     key: "timeless_anchor",
@@ -1758,9 +1760,18 @@ const CINEMATIC_LENSES: Record<string, SongLens> = {
     instruction:
       "Find one familiar anchor that lightly reflects listener taste without becoming niche.",
   },
+  deep_cuts: {
+    key: "deep_cuts",
+    grounded: true,
+    instruction:
+      "Explorer lens: NO global superstars or evergreen chart staples. Surface B-sides, album deep cuts, regional scenes and fresh releases that genuinely fit the mood. Every artist must be distinct, lesser-known, and NOT on the avoid list.",
+  },
 };
 
-export function selectJourneyLenses(brief: MusicalBrief): SongLens[] {
+export function selectJourneyLenses(
+  brief: MusicalBrief,
+  options: { includeDeepCuts?: boolean } = {},
+): SongLens[] {
   const picked: SongLens[] = [];
   const add = (key: keyof typeof CINEMATIC_LENSES): void => {
     const lens = CINEMATIC_LENSES[key];
@@ -1803,7 +1814,9 @@ export function selectJourneyLenses(brief: MusicalBrief): SongLens[] {
   if (picked.length < 5) add("cinematic_warmth");
   if (picked.length < 5) add("resolving_arrival");
 
-  return picked.slice(0, 5);
+  const base = picked.slice(0, 5);
+  if (options.includeDeepCuts) base.push(CINEMATIC_LENSES.deep_cuts);
+  return base;
 }
 
 /**
@@ -2175,6 +2188,8 @@ export interface MultiLensSongScoutOptions {
   perLensCount?: number;
   /** Output-token cap per lens call (cost lever). */
   maxOutputTokens?: number;
+  /** Appends the deep_cuts explorer lens (extra grounded call) when true. */
+  includeDeepCuts?: boolean;
   requestTimeoutMs?: number;
   fetchImpl?: typeof fetch;
   /** Test seam: overrides the real Gemini call per lens. */
@@ -2217,7 +2232,11 @@ export class MultiLensSongScout implements SongScout {
       const runner =
         this.options.lensRunner ??
         ((lens, b, count) => this.runLens(lens, b, count));
-      const lenses = this.options.lenses ?? selectJourneyLenses(brief);
+      const lenses =
+        this.options.lenses ??
+        selectJourneyLenses(brief, {
+          includeDeepCuts: this.options.includeDeepCuts,
+        });
       const settled = await Promise.all(
         lenses.map((lens) =>
           runner(lens, brief, this.perLensCount).catch(
