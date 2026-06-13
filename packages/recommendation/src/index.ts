@@ -10,6 +10,7 @@ import type {
 } from "@ai-journey-dj/core";
 import { clampConfidence, normalizeText, songKey } from "@ai-journey-dj/core";
 import { seededJitter } from "./variety.js";
+import { looksLikeSpokenWord } from "./spokenWord.js";
 import type { LastfmChartTrack } from "./lastfm.js";
 import type { TimeBand, TripSegment } from "./context-signals.js";
 import { timeOfDayBand, tripArc, alertnessFloor, ALERTNESS_FLOOR_BASE, ALERTNESS_FLOOR_SLOPE } from "./context-signals.js";
@@ -347,6 +348,8 @@ export function buildJourneyPrompt(
     "were chosen the moment the car's mood, pace, and surroundings shifted.",
     "Use web search to verify releases and to include genuinely current charting or viral tracks alongside",
     "timeless classics; vary artists, eras, and energy and avoid obvious repetition.",
+    "ONLY actual music. Never return audio dramas, Hörspiele, audiobooks, Hörbücher, readings, podcasts,",
+    "guided meditations, ASMR, or children's story episodes (e.g. no 'Folge/Kapitel/Teil N' episode tracks).",
     "Map abstract drive signals (never invent raw GPS, VINs, or streaming-library data):",
     "- speedBucket: parked = slow/ambient, city = mid-tempo groove, highway = forward momentum",
     "- phase: departure = lift, cruise = steady flow, golden_hour = cinematic warmth, arrival = wind-down, focus = minimal",
@@ -481,6 +484,8 @@ const GEMINI_SYSTEM_INSTRUCTION = [
   "abstract journey context (destination, region, time, weather feel, pace bucket, phase, ETA, passengers).",
   "Blend classics with current charting or viral tracks. Each reason must reference at least two context",
   "signals so the set feels written for this exact drive.",
+  "ONLY actual music — never audio dramas, Hörspiele, audiobooks, Hörbücher, readings, podcasts, guided",
+  "meditations, ASMR, or children's story episodes (no 'Folge/Kapitel/Teil N' episode tracks).",
   "Respond with ONLY valid JSON, no markdown, no schema placeholders. Example:",
   '{"songs":[{"artist":"Khruangbin","title":"Time","reason":"highway cruise through warm evening","confidence":0.82}]}',
   "Never include streaming-service data, raw GPS coordinates, VINs, or user-library references.",
@@ -1256,6 +1261,8 @@ export function rankResolvedTracksForPolicy<T extends ResolvedTrack>(
     bannedArtists?: ReadonlySet<string>;
     /** Weicher Mood-Tag-Malus (Session-Lernsignal aus Skips). */
     softMoodPenalty?: Map<string, number>;
+    /** Hard-Filter: Hörspiele/Hörbücher/Spoken-Word ausschließen (ein Musik-DJ spielt keine Hörspiele). */
+    excludeSpokenWord?: boolean;
   } = {},
 ): T[] {
   const consumedArtists = new Set(
@@ -1291,6 +1298,11 @@ export function rankResolvedTracksForPolicy<T extends ResolvedTrack>(
       const artist = normalizeText(track.artist);
       return !bannedArtists.has(artist) || fatigueExempt.has(artist);
     })
+    .filter(
+      (track) =>
+        !options.excludeSpokenWord ||
+        !looksLikeSpokenWord(track.artist, track.title),
+    )
     .map((track, index) => {
       const popularity =
         typeof track.popularity === "number"
@@ -1359,6 +1371,8 @@ export function lastfmTracksToCandidates(
     const key = songKey(track.artist, track.title);
     if (seen.has(key)) continue;
     seen.add(key);
+    // German charts/tags are flooded with Hörspiele — never let spoken-word into a music queue.
+    if (looksLikeSpokenWord(track.artist, track.title)) continue;
     out.push({
       artist: track.artist,
       title: track.title,
@@ -1725,7 +1739,7 @@ export const DEFAULT_LENSES: SongLens[] = [
     key: "regional",
     grounded: true,
     instruction:
-      "Geo soundtrack lens: use web search to find music with a REAL connection to the journey's region, route and destination — artists born or based there, songs naming these places or landscapes, local scenes. The drive should sound like the geography it passes through.",
+      "Geo soundtrack lens: use web search to find music with a REAL connection to the journey's region, route and destination — artists born or based there, songs naming these places or landscapes, local scenes. The drive should sound like the geography it passes through. ONLY real music — never audio dramas, Hörspiele, audiobooks or spoken-word.",
   },
 ];
 
@@ -1746,7 +1760,7 @@ const CINEMATIC_LENSES: Record<string, SongLens> = {
     key: "regional_texture",
     grounded: true,
     instruction:
-      "Geo soundtrack lens: use web search to find music with a REAL connection to the journey's region, route and destination — artists born or based there, songs naming these places or landscapes, local scenes. The drive should sound like the geography it passes through.",
+      "Geo soundtrack lens: use web search to find music with a REAL connection to the journey's region, route and destination — artists born or based there, songs naming these places or landscapes, local scenes. The drive should sound like the geography it passes through. ONLY real music — never audio dramas, Hörspiele, audiobooks or spoken-word.",
   },
   timeless_anchor: {
     key: "timeless_anchor",
@@ -1800,7 +1814,7 @@ const CINEMATIC_LENSES: Record<string, SongLens> = {
     key: "deep_cuts",
     grounded: true,
     instruction:
-      "Explorer lens: NO global superstars or evergreen chart staples. Surface B-sides, album deep cuts, regional scenes and fresh releases that genuinely fit the mood. Every artist must be distinct, lesser-known, and NOT on the avoid list.",
+      "Explorer lens: NO global superstars or evergreen chart staples. Surface B-sides, album deep cuts, regional music scenes and fresh releases that genuinely fit the mood. Every artist must be distinct, lesser-known, and NOT on the avoid list. ONLY real music — never audio dramas, Hörspiele, audiobooks or spoken-word episodes.",
   },
 };
 
@@ -2451,3 +2465,5 @@ export {
   type StoryAct,
   type StoryBeat,
 } from "./driveStory.js";
+
+export { looksLikeSpokenWord } from "./spokenWord.js";

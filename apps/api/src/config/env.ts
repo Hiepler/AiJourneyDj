@@ -177,8 +177,10 @@ const schema = z.object({
   SKIP_FEEDBACK_ENABLED: envBoolean(true),
   SKIP_FEEDBACK_THRESHOLD: z.coerce.number().min(0.1).max(0.95).default(0.6),
   SKIP_FEEDBACK_ARTIST_PENALTY: z.coerce.number().min(0).max(1).default(0.3),
-  // Erklärbare Kuration: server-komponierte „Warum dieser Song?“-Zeile.
+  // Erklärbare Kuration: server-komponierte „Warum dieser Song?”-Zeile.
   WHY_LINE_ENABLED: envBoolean(true),
+  // Hard-Filter gegen Hörspiele/Hörbücher/Spoken-Word in der finalen Auswahl (Musik-DJ).
+  SPOKEN_WORD_FILTER_ENABLED: envBoolean(true),
   TESLA_FLEET_ENABLED: envBoolean(false),
   TESLA_CLIENT_ID: z.string().optional(),
   TESLA_CLIENT_SECRET: z.string().optional(),
