@@ -26,20 +26,33 @@ export interface PollDeps {
   fetchImpl: typeof fetch;
 }
 
+/** Inputs for a single on-demand `vehicle_data` read — no journey/streaming gates. */
+export interface LiveReadDeps {
+  apiBaseUrl: string;
+  accessToken: string;
+  resolveVehicleId: () => Promise<string | undefined>;
+  geocode: (
+    lat: number,
+    lon: number,
+  ) => Promise<string | GeocodeResult | undefined>;
+  appSecret: string;
+  fetchImpl: typeof fetch;
+}
+
 /**
- * A single poll tick. Cost-optimized: it does NOT list vehicles every tick. Instead it resolves the
- * vehicle id once (configured or discovered+cached) and calls `vehicle_data` directly.
+ * Performs one on-demand `vehicle_data` read and returns the normalized, geocoded event — or
+ * `undefined` when no vehicle is resolvable or the car is asleep/offline (Tesla 408). This is the
+ * pure I/O core shared by the background poll tick and the on-demand reader; it applies no journey
+ * or streaming gates so it can run before a journey even exists (e.g. to pre-fill the start screen).
  *
  * Calling `vehicle_data` does NOT wake a sleeping car — Tesla returns 408 for an asleep/offline
- * vehicle, which we treat as "skip". This halves billed requests on every online (driving) tick
- * versus the previous list-then-data approach. Returns silently when it should not read data.
+ * vehicle, which we treat as "no reading".
  */
-export async function pollTeslaOnce(deps: PollDeps): Promise<void> {
-  if (!deps.hasActiveJourney()) return;
-  if (deps.streamingIsFresh?.()) return; // streaming is live → no REST call needed
-
+export async function readLiveTeslaReading(
+  deps: LiveReadDeps,
+): Promise<NormalizedTelemetryEvent | undefined> {
   const id = await deps.resolveVehicleId();
-  if (!id) return; // no vehicle configured/discoverable
+  if (!id) return undefined; // no vehicle configured/discoverable
 
   const auth = { Authorization: `Bearer ${deps.accessToken}` };
   const base = deps.apiBaseUrl.replace(/\/$/, "");
@@ -52,7 +65,7 @@ export async function pollTeslaOnce(deps: PollDeps): Promise<void> {
       headers: auth,
     },
   );
-  if (!dataResponse.ok) return; // 408 asleep/offline (does not wake the car) → skip
+  if (!dataResponse.ok) return undefined; // 408 asleep/offline (does not wake the car)
 
   const payload = (await dataResponse.json()) as {
     response?: Record<string, unknown>;
@@ -72,6 +85,30 @@ export async function pollTeslaOnce(deps: PollDeps): Promise<void> {
       event.geoSource = geocoded.geoSource;
     }
   }
+  return event;
+}
+
+/**
+ * A single poll tick. Cost-optimized: it does NOT list vehicles every tick. Instead it resolves the
+ * vehicle id once (configured or discovered+cached) and calls `vehicle_data` directly.
+ *
+ * Calling `vehicle_data` does NOT wake a sleeping car — Tesla returns 408 for an asleep/offline
+ * vehicle, which we treat as "skip". This halves billed requests on every online (driving) tick
+ * versus the previous list-then-data approach. Returns silently when it should not read data.
+ */
+export async function pollTeslaOnce(deps: PollDeps): Promise<void> {
+  if (!deps.hasActiveJourney()) return;
+  if (deps.streamingIsFresh?.()) return; // streaming is live → no REST call needed
+
+  const event = await readLiveTeslaReading({
+    apiBaseUrl: deps.apiBaseUrl,
+    accessToken: deps.accessToken,
+    resolveVehicleId: deps.resolveVehicleId,
+    geocode: deps.geocode,
+    appSecret: deps.appSecret,
+    fetchImpl: deps.fetchImpl,
+  });
+  if (!event) return;
   await deps.ingest(event);
 }
 
@@ -152,4 +189,73 @@ export function startTeslaFleetPoller(
   };
 
   return setInterval(() => void tick(), config.TESLA_POLL_SECONDS * 1000);
+}
+
+/** Minimal auth surface the on-demand reader needs (kept narrow for testability). */
+export interface LiveReaderAuth {
+  isConnected(): boolean;
+  getAccessToken(): Promise<string>;
+}
+
+/** On-demand live telemetry: a one-shot read, independent of the background poll cadence. */
+export interface TeslaLiveReader {
+  /** True when Fleet polling is enabled and the car is connected, so a read can be attempted. */
+  available(): boolean;
+  /** Fetch one fresh reading now, or `undefined` if unavailable / asleep / it times out. Never throws. */
+  read(timeoutMs?: number): Promise<NormalizedTelemetryEvent | undefined>;
+}
+
+/**
+ * Builds a reader that fetches the car's *current* state on demand — used to pre-fill the start
+ * screen and to seed a journey's very first queue with live context, instead of waiting up to a full
+ * `TESLA_POLL_SECONDS` for the background poller. The vehicle id is discovered once and cached, so
+ * repeated reads cost a single `vehicle_data` call. Degrades silently: a missing vehicle, an asleep
+ * car (408), a timeout, or any error resolves to `undefined` so callers can fall back gracefully.
+ */
+export function createTeslaLiveReader(deps: {
+  config: AppConfig;
+  teslaAuth: LiveReaderAuth;
+  logger?: { warn: (obj: Record<string, unknown>, msg?: string) => void };
+  fetchImpl?: typeof fetch;
+}): TeslaLiveReader {
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const geocode = makeGeocodeResolver({ baseUrl: deps.config.GEOCODER_URL });
+  const resolveVehicleId = makeVehicleIdResolver({
+    apiBaseUrl: deps.config.TESLA_API_BASE_URL,
+    configuredVehicleId: deps.config.TESLA_VEHICLE_ID,
+    getAccessToken: () => deps.teslaAuth.getAccessToken(),
+    fetchImpl,
+  });
+
+  const available = () =>
+    deps.config.TESLA_FLEET_ENABLED && deps.teslaAuth.isConnected();
+
+  return {
+    available,
+    async read(timeoutMs = 4000) {
+      if (!available()) return undefined;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const accessToken = await deps.teslaAuth.getAccessToken();
+        return await readLiveTeslaReading({
+          apiBaseUrl: deps.config.TESLA_API_BASE_URL,
+          accessToken,
+          resolveVehicleId,
+          geocode,
+          appSecret: deps.config.APP_SECRET,
+          fetchImpl: (input, init) =>
+            fetchImpl(input, { ...init, signal: controller.signal }),
+        });
+      } catch (error) {
+        deps.logger?.warn(
+          { err: error instanceof Error ? error.message : String(error) },
+          "tesla.live_read_error",
+        );
+        return undefined;
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  };
 }
