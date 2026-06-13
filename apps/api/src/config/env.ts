@@ -168,6 +168,11 @@ const schema = z.object({
   // Drive-Story-Akte (Erzählbogen) + Ankunfts-/Moment-Fenster in Minuten.
   DRIVE_STORY_ENABLED: envBoolean(true),
   ARRIVAL_MOMENT_MINUTES: z.coerce.number().int().min(2).default(10),
+  // Journey-Momente (Verkehr, Grenze, Golden Hour, Ankunft …).
+  MOMENTS_ENABLED: envBoolean(true),
+  MOMENT_COOLDOWN_MINUTES: z.coerce.number().int().min(1).default(25),
+  TRAFFIC_JAM_DELAY_MINUTES: z.coerce.number().int().min(1).default(10),
+  TRAFFIC_RELEASE_DELAY_MINUTES: z.coerce.number().int().min(0).default(3),
   TESLA_FLEET_ENABLED: envBoolean(false),
   TESLA_CLIENT_ID: z.string().optional(),
   TESLA_CLIENT_SECRET: z.string().optional(),
