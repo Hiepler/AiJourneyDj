@@ -187,11 +187,22 @@ export async function registerJourneyRoutes(
     return service.setKidsMode(id, enabled);
   });
 
+  // Device-independent playback position for synced karaoke (works on car/phone Connect, not just
+  // the browser SDK). The client interpolates between polls with a local clock for smooth highlighting.
+  app.get("/journeys/:id/playback-progress", async (request) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    service.getJourneyOrThrow(id);
+    return service.getPlaybackProgress(id);
+  });
+
   // Synced lyrics for the karaoke/singalong view. Degrades to nulls when disabled or not found.
   app.get("/journeys/:id/tracks/:trackId/lyrics", async (request, reply) => {
     const { id, trackId } = z
       .object({ id: z.string(), trackId: z.string() })
       .parse(request.params);
+    const { durationSec } = z
+      .object({ durationSec: z.coerce.number().positive().optional() })
+      .parse(request.query);
     if (!config.LYRICS_ENABLED) return { synced: null, plain: null };
     service.getJourneyOrThrow(id);
     const track = store
@@ -203,6 +214,7 @@ export async function registerJourneyRoutes(
     const lyrics = await getLyrics({
       artist: track.artist,
       title: track.title,
+      durationSec,
       baseUrl: config.LRCLIB_BASE_URL,
     });
     return { synced: lyrics?.synced ?? null, plain: lyrics?.plain ?? null };

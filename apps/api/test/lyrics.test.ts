@@ -16,6 +16,11 @@ describe("parseLrc", () => {
     const lines = parseLrc("[ar:Artist]\n[00:01.00]One\n\nnot a line");
     expect(lines).toEqual([{ timeMs: 1_000, text: "One" }]);
   });
+
+  it("strips enhanced-LRC per-word timing tags from the text", () => {
+    const lines = parseLrc("[00:12.00]<00:12.00>Hello <00:12.50>world");
+    expect(lines).toEqual([{ timeMs: 12_000, text: "Hello world" }]);
+  });
 });
 
 describe("fetchLyrics", () => {
@@ -58,6 +63,27 @@ describe("fetchLyrics", () => {
       throw new Error("network down");
     };
     expect(await fetchLyrics({ artist: "A", title: "B", fetchImpl })).toBeUndefined();
+  });
+
+  it("prefers the synced version whose duration matches the playing track", async () => {
+    const fetchImpl: typeof fetch = async () =>
+      jsonResponse([
+        // A live cut of the wrong length appears first — must NOT win when duration is known.
+        { syncedLyrics: "[00:00.00]Live", duration: 320 },
+        { syncedLyrics: "[00:00.00]Studio", duration: 201 },
+      ]);
+    const lyrics = await fetchLyrics({ artist: "A", title: "B", durationSec: 203, fetchImpl });
+    expect(lyrics?.synced).toEqual([{ timeMs: 0, text: "Studio" }]);
+  });
+
+  it("falls back to the first synced entry when no duration is within tolerance", async () => {
+    const fetchImpl: typeof fetch = async () =>
+      jsonResponse([
+        { syncedLyrics: "[00:00.00]First", duration: 100 },
+        { syncedLyrics: "[00:00.00]Second", duration: 400 },
+      ]);
+    const lyrics = await fetchLyrics({ artist: "A", title: "B", durationSec: 250, fetchImpl });
+    expect(lyrics?.synced).toEqual([{ timeMs: 0, text: "First" }]);
   });
 
   it("requires both artist and title", async () => {

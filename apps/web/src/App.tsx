@@ -59,6 +59,21 @@ const DRIVE_MODE_REASON_LABELS: Record<string, string> = {
   "long night drive": "Nachtfahrt"
 };
 
+// Synced-karaoke tuning. Lines light up slightly early so they're easy to follow; we re-sync the
+// playback position only every few seconds and interpolate in between (smooth + low API load).
+const LYRICS_LOOKAHEAD_MS = 250;
+const LYRICS_SYNC_INTERVAL_MS = 2500;
+
+/** Index of the line that should be highlighted at a given (interpolated) playback position. */
+function lyricLineIndex(synced: { timeMs: number }[], positionMs: number): number {
+  let index = -1;
+  for (let i = 0; i < synced.length; i += 1) {
+    if (synced[i].timeMs <= positionMs + LYRICS_LOOKAHEAD_MS) index = i;
+    else break;
+  }
+  return index;
+}
+
 // Celebratory family-event copy for a freshly-fired journey moment (shown briefly in the cockpit).
 function momentEventLabel(moment: {
   type: string;
@@ -135,7 +150,7 @@ export function App() {
     plain: string | null;
   }>();
   const [lyricsLoading, setLyricsLoading] = useState(false);
-  const [lyricsPositionMs, setLyricsPositionMs] = useState(0);
+  const [activeLyricIndex, setActiveLyricIndex] = useState(-1);
   const [selectedMood, setSelectedMood] = useState(MOOD_PRESETS[0].key);
   const [passengerMode, setPassengerMode] = useState("couple");
   const [spotifyStatus, setSpotifyStatus] = useState<SpotifySdkStatus>("idle");
@@ -168,6 +183,12 @@ export function App() {
   const shownMomentAtRef = useRef<string | undefined>(undefined);
   // The currently-sung karaoke line, kept scrolled into view.
   const activeLineRef = useRef<HTMLParagraphElement | null>(null);
+  // Latest playback-position sample for synced karaoke; the rAF loop interpolates from it with a local
+  // clock so highlighting stays smooth between (infrequent) re-syncs. durationRef feeds lyrics matching.
+  const lyricsSyncRef = useRef<{ positionMs: number; isPlaying: boolean; atMs: number } | undefined>(
+    undefined,
+  );
+  const lyricsDurationRef = useRef<number | undefined>(undefined);
   // Holds the latest playback actions so MediaSession / visibility handlers never call stale closures.
   const playbackActionsRef = useRef({
     next: () => {},
@@ -790,14 +811,18 @@ export function App() {
   const heroTrackId = heroTrack?.id;
   const upcoming = displayTracks.filter((track) => track.id !== heroTrack?.id).slice(0, 5);
 
-  // Fetch lyrics for the current track when karaoke is open (cached server-side; once per track).
+  // Fetch lyrics for the current track when karaoke is open (cached server-side; once per track). Pass
+  // the playing track's duration so the server matches the right recording (live/remix/edit drift).
   useEffect(() => {
     if (!karaokeOn || !activeJourneyId || !heroTrackId) return;
     if (lyrics?.trackId === heroTrackId) return;
     let cancelled = false;
     setLyricsLoading(true);
+    const durationSec = lyricsDurationRef.current
+      ? lyricsDurationRef.current / 1000
+      : undefined;
     api
-      .lyrics(activeJourneyId, heroTrackId)
+      .lyrics(activeJourneyId, heroTrackId, durationSec)
       .then((res) => {
         if (!cancelled) setLyrics({ trackId: heroTrackId, synced: res.synced, plain: res.plain });
       })
@@ -812,45 +837,79 @@ export function App() {
     };
   }, [karaokeOn, activeJourneyId, heroTrackId, lyrics?.trackId]);
 
-  // Poll the browser player's position to drive synced highlighting. Non-browser playback (car/phone)
-  // has no position → the panel just shows static lyrics instead.
+  // Re-sync the playback position periodically. Prefers the in-browser SDK (free, no API call); falls
+  // back to the device-independent server endpoint so synced karaoke works on the car's/phone's native
+  // Spotify (Connect) too. Resets on track change so a stale position can't highlight the wrong line.
   useEffect(() => {
-    if (!karaokeOn || !lyrics?.synced || lyrics.synced.length === 0) return;
-    const player = playerRef.current;
-    if (!player?.getCurrentState) return;
+    setActiveLyricIndex(-1);
+    lyricsSyncRef.current = undefined;
+    if (!karaokeOn || !lyrics?.synced || lyrics.synced.length === 0 || !activeJourneyId) return;
     let active = true;
-    const tick = () => {
-      player
-        .getCurrentState?.()
-        .then((state) => {
-          if (active && state && typeof state.position === "number") {
-            setLyricsPositionMs(state.position);
-          }
-        })
-        .catch(() => undefined);
+    const syncTick = async () => {
+      try {
+        const sdkState = await playerRef.current?.getCurrentState?.();
+        if (active && sdkState && typeof sdkState.position === "number") {
+          lyricsSyncRef.current = {
+            positionMs: sdkState.position,
+            isPlaying: !sdkState.paused,
+            atMs: performance.now(),
+          };
+          if (typeof sdkState.duration === "number") lyricsDurationRef.current = sdkState.duration;
+          return;
+        }
+      } catch {
+        // fall through to the server source
+      }
+      try {
+        const progress = await api.playbackProgress(activeJourneyId);
+        if (active && typeof progress.progressMs === "number") {
+          lyricsSyncRef.current = {
+            positionMs: progress.progressMs,
+            isPlaying: progress.isPlaying,
+            atMs: performance.now(),
+          };
+          if (typeof progress.durationMs === "number") lyricsDurationRef.current = progress.durationMs;
+        }
+      } catch {
+        // best-effort: leave the last sample, the panel just shows static lyrics
+      }
     };
-    tick();
-    const timer = setInterval(tick, 400);
+    void syncTick();
+    const timer = setInterval(() => void syncTick(), LYRICS_SYNC_INTERVAL_MS);
     return () => {
       active = false;
       clearInterval(timer);
     };
+  }, [karaokeOn, activeJourneyId, lyrics?.synced, lyrics?.trackId]);
+
+  // Interpolate between re-syncs with a local clock and only re-render when the highlighted line
+  // actually changes — smooth highlighting without per-frame React churn.
+  useEffect(() => {
+    const synced = lyrics?.synced;
+    if (!karaokeOn || !synced || synced.length === 0) return;
+    let raf = 0;
+    const loop = () => {
+      const sample = lyricsSyncRef.current;
+      if (sample) {
+        const estimated = sample.isPlaying
+          ? sample.positionMs + (performance.now() - sample.atMs)
+          : sample.positionMs;
+        const index = lyricLineIndex(synced, estimated);
+        setActiveLyricIndex((prev) => (prev === index ? prev : index));
+      }
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
   }, [karaokeOn, lyrics?.synced, lyrics?.trackId]);
 
-  const activeLyricIndex = useMemo(() => {
-    const synced = lyrics?.synced;
-    if (!synced || synced.length === 0) return -1;
-    let index = -1;
-    // +250ms lookahead so a line lights up just before it's sung — feels natural to follow.
-    for (let i = 0; i < synced.length; i += 1) {
-      if (synced[i].timeMs <= lyricsPositionMs + 250) index = i;
-      else break;
-    }
-    return index;
-  }, [lyrics?.synced, lyricsPositionMs]);
-
   useEffect(() => {
-    activeLineRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (activeLyricIndex < 0) return;
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    activeLineRef.current?.scrollIntoView({
+      behavior: reduceMotion ? "auto" : "smooth",
+      block: "center",
+    });
   }, [activeLyricIndex]);
   const currentPhase = phaseMeta(detail?.journey.phase);
   const PhaseIcon = currentPhase.Icon;
@@ -1257,6 +1316,9 @@ export function App() {
                     </p>
                   ) : lyrics?.synced && lyrics.synced.length > 0 ? (
                     <div className="karaoke-lines">
+                      <span className="sr-only" aria-live="polite">
+                        {activeLyricIndex >= 0 ? lyrics.synced[activeLyricIndex]?.text : ""}
+                      </span>
                       {lyrics.synced.map((line, index) => (
                         <p
                           className={`karaoke-line${index === activeLyricIndex ? " active" : ""}`}

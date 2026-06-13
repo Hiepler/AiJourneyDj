@@ -18,6 +18,8 @@ export interface Lyrics {
 }
 
 const LRC_STAMP = /\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]/g;
+// Enhanced-LRC per-word timing tags, e.g. "<00:12.50>" — stripped so they don't show as text.
+const LRC_WORD_TAG = /<\d{1,2}:\d{2}(?:[.:]\d{1,3})?>/g;
 
 /** Parses an LRC string into time-sorted lines. A line may carry multiple timestamps (repeats). */
 export function parseLrc(lrc: string): LyricLine[] {
@@ -35,7 +37,11 @@ export function parseLrc(lrc: string): LyricLine[] {
       lastIndex = LRC_STAMP.lastIndex;
     }
     if (stamps.length === 0) continue;
-    const text = raw.slice(lastIndex).trim();
+    const text = raw
+      .slice(lastIndex)
+      .replace(LRC_WORD_TAG, "")
+      .replace(/\s+/g, " ")
+      .trim();
     for (const timeMs of stamps) lines.push({ timeMs, text });
   }
   return lines.sort((a, b) => a.timeMs - b.timeMs);
@@ -44,12 +50,46 @@ export function parseLrc(lrc: string): LyricLine[] {
 interface LrclibEntry {
   syncedLyrics?: string | null;
   plainLyrics?: string | null;
+  /** Recording length in seconds — used to pick the right version (live/remix/edit drift otherwise). */
+  duration?: number | null;
 }
 
-/** One LRCLIB search; never throws. Picks the first synced match, else the first plain match. */
+/** Tolerance (seconds) for matching a lyrics entry to the playing track's duration. */
+const DURATION_TOLERANCE_SEC = 4;
+
+/**
+ * Picks the best entry matching a predicate. When `durationSec` is known, prefers the candidate whose
+ * recording length is closest (within tolerance) so we don't sync to a live/remix/edit of wrong length;
+ * otherwise falls back to the first candidate (LRCLIB returns most-relevant first).
+ */
+function pickEntry(
+  list: LrclibEntry[],
+  has: (entry: LrclibEntry) => boolean,
+  durationSec?: number,
+): LrclibEntry | undefined {
+  const candidates = list.filter(has);
+  if (candidates.length === 0) return undefined;
+  if (durationSec && durationSec > 0) {
+    let best: LrclibEntry | undefined;
+    let bestDelta = Number.POSITIVE_INFINITY;
+    for (const entry of candidates) {
+      if (typeof entry.duration !== "number") continue;
+      const delta = Math.abs(entry.duration - durationSec);
+      if (delta < bestDelta) {
+        best = entry;
+        bestDelta = delta;
+      }
+    }
+    if (best && bestDelta <= DURATION_TOLERANCE_SEC) return best;
+  }
+  return candidates[0];
+}
+
+/** One LRCLIB search; never throws. Prefers a duration-matched synced version, else plain. */
 export async function fetchLyrics(opts: {
   artist: string;
   title: string;
+  durationSec?: number;
   baseUrl?: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
@@ -72,7 +112,7 @@ export async function fetchLyrics(opts: {
     const list = (await res.json()) as LrclibEntry[];
     if (!Array.isArray(list) || list.length === 0) return undefined;
 
-    const syncedEntry = list.find((entry) => entry.syncedLyrics);
+    const syncedEntry = pickEntry(list, (e) => Boolean(e.syncedLyrics), opts.durationSec);
     if (syncedEntry?.syncedLyrics) {
       const parsed = parseLrc(syncedEntry.syncedLyrics);
       if (parsed.length > 0) {
@@ -80,8 +120,8 @@ export async function fetchLyrics(opts: {
         return { synced: parsed, plain: syncedEntry.plainLyrics ?? undefined };
       }
     }
-    const plain = list.find((entry) => entry.plainLyrics)?.plainLyrics;
-    return plain ? { plain } : undefined;
+    const plainEntry = pickEntry(list, (e) => Boolean(e.plainLyrics), opts.durationSec);
+    return plainEntry?.plainLyrics ? { plain: plainEntry.plainLyrics } : undefined;
   } catch {
     return undefined;
   } finally {
@@ -102,13 +142,16 @@ const CACHE_MAX = 200;
 export async function getLyrics(opts: {
   artist: string;
   title: string;
+  durationSec?: number;
   baseUrl?: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
   now?: () => number;
 }): Promise<Lyrics | undefined> {
   const now = (opts.now ?? Date.now)();
-  const key = `${opts.artist.trim().toLowerCase()}|${opts.title.trim().toLowerCase()}`;
+  // Round duration into the cache key so a duration-matched result isn't served for a length mismatch.
+  const durBucket = opts.durationSec ? Math.round(opts.durationSec / 5) : "x";
+  const key = `${opts.artist.trim().toLowerCase()}|${opts.title.trim().toLowerCase()}|${durBucket}`;
   const cached = cache.get(key);
   if (cached && now - cached.at < CACHE_TTL_MS) return cached.value;
 
