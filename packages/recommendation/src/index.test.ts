@@ -460,6 +460,37 @@ describe("recommendation", () => {
     });
   });
 
+  it("lastfmTracksToCandidates drops Hörspiele from the German charts", () => {
+    const candidates = lastfmTracksToCandidates(
+      [
+        { artist: "Die drei ???", title: "Folge 215", rank: 1, country: "Germany", source: "lastfm-geo" },
+        { artist: "Miley Cyrus", title: "Flowers", rank: 2, country: "Germany", source: "lastfm-geo" },
+      ],
+      context,
+      ["pop"],
+    );
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].artist).toBe("Miley Cyrus");
+  });
+
+  it("rankResolvedTracksForPolicy excludes spoken-word when asked", () => {
+    const policy = buildRecommendationPolicy(context);
+    const mk = (artist: string, title: string) => ({
+      provider: "spotify" as const,
+      providerTrackId: `${artist}-${title}`,
+      providerUri: `spotify:track:${artist}`,
+      artist,
+      title,
+      matchConfidence: 0.9,
+      matchReason: "x",
+    });
+    const tracks = [mk("Bibi Blocksberg", "Kapitel 1"), mk("Bonobo", "Kerala")];
+    const ranked = rankResolvedTracksForPolicy(tracks, policy, {
+      excludeSpokenWord: true,
+    });
+    expect(ranked.map((t) => t.artist)).toEqual(["Bonobo"]);
+  });
+
   it("rankResolvedTracksForPolicy boosts charts/popularity, filters explicit family tracks, and penalizes artist fatigue", () => {
     const policy = buildRecommendationPolicy({
       ...context,

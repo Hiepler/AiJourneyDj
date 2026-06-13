@@ -39,6 +39,26 @@ describe("momentumRadio", () => {
     expect(candidates.some((c) => c.artist === "Sim1")).toBe(false); // Bann gefiltert
   });
 
+  it("filters spoken-word neighbours out of the similar graph", async () => {
+    const hoerspielStub = {
+      ...lastfmStub,
+      getSimilarTracks: async () => [
+        { artist: "Die drei ???", title: "Folge 1", match: 0.9 },
+        { artist: "Real Band", title: "Real Song", match: 0.8 },
+      ],
+    };
+    const candidates = await momentumRadioCandidates({
+      lastfm: hoerspielStub,
+      nowPlaying: { artist: "Seed Act", title: "Seed Song" },
+      tasteWeight: 0.5,
+      seed: 1,
+      bannedArtists: new Set(),
+      moodTags: ["pop"],
+      limit: 10,
+    });
+    expect(candidates.some((c) => c.artist === "Die drei ???")).toBe(false);
+  });
+
   it("returns [] without any seeds", async () => {
     const none = await momentumRadioCandidates({
       lastfm: lastfmStub,
