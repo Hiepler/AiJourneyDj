@@ -967,6 +967,26 @@ describe("buildLensPrompt — valence", () => {
   });
 });
 
+describe("engine v2 lenses", () => {
+  it("appends the deep_cuts explorer lens when requested", () => {
+    const brief = buildMusicalBrief(context);
+    const without = selectJourneyLenses(brief);
+    expect(without.some((lens) => lens.key === "deep_cuts")).toBe(false);
+
+    const withExplorer = selectJourneyLenses(brief, { includeDeepCuts: true });
+    expect(withExplorer.some((lens) => lens.key === "deep_cuts")).toBe(true);
+    expect(withExplorer.length).toBe(without.length + 1); // zusätzlicher Call, verdrängt nichts
+  });
+
+  it("regional lens demands real place connection via web search", () => {
+    const lens = DEFAULT_LENSES.find((l) => l.key === "regional")!;
+    const brief = buildMusicalBrief(context);
+    const prompt = buildLensPrompt(lens, brief, 5);
+    expect(prompt.toLowerCase()).toContain("web search");
+    expect(prompt.toLowerCase()).toMatch(/region|destination/);
+  });
+});
+
 describe("overnight vacation drive — mood transitions", () => {
   function briefAt(localTimeIso: string, elapsedMinutes: number) {
     return buildMusicalBrief({
