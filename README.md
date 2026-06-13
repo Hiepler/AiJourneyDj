@@ -175,8 +175,10 @@ faster, complete responses. A persistent search cache means a 10-hour drive neve
   Moments also surface as **celebratory cockpit banners** ("Welcome to Italy!", "Jam's cleared!")
   so the whole car shares the moment.
 - **Family fun** — a **🧸 Kids mode** that welcomes clean Disney/film/animated singalongs the whole
-  car enjoys (overriding family mode's usual avoidance), and a **synced karaoke / singalong view**
-  with scrolling, line-by-line lyrics (via LRCLIB; static fallback when no synced version exists).
+  car enjoys (overriding family mode's usual avoidance), and a **synced karaoke / singalong view**:
+  time-synced, line-by-line highlighting that follows playback on the car's or phone's native Spotify
+  too (not just the in-browser player), duration-matched to the right recording, with a static
+  fallback when no synced lyrics exist (via LRCLIB — free, no API key).
 - **Adaptive Drive Mode** — automatic calm/focus selection bias from live telemetry. A comfort
   feature, explicitly not a safety system.
 - **Spotify Connect device picker** — play on the in-browser player, your phone, or the car's native
