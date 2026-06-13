@@ -1,7 +1,7 @@
 /**
  * Synced-lyrics provider (LRCLIB — free, no API key) for the karaoke / singalong view. Pure parsing
- * plus a tiny TTL cache; every failure (404, timeout, malformed) degrades to `undefined` so the
- * cockpit simply shows no lyrics rather than breaking.
+ * plus a tiny TTL cache. Every lookup returns a {@link LyricsResult} carrying a `reason` so a miss is
+ * diagnosable (disabled vs. LRCLIB unreachable vs. genuinely no match) instead of a silent blank.
  */
 
 export interface LyricLine {
@@ -16,6 +16,24 @@ export interface Lyrics {
   /** Plain fallback text when no synced version exists. */
   plain?: string;
 }
+
+/** Why a lookup did/didn't yield lyrics — surfaced to the client + logs so misses are diagnosable. */
+export type LyricsReason =
+  | "ok"
+  | "no-match"
+  | "lrclib-error"
+  | "bad-input"
+  | "disabled";
+
+export interface LyricsResult {
+  lyrics?: Lyrics;
+  reason: LyricsReason;
+}
+
+// LRCLIB asks for a descriptive User-Agent (name + version + contact); a bare/empty UA can be
+// rejected (403), which previously collapsed to "no lyrics" for every track.
+const USER_AGENT =
+  "AI-Journey-DJ/0.1.0 (+https://github.com/Hiepler/AiJourneyDj)";
 
 const LRC_STAMP = /\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]/g;
 // Enhanced-LRC per-word timing tags, e.g. "<00:12.50>" — stripped so they don't show as text.
@@ -45,6 +63,52 @@ export function parseLrc(lrc: string): LyricLine[] {
     for (const timeMs of stamps) lines.push({ timeMs, text });
   }
   return lines.sort((a, b) => a.timeMs - b.timeMs);
+}
+
+// Featured-artist clauses: "(feat. X)", "[ft. X]", or trailing " feat. X …" (assumed to run to end).
+const FEAT_BRACKET = /[([]\s*(?:feat\.?|ft\.?|featuring)\b[^)\]]*[)\]]/gi;
+const FEAT_TRAILING = /\s+(?:feat\.?|ft\.?|featuring)\s+.*$/i;
+// Version/edition keywords that mark a re-issue of the SAME recording's lyrics.
+const VERSION_KEYWORDS =
+  "remaster|remastered|live|radio edit|single version|album version|mono|stereo|acoustic|bonus track|deluxe|anniversary|edition|edit|version";
+const VERSION_DASH = new RegExp(`\\s+-\\s+[^-]*(?:${VERSION_KEYWORDS}).*$`, "i");
+const VERSION_BRACKET = new RegExp(
+  `[([][^)\\]]*(?:${VERSION_KEYWORDS})[^)\\]]*[)\\]]`,
+  "gi",
+);
+
+/**
+ * Trims Spotify title/artist adornments LRCLIB can't match — featured artists and
+ * remaster/live/edit/version tags — without splitting real band names (no `&`/`,` splitting,
+ * keywordless parentheticals kept). Raises the real-world hit rate of the lookup.
+ */
+export function normalizeForLyrics(
+  artist: string,
+  title: string,
+): { artist: string; title: string } {
+  const cleanArtist = artist
+    .replace(FEAT_BRACKET, "")
+    .replace(FEAT_TRAILING, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const cleanTitle = title
+    .replace(FEAT_BRACKET, "")
+    .replace(VERSION_BRACKET, "")
+    .replace(FEAT_TRAILING, "")
+    .replace(VERSION_DASH, "")
+    .replace(/\s+-\s*$/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return {
+    artist: cleanArtist || artist.trim(),
+    title: cleanTitle || title.trim(),
+  };
+}
+
+/** Sanitizes a configured base URL — strips an accidental inline comment/whitespace (Coolify footgun). */
+function sanitizeBaseUrl(raw: string | undefined): string {
+  const value = (raw ?? "https://lrclib.net").split(/\s+#/)[0].trim();
+  return (value || "https://lrclib.net").replace(/\/+$/, "");
 }
 
 interface LrclibEntry {
@@ -85,7 +149,7 @@ function pickEntry(
   return candidates[0];
 }
 
-/** One LRCLIB search; never throws. Prefers a duration-matched synced version, else plain. */
+/** One LRCLIB search; never throws. Normalizes the query and reports why it did/didn't match. */
 export async function fetchLyrics(opts: {
   artist: string;
   title: string;
@@ -93,44 +157,51 @@ export async function fetchLyrics(opts: {
   baseUrl?: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
-}): Promise<Lyrics | undefined> {
-  const artist = opts.artist?.trim();
-  const title = opts.title?.trim();
-  if (!artist || !title) return undefined;
+}): Promise<LyricsResult> {
+  if (!opts.artist?.trim() || !opts.title?.trim()) {
+    return { reason: "bad-input" };
+  }
+  const { artist, title } = normalizeForLyrics(opts.artist, opts.title);
+  if (!artist || !title) return { reason: "bad-input" };
 
-  const base = (opts.baseUrl ?? "https://lrclib.net").replace(/\/$/, "");
+  const base = sanitizeBaseUrl(opts.baseUrl);
   const fetchImpl = opts.fetchImpl ?? fetch;
   const url = `${base}/api/search?artist_name=${encodeURIComponent(artist)}&track_name=${encodeURIComponent(title)}`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 4_000);
   try {
     const res = await fetchImpl(url, {
-      headers: { "User-Agent": "AI-Journey-DJ (self-hosted)" },
+      headers: { "User-Agent": USER_AGENT },
       signal: controller.signal,
     });
-    if (!res.ok) return undefined;
+    if (!res.ok) return { reason: "lrclib-error" };
     const list = (await res.json()) as LrclibEntry[];
-    if (!Array.isArray(list) || list.length === 0) return undefined;
+    if (!Array.isArray(list) || list.length === 0) return { reason: "no-match" };
 
     const syncedEntry = pickEntry(list, (e) => Boolean(e.syncedLyrics), opts.durationSec);
     if (syncedEntry?.syncedLyrics) {
       const parsed = parseLrc(syncedEntry.syncedLyrics);
       if (parsed.length > 0) {
         // Prefer the synced entry's own plain text as the fallback (same recording).
-        return { synced: parsed, plain: syncedEntry.plainLyrics ?? undefined };
+        return {
+          lyrics: { synced: parsed, plain: syncedEntry.plainLyrics ?? undefined },
+          reason: "ok",
+        };
       }
     }
     const plainEntry = pickEntry(list, (e) => Boolean(e.plainLyrics), opts.durationSec);
-    return plainEntry?.plainLyrics ? { plain: plainEntry.plainLyrics } : undefined;
+    return plainEntry?.plainLyrics
+      ? { lyrics: { plain: plainEntry.plainLyrics }, reason: "ok" }
+      : { reason: "no-match" };
   } catch {
-    return undefined;
+    return { reason: "lrclib-error" };
   } finally {
     clearTimeout(timer);
   }
 }
 
 interface CacheEntry {
-  value: Lyrics | undefined;
+  value: LyricsResult;
   at: number;
 }
 
@@ -138,7 +209,10 @@ const cache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 6 * 60 * 60 * 1_000; // 6h — lyrics are immutable; keep API calls minimal.
 const CACHE_MAX = 200;
 
-/** Memoized {@link fetchLyrics}: a track's lyrics are fetched from LRCLIB at most once per TTL. */
+/**
+ * Memoized {@link fetchLyrics}: a track's lyrics are fetched from LRCLIB at most once per TTL. A
+ * transient `lrclib-error` is NOT cached, so a blip doesn't blank lyrics for the whole TTL.
+ */
 export async function getLyrics(opts: {
   artist: string;
   title: string;
@@ -147,7 +221,7 @@ export async function getLyrics(opts: {
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
   now?: () => number;
-}): Promise<Lyrics | undefined> {
+}): Promise<LyricsResult> {
   const now = (opts.now ?? Date.now)();
   // Round duration into the cache key so a duration-matched result isn't served for a length mismatch.
   const durBucket = opts.durationSec ? Math.round(opts.durationSec / 5) : "x";
@@ -156,8 +230,8 @@ export async function getLyrics(opts: {
   if (cached && now - cached.at < CACHE_TTL_MS) return cached.value;
 
   const value = await fetchLyrics(opts);
-  // Only cache a definitive miss when the lookup actually completed (fetchLyrics already swallows
-  // errors to undefined); caching a miss avoids re-hammering LRCLIB for tracks with no lyrics.
+  // Don't cache transient transport failures — only definitive ok / no-match / bad-input.
+  if (value.reason === "lrclib-error") return value;
   if (cache.size >= CACHE_MAX) {
     const oldest = cache.keys().next().value;
     if (oldest !== undefined) cache.delete(oldest);

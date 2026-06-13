@@ -203,7 +203,9 @@ export async function registerJourneyRoutes(
     const { durationSec } = z
       .object({ durationSec: z.coerce.number().positive().optional() })
       .parse(request.query);
-    if (!config.LYRICS_ENABLED) return { synced: null, plain: null };
+    if (!config.LYRICS_ENABLED) {
+      return { synced: null, plain: null, reason: "disabled" };
+    }
     service.getJourneyOrThrow(id);
     const track = store
       .listResolvedTracksDetailed(id)
@@ -211,13 +213,24 @@ export async function registerJourneyRoutes(
     if (!track) {
       return reply.code(404).send({ error: "Track not found." });
     }
-    const lyrics = await getLyrics({
+    const result = await getLyrics({
       artist: track.artist,
       title: track.title,
       durationSec,
       baseUrl: config.LRCLIB_BASE_URL,
     });
-    return { synced: lyrics?.synced ?? null, plain: lyrics?.plain ?? null };
+    if (result.reason !== "ok") {
+      // Surfaced so a "no lyrics" report is diagnosable (unreachable LRCLIB vs. genuine no-match).
+      request.log.info(
+        { artist: track.artist, title: track.title, reason: result.reason },
+        "lyrics.lookup",
+      );
+    }
+    return {
+      synced: result.lyrics?.synced ?? null,
+      plain: result.lyrics?.plain ?? null,
+      reason: result.reason,
+    };
   });
 
   app.post("/journeys/:id/stop", async (request) => {

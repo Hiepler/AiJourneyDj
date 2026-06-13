@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { fetchLyrics, parseLrc } from "../src/lyrics/lrclib.js";
+import {
+  fetchLyrics,
+  normalizeForLyrics,
+  parseLrc,
+} from "../src/lyrics/lrclib.js";
 
 describe("parseLrc", () => {
   it("parses timestamps into time-sorted millisecond lines", () => {
@@ -23,57 +27,142 @@ describe("parseLrc", () => {
   });
 });
 
+describe("normalizeForLyrics", () => {
+  it("strips featured-artist clauses from artist and title", () => {
+    expect(normalizeForLyrics("Calvin Harris feat. Dua Lipa", "One Kiss")).toEqual({
+      artist: "Calvin Harris",
+      title: "One Kiss",
+    });
+    expect(normalizeForLyrics("Drake", "God's Plan (feat. Future)")).toEqual({
+      artist: "Drake",
+      title: "God's Plan",
+    });
+    expect(normalizeForLyrics("Eminem ft. Rihanna", "Love the Way You Lie")).toEqual({
+      artist: "Eminem",
+      title: "Love the Way You Lie",
+    });
+  });
+
+  it("strips version/remaster/live suffixes from the title", () => {
+    expect(normalizeForLyrics("Queen", "Bohemian Rhapsody - Remastered 2011").title).toBe(
+      "Bohemian Rhapsody",
+    );
+    expect(normalizeForLyrics("Oasis", "Wonderwall - Live at Wembley").title).toBe(
+      "Wonderwall",
+    );
+    expect(normalizeForLyrics("Miley Cyrus", "Flowers (Single Version)").title).toBe(
+      "Flowers",
+    );
+    expect(normalizeForLyrics("ABBA", "Dancing Queen - Radio Edit").title).toBe(
+      "Dancing Queen",
+    );
+  });
+
+  it("leaves clean titles and real band names untouched (no false positives)", () => {
+    expect(normalizeForLyrics("The Killers", "Mr. Brightside")).toEqual({
+      artist: "The Killers",
+      title: "Mr. Brightside",
+    });
+    // Ampersand/comma band names must NOT be split.
+    expect(normalizeForLyrics("Simon & Garfunkel", "The Boxer").artist).toBe(
+      "Simon & Garfunkel",
+    );
+    expect(normalizeForLyrics("Earth, Wind & Fire", "September").artist).toBe(
+      "Earth, Wind & Fire",
+    );
+    // A meaningful parenthetical without a version keyword stays.
+    expect(normalizeForLyrics("Glass Animals", "Heat Waves").title).toBe(
+      "Heat Waves",
+    );
+  });
+});
+
 describe("fetchLyrics", () => {
   function jsonResponse(body: unknown, status = 200): Response {
     return new Response(JSON.stringify(body), { status });
   }
 
-  it("returns parsed synced lyrics from the first synced match", async () => {
+  it("sends an LRCLIB-compliant User-Agent and normalized query", async () => {
+    let captured: { url: string; ua: string | null } | undefined;
+    const fetchImpl: typeof fetch = async (input, init) => {
+      captured = {
+        url: String(input),
+        ua: new Headers(init?.headers).get("User-Agent"),
+      };
+      return jsonResponse([{ syncedLyrics: "[00:00.00]Hi", duration: 100 }]);
+    };
+    await fetchLyrics({
+      artist: "Calvin Harris feat. Dua Lipa",
+      title: "One Kiss - Radio Edit",
+      fetchImpl,
+    });
+    expect(captured?.ua).toMatch(/AI-Journey-DJ\/\S+ \(\+https?:\/\//);
+    expect(captured?.url).toContain("artist_name=Calvin%20Harris");
+    expect(captured?.url).toContain("track_name=One%20Kiss");
+    expect(captured?.url).not.toContain("feat");
+    expect(captured?.url).not.toContain("Radio");
+  });
+
+  it("returns parsed synced lyrics with reason ok", async () => {
     const fetchImpl: typeof fetch = async () =>
       jsonResponse([
         { plainLyrics: "plain only" },
         { syncedLyrics: "[00:02.00]Drive\n[00:04.00]On", plainLyrics: "Drive\nOn" },
       ]);
-    const lyrics = await fetchLyrics({ artist: "A", title: "B", fetchImpl });
-    expect(lyrics?.synced).toEqual([
+    const result = await fetchLyrics({ artist: "A", title: "B", fetchImpl });
+    expect(result.reason).toBe("ok");
+    expect(result.lyrics?.synced).toEqual([
       { timeMs: 2_000, text: "Drive" },
       { timeMs: 4_000, text: "On" },
     ]);
-    expect(lyrics?.plain).toBe("Drive\nOn");
+    expect(result.lyrics?.plain).toBe("Drive\nOn");
   });
 
   it("falls back to plain lyrics when no synced version exists", async () => {
     const fetchImpl: typeof fetch = async () =>
       jsonResponse([{ plainLyrics: "just text" }]);
-    const lyrics = await fetchLyrics({ artist: "A", title: "B", fetchImpl });
-    expect(lyrics).toEqual({ plain: "just text" });
+    const result = await fetchLyrics({ artist: "A", title: "B", fetchImpl });
+    expect(result.reason).toBe("ok");
+    expect(result.lyrics).toEqual({ plain: "just text" });
   });
 
-  it("degrades to undefined on a 404 / empty result", async () => {
-    expect(
-      await fetchLyrics({ artist: "A", title: "B", fetchImpl: async () => new Response("", { status: 404 }) }),
-    ).toBeUndefined();
-    expect(
-      await fetchLyrics({ artist: "A", title: "B", fetchImpl: async () => jsonResponse([]) }),
-    ).toBeUndefined();
+  it("reports no-match on an empty result and lrclib-error on a non-2xx", async () => {
+    const empty = await fetchLyrics({
+      artist: "A",
+      title: "B",
+      fetchImpl: async () => jsonResponse([]),
+    });
+    expect(empty.reason).toBe("no-match");
+    expect(empty.lyrics).toBeUndefined();
+
+    const errored = await fetchLyrics({
+      artist: "A",
+      title: "B",
+      fetchImpl: async () => new Response("", { status: 403 }),
+    });
+    expect(errored.reason).toBe("lrclib-error");
   });
 
-  it("degrades to undefined (never throws) when the request fails", async () => {
-    const fetchImpl: typeof fetch = async () => {
-      throw new Error("network down");
-    };
-    expect(await fetchLyrics({ artist: "A", title: "B", fetchImpl })).toBeUndefined();
+  it("reports lrclib-error (never throws) when the request fails", async () => {
+    const result = await fetchLyrics({
+      artist: "A",
+      title: "B",
+      fetchImpl: async () => {
+        throw new Error("network down");
+      },
+    });
+    expect(result.reason).toBe("lrclib-error");
+    expect(result.lyrics).toBeUndefined();
   });
 
   it("prefers the synced version whose duration matches the playing track", async () => {
     const fetchImpl: typeof fetch = async () =>
       jsonResponse([
-        // A live cut of the wrong length appears first — must NOT win when duration is known.
         { syncedLyrics: "[00:00.00]Live", duration: 320 },
         { syncedLyrics: "[00:00.00]Studio", duration: 201 },
       ]);
-    const lyrics = await fetchLyrics({ artist: "A", title: "B", durationSec: 203, fetchImpl });
-    expect(lyrics?.synced).toEqual([{ timeMs: 0, text: "Studio" }]);
+    const result = await fetchLyrics({ artist: "A", title: "B", durationSec: 203, fetchImpl });
+    expect(result.lyrics?.synced).toEqual([{ timeMs: 0, text: "Studio" }]);
   });
 
   it("falls back to the first synced entry when no duration is within tolerance", async () => {
@@ -82,17 +171,18 @@ describe("fetchLyrics", () => {
         { syncedLyrics: "[00:00.00]First", duration: 100 },
         { syncedLyrics: "[00:00.00]Second", duration: 400 },
       ]);
-    const lyrics = await fetchLyrics({ artist: "A", title: "B", durationSec: 250, fetchImpl });
-    expect(lyrics?.synced).toEqual([{ timeMs: 0, text: "First" }]);
+    const result = await fetchLyrics({ artist: "A", title: "B", durationSec: 250, fetchImpl });
+    expect(result.lyrics?.synced).toEqual([{ timeMs: 0, text: "First" }]);
   });
 
-  it("requires both artist and title", async () => {
+  it("reports bad-input and never calls the network without artist+title", async () => {
     let called = false;
     const fetchImpl: typeof fetch = async () => {
       called = true;
       return jsonResponse([]);
     };
-    expect(await fetchLyrics({ artist: "", title: "B", fetchImpl })).toBeUndefined();
+    const result = await fetchLyrics({ artist: "", title: "B", fetchImpl });
+    expect(result.reason).toBe("bad-input");
     expect(called).toBe(false);
   });
 });

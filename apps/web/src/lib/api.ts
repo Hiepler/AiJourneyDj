@@ -251,7 +251,11 @@ export const api = {
     }),
   journey: (id: string) => request<JourneyDetail>(`/journeys/${id}`),
   lyrics: (journeyId: string, trackId: string, durationSec?: number) =>
-    request<{ synced: { timeMs: number; text: string }[] | null; plain: string | null }>(
+    request<{
+      synced: { timeMs: number; text: string }[] | null;
+      plain: string | null;
+      reason?: string;
+    }>(
       `/journeys/${journeyId}/tracks/${trackId}/lyrics${
         durationSec ? `?durationSec=${Math.round(durationSec)}` : ""
       }`,
