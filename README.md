@@ -165,6 +165,10 @@ faster, complete responses. A persistent search cache means a 10-hour drive neve
 - **Cockpit UI** built for the landscape touchscreen — large tap targets, glanceable live context
   (phase · pace + trend · ETA + trend · weather · region), a live-telemetry badge, and a "why this
   song" line; no typing while driving (mood **presets**, recent-destination quick-picks, voice wishes).
+- **Live start screen** — when the car is connected, the journey form pulls a fresh reading
+  **on demand** (not at the next poll): it pre-fills the destination from the car's navigation, shows a
+  live-telemetry badge + glanceable context (ETA · region · weather), and **seeds the very first queue**
+  with real region/ETA/phase so the opening set is context-aware from track one.
 - **Tap-to-steer** — vibe toggles (⚡🎤☀️), drive-phase and Vibe-Mix (Familiar ↔ Discover) controls
   re-tune the queue with a visible "re-tuning" moment.
 - **Journey Moments & Drive Story** — situational re-curation and a narrative arc, on by default.

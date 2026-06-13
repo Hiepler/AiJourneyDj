@@ -1160,6 +1160,57 @@ button:disabled,
   color: var(--accent);
 }
 
+.quick-pick.nav {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(47, 227, 192, 0.1);
+}
+
+/* ---------- Start-screen live badge ---------- */
+
+.setup-eyebrow-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 11px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-dim);
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.24s var(--ease), color 0.24s var(--ease);
+}
+
+.live-badge:disabled {
+  cursor: default;
+}
+
+.live-badge.live-live {
+  border-color: rgba(111, 240, 184, 0.4);
+  color: var(--good);
+}
+
+.live-badge.live-stale {
+  border-color: rgba(255, 207, 122, 0.4);
+  color: var(--warn);
+}
+
+.live-badge.live-none {
+  color: var(--text-faint);
+}
+
 /* ---------- Live-context strip (cockpit) ---------- */
 
 .context-strip {

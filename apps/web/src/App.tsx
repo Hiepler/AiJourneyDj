@@ -34,7 +34,7 @@ import {
   X
 } from "lucide-react";
 
-import { api, type Health, type Journey, type JourneyDetail, type MusicWish, type SpotifyDevice } from "./lib/api.js";
+import { api, type Health, type Journey, type JourneyDetail, type LiveTelemetry, type MusicWish, type SpotifyDevice } from "./lib/api.js";
 import { queueTracksInPlaybackOrder } from "./lib/queue.js";
 import { getSpeechRecognitionCtor, isSpeechRecognitionSupported } from "./lib/speech.js";
 import {
@@ -102,6 +102,10 @@ export function App() {
   const [activeJourneyId, setActiveJourneyId] = useState<string>();
   const [detail, setDetail] = useState<JourneyDetail>();
   const [destination, setDestination] = useState("Lago di Garda");
+  // Whether the driver typed/picked a destination themselves — guards against clobbering it with nav.
+  const [destinationTouched, setDestinationTouched] = useState(false);
+  const [liveTelemetry, setLiveTelemetry] = useState<LiveTelemetry>();
+  const [liveLoading, setLiveLoading] = useState(false);
   const [selectedMood, setSelectedMood] = useState(MOOD_PRESETS[0].key);
   const [passengerMode, setPassengerMode] = useState("couple");
   const [spotifyStatus, setSpotifyStatus] = useState<SpotifySdkStatus>("idle");
@@ -190,6 +194,15 @@ export function App() {
     };
   }, [showDevices]);
 
+  // On the start screen, pull one live reading as soon as the car is connected so the destination/ETA
+  // can pre-fill — instead of waiting for the journey's first background poll. One-shot per open
+  // (Tesla calls are billed); the driver can re-pull with the refresh button.
+  useEffect(() => {
+    if (activeJourneyId) return;
+    if (!health?.teslaConnected) return;
+    refreshLiveTelemetry();
+  }, [activeJourneyId, health?.teslaConnected]);
+
   const queuedIds = detail?.playbackSession?.queuedTrackIds ?? [];
   const bufferTracks = useMemo(() => {
     if (!detail) return [];
@@ -222,6 +235,20 @@ export function App() {
   const spotifyConnected = Boolean(health?.spotifyConnected);
   const spotifyReady = health?.spotifyMock || spotifyStatus === "ready";
 
+  const liveReading = liveTelemetry?.reading ?? undefined;
+  // Freshness badge for the start screen: a real timestamp when we have a reading, "no live data"
+  // when the car is reachable but asleep/offline. Hidden entirely when Tesla isn't connected.
+  const liveBadge = useMemo(() => {
+    if (!health?.teslaConnected || !liveTelemetry?.available) return undefined;
+    return telemetryLiveness(liveReading?.timestampIso, nowMs);
+  }, [health?.teslaConnected, liveTelemetry?.available, liveReading?.timestampIso, nowMs]);
+  const navDestination = liveReading?.destination?.trim();
+  const navDestinationAvailable = Boolean(navDestination && navDestination !== destination);
+  const startContextPills = useMemo(
+    () => (liveReading ? buildContextPills(liveReading) : []),
+    [liveReading],
+  );
+
   const statusLine = useMemo(() => {
     if (!health) return "Loading…";
     if (!spotifyConnected) return "Connect Spotify to start your journey.";
@@ -247,6 +274,24 @@ export function App() {
     if (autoResume && active) {
       setActiveJourneyId(active.id);
       setDetail(await api.journey(active.id));
+    }
+  }
+
+  // Pulls a fresh live reading on demand (start-screen pre-fill). Auto-adopts the car's nav
+  // destination unless the driver already typed one. Best-effort: silent on any failure.
+  async function refreshLiveTelemetry() {
+    setLiveLoading(true);
+    try {
+      const live = await api.liveTelemetry();
+      setLiveTelemetry(live);
+      const navDestination = live.reading?.destination?.trim();
+      if (navDestination && !destinationTouched) {
+        setDestination(navDestination);
+      }
+    } catch {
+      // Telemetry is a bonus on the start screen — never block journey creation on it.
+    } finally {
+      setLiveLoading(false);
     }
   }
 
@@ -850,30 +895,76 @@ export function App() {
       <main className="stage-wrap">
         {!activeJourneyId ? (
           <section className="setup glass">
-            <p className="eyebrow">Telemetry-aware soundtrack</p>
+            <div className="setup-eyebrow-row">
+              <p className="eyebrow">Telemetry-aware soundtrack</p>
+              {liveBadge ? (
+                <button
+                  className={`live-badge live-${liveBadge.state}`}
+                  onClick={refreshLiveTelemetry}
+                  disabled={liveLoading}
+                  title="Refresh live data from the car"
+                  type="button"
+                >
+                  {liveLoading ? <Loader2 className="spin" size={13} /> : <Satellite size={13} />}
+                  {liveBadge.label}
+                </button>
+              ) : null}
+            </div>
             <h1 className="setup-title">Where are we headed?</h1>
             <p className="setup-sub">{statusLine}</p>
+
+            {startContextPills.length > 0 ? (
+              <div className="context-strip" aria-label="Live drive context">
+                {startContextPills.map((pill) => (
+                  <span className="ctx-pill" key={pill.key}>
+                    <span className="ctx-label">{pill.label}</span>
+                    <span className="ctx-value">{pill.value}</span>
+                  </span>
+                ))}
+              </div>
+            ) : null}
 
             <label className="field">
               <span>Destination</span>
               <input
-                onChange={(event) => setDestination(event.target.value)}
+                onChange={(event) => {
+                  setDestinationTouched(true);
+                  setDestination(event.target.value);
+                }}
                 placeholder="e.g. Lago di Garda"
                 value={destination}
               />
             </label>
-            {recentDestinations.length > 0 ? (
-              <div className="quick-picks" aria-label="Recent destinations">
-                {recentDestinations.map((place) => (
+            {navDestinationAvailable || recentDestinations.length > 0 ? (
+              <div className="quick-picks" aria-label="Destinations">
+                {navDestinationAvailable ? (
                   <button
-                    className={`quick-pick${place === destination ? " on" : ""}`}
-                    key={place}
-                    onClick={() => setDestination(place)}
+                    className="quick-pick nav"
+                    onClick={() => {
+                      setDestinationTouched(true);
+                      setDestination(navDestination!);
+                    }}
+                    title="Use the destination from your car's navigation"
                     type="button"
                   >
-                    <MapPin size={13} /> {place}
+                    <Navigation size={13} /> {navDestination}
                   </button>
-                ))}
+                ) : null}
+                {recentDestinations
+                  .filter((place) => place !== navDestination)
+                  .map((place) => (
+                    <button
+                      className={`quick-pick${place === destination ? " on" : ""}`}
+                      key={place}
+                      onClick={() => {
+                        setDestinationTouched(true);
+                        setDestination(place);
+                      }}
+                      type="button"
+                    >
+                      <MapPin size={13} /> {place}
+                    </button>
+                  ))}
               </div>
             ) : null}
 
