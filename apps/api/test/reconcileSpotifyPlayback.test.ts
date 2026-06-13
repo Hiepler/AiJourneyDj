@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { normalizeText } from "@ai-journey-dj/core";
 import { NoopOpenMusicClient } from "@ai-journey-dj/open-music";
 import { XaiSongScout } from "@ai-journey-dj/recommendation";
 import type { SpotifyAdapter, SpotifyPlaybackState, SpotifyTrackSearchResult } from "@ai-journey-dj/spotify";
@@ -540,5 +541,64 @@ describe("connect-mode queue sync", () => {
     expect(candidates.length).toBeGreaterThan(0);
     const audit = store.latestAuditEvent(journey.id, "moment.triggered");
     expect(audit).toBeDefined();
+  });
+
+  it("learns from a native skip detected via progress heuristic", async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+    const model = modelOf(store, journey.id);
+
+    // Track 0 läuft bei ~17% — Snapshot merken.
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: model[0].providerTrackId,
+      queuedProviderTrackIds: [],
+      progressMs: 30_000,
+      durationMs: 180_000,
+    };
+    await service.reconcileSpotifyPlayback(journey.id);
+
+    // Wechsel zu Track 1, während Track 0 erst bei 17% stand → Skip-Signal.
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: model[1].providerTrackId,
+      queuedProviderTrackIds: [],
+      progressMs: 1_000,
+      durationMs: 200_000,
+    };
+    await service.reconcileSpotifyPlayback(journey.id);
+
+    const skipped = store
+      .listResolvedTracks(journey.id)
+      .find((t) => t.providerTrackId === model[0].providerTrackId)!;
+    expect(
+      service.skipFeedbackFor(journey.id).artists.get(normalizeText(skipped.artist)),
+    ).toBeGreaterThan(0);
+    expect(store.latestAuditEvent(journey.id, "feedback.skip_learned")).toBeDefined();
+  });
+
+  it("a finished track (>=90% progress) is not counted as a skip", async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+    const model = modelOf(store, journey.id);
+
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: model[0].providerTrackId,
+      queuedProviderTrackIds: [],
+      progressMs: 175_000,
+      durationMs: 180_000,
+    };
+    await service.reconcileSpotifyPlayback(journey.id);
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: model[1].providerTrackId,
+      queuedProviderTrackIds: [],
+      progressMs: 1_000,
+      durationMs: 200_000,
+    };
+    await service.reconcileSpotifyPlayback(journey.id);
+
+    expect(service.skipFeedbackFor(journey.id).artists.size).toBe(0);
   });
 });
