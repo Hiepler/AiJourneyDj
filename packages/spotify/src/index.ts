@@ -22,6 +22,10 @@ export interface SpotifyPlaybackState {
   activeProviderUri?: string;
   isPlaying: boolean;
   queuedProviderTrackIds: string[];
+  /** Playback position of the active track in ms (skip heuristic). */
+  progressMs?: number;
+  /** Total length of the active track in ms (skip heuristic). */
+  durationMs?: number;
 }
 
 export interface SpotifyPlaylist {
@@ -314,6 +318,14 @@ export class OfficialSpotifyAdapter implements SpotifyAdapter {
       queuedProviderTrackIds: queue
         .map((item: any) => item?.id)
         .filter((id: unknown): id is string => typeof id === "string"),
+      progressMs:
+        typeof payload?.progress_ms === "number"
+          ? payload.progress_ms
+          : undefined,
+      durationMs:
+        typeof payload?.item?.duration_ms === "number"
+          ? payload.item.duration_ms
+          : undefined,
     };
   }
 

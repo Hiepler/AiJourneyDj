@@ -173,6 +173,10 @@ const schema = z.object({
   MOMENT_COOLDOWN_MINUTES: z.coerce.number().int().min(1).default(25),
   TRAFFIC_JAM_DELAY_MINUTES: z.coerce.number().int().min(1).default(10),
   TRAFFIC_RELEASE_DELAY_MINUTES: z.coerce.number().int().min(0).default(3),
+  // Live-Skip-Feedback: lernt die Session-Stimmung aus übersprungenen Songs.
+  SKIP_FEEDBACK_ENABLED: envBoolean(true),
+  SKIP_FEEDBACK_THRESHOLD: z.coerce.number().min(0.1).max(0.95).default(0.6),
+  SKIP_FEEDBACK_ARTIST_PENALTY: z.coerce.number().min(0).max(1).default(0.3),
   TESLA_FLEET_ENABLED: envBoolean(false),
   TESLA_CLIENT_ID: z.string().optional(),
   TESLA_CLIENT_SECRET: z.string().optional(),

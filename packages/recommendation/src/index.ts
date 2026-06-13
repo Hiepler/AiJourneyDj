@@ -1254,6 +1254,8 @@ export function rankResolvedTracksForPolicy<T extends ResolvedTrack>(
     fatigueExemptArtists?: Iterable<string>;
     /** Hart gebannte (normalisierte) Artisten — Vielfalts-Doktrin; Exempts gewinnen. */
     bannedArtists?: ReadonlySet<string>;
+    /** Weicher Mood-Tag-Malus (Session-Lernsignal aus Skips). */
+    softMoodPenalty?: Map<string, number>;
   } = {},
 ): T[] {
   const consumedArtists = new Set(
@@ -1310,6 +1312,13 @@ export function rankResolvedTracksForPolicy<T extends ResolvedTrack>(
         ? 0
         : (recentSongPenalty.get(trackSongKey) ?? 0) +
           (recentArtistPenalty.get(artist) ?? 0);
+      const moodSoft = Math.max(
+        0,
+        ...(track.moodTags ?? []).map(
+          (tag) => options.softMoodPenalty?.get(normalizeText(tag)) ?? 0,
+        ),
+        0,
+      );
       const jitter =
         jitterStrength > 0
           ? seededJitter(options.seed as number, trackSongKey) * jitterStrength
@@ -1331,6 +1340,7 @@ export function rankResolvedTracksForPolicy<T extends ResolvedTrack>(
         jitter -
         fatiguePenalty -
         recentPenalty -
+        moodSoft -
         index * 0.0001;
       return { track, score };
     })

@@ -115,6 +115,16 @@ export class JourneyService {
   private readonly lastMomentAt = new Map<string, Map<string, number>>();
   /** Pending journey moment consumed by the next analysis pass. */
   private readonly activeMoment = new Map<string, JourneyMoment>();
+  /** Last observed playback progress per journey (native-skip heuristic). */
+  private readonly lastProgress = new Map<
+    string,
+    { providerTrackId: string; progressMs: number; durationMs: number }
+  >();
+  /** Session learning signal accumulated from skips (per journey). */
+  private readonly skipFeedback = new Map<
+    string,
+    { artists: Map<string, number>; moodTags: Map<string, number> }
+  >();
 
   constructor(
     private readonly config: AppConfig,
@@ -284,6 +294,46 @@ export class JourneyService {
         "moment.recurate_error",
       );
     }
+  }
+
+  /** Test-/Diagnose-Zugriff auf das Session-Lernsignal. */
+  skipFeedbackFor(journeyId: string): {
+    artists: Map<string, number>;
+    moodTags: Map<string, number>;
+  } {
+    const entry = this.skipFeedback.get(journeyId) ?? {
+      artists: new Map<string, number>(),
+      moodTags: new Map<string, number>(),
+    };
+    this.skipFeedback.set(journeyId, entry);
+    return entry;
+  }
+
+  private recordSkipFeedback(
+    journeyId: string,
+    track: { artist: string; moodTags?: string[] },
+  ): void {
+    if (!this.config.SKIP_FEEDBACK_ENABLED) return;
+    const entry = this.skipFeedbackFor(journeyId);
+    const artistKey = normalizeText(track.artist);
+    entry.artists.set(
+      artistKey,
+      Math.min(
+        1,
+        (entry.artists.get(artistKey) ?? 0) +
+          this.config.SKIP_FEEDBACK_ARTIST_PENALTY,
+      ),
+    );
+    for (const tag of track.moodTags ?? []) {
+      const key = normalizeText(tag);
+      entry.moodTags.set(key, Math.min(0.6, (entry.moodTags.get(key) ?? 0) + 0.15));
+    }
+    this.store.audit(
+      journeyId,
+      "feedback.skip_learned",
+      `Skip-Signal: ${track.artist}`,
+      { artist: track.artist },
+    );
   }
 
   /**
@@ -833,6 +883,8 @@ export class JourneyService {
     const accessToken = await this.spotifyAuth.getAccessToken();
 
     if (direction === "next") {
+      // Bewusster In-App-Skip → Session-Lernsignal für den übersprungenen Track.
+      if (activeTrack) this.recordSkipFeedback(journeyId, activeTrack);
       if (queueTracks.length === 0) {
         await this.analyzeJourney(journeyId, "skip-next");
         const refreshed = this.store.getPlaybackSession(journeyId);
@@ -1204,6 +1256,14 @@ export class JourneyService {
         ),
       );
     }
+    // Session-Lernsignal: übersprungene Artisten zusätzlich abwerten.
+    const skipEntry = this.skipFeedbackFor(journeyId);
+    for (const [artist, penalty] of skipEntry.artists) {
+      recentArtistPenalty.set(
+        artist,
+        Math.max(recentArtistPenalty.get(artist) ?? 0, penalty),
+      );
+    }
     const banWindowMs = this.config.ARTIST_BAN_WINDOW_HOURS * 60 * 60 * 1000;
     const ledgerCounts =
       this.config.ARTIST_BAN_PLAYS > 0
@@ -1239,10 +1299,12 @@ export class JourneyService {
     const groundedContext: JourneyContext = {
       ...contextWithWishes,
       varietyAngle: seededExplorationAngle(variety.seed),
-      recentlyPlayedArtists: [...ledgerCounts.entries()]
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, this.config.ARTIST_AVOID_PROMPT_LIMIT)
-        .map(([artist]) => artist),
+      recentlyPlayedArtists: [
+        ...skipEntry.artists.keys(),
+        ...[...ledgerCounts.entries()]
+          .sort((a, b) => b[1] - a[1])
+          .map(([artist]) => artist),
+      ].slice(0, this.config.ARTIST_AVOID_PROMPT_LIMIT),
       nowPlaying:
         priorSession?.activeTrack?.provider === "spotify" &&
         priorSession.activeTrack.artist &&
@@ -1493,6 +1555,7 @@ export class JourneyService {
         recentSongPenalty,
         fatigueExemptArtists: wishArtists,
         bannedArtists: effectiveBannedArtists,
+        softMoodPenalty: skipEntry.moodTags,
       },
     );
     const immediateWishKeys = this.immediateWishSongKeys(activeMusicWishes);
@@ -1598,6 +1661,7 @@ export class JourneyService {
           recentSongPenalty,
           fatigueExemptArtists: wishArtists,
           bannedArtists: effectiveBannedArtists,
+        softMoodPenalty: skipEntry.moodTags,
         },
       );
       const alreadyQueued = new Set([
@@ -2332,6 +2396,34 @@ export class JourneyService {
         "spotify.reconcile_error",
       );
       return "idle";
+    }
+
+    // Live-Skip-Feedback: vergleiche den letzten Fortschritt mit dem aktuellen Track. Ein
+    // Trackwechsel weit vor Ende (< Schwelle) zählt als bewusster Skip → Lernsignal.
+    const previousProgress = this.lastProgress.get(journeyId);
+    if (state.activeProviderTrackId && typeof state.progressMs === "number") {
+      this.lastProgress.set(journeyId, {
+        providerTrackId: state.activeProviderTrackId,
+        progressMs: state.progressMs,
+        durationMs: state.durationMs ?? 0,
+      });
+    }
+    if (
+      this.config.SKIP_FEEDBACK_ENABLED &&
+      previousProgress &&
+      state.activeProviderTrackId &&
+      previousProgress.providerTrackId !== state.activeProviderTrackId &&
+      previousProgress.durationMs > 0 &&
+      previousProgress.progressMs / previousProgress.durationMs <
+        this.config.SKIP_FEEDBACK_THRESHOLD
+    ) {
+      const skippedTrack = this.store
+        .listResolvedTracks(journeyId)
+        .find(
+          (track) =>
+            track.providerTrackId === previousProgress.providerTrackId,
+        );
+      if (skippedTrack) this.recordSkipFeedback(journeyId, skippedTrack);
     }
 
     const now = new Date().toISOString();
