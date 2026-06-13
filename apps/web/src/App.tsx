@@ -401,6 +401,60 @@ export function App() {
     }
   }
 
+  const VIBE_DIRECTIVES = [
+    {
+      label: "⚡ Schneller",
+      text: "schneller",
+      match: (i: { type?: string; direction?: string }) =>
+        i?.type === "tempo" && i.direction === "faster",
+    },
+    {
+      label: "🎤 Mitsingen",
+      text: "was zum Mitsingen",
+      match: (i: { type?: string; role?: string }) =>
+        i?.type === "role" && i.role === "singalong",
+    },
+    {
+      label: "☀️ Wach bleiben",
+      text: "mach alle wieder wach",
+      match: (i: { type?: string; role?: string }) =>
+        i?.type === "role" && i.role === "wake_up",
+    },
+  ] as const;
+
+  function activeVibeWish(
+    match: (intent: Record<string, unknown>) => boolean,
+  ): MusicWish | undefined {
+    return detail?.activeMusicWishes?.find(
+      (wish) =>
+        wish.pinned &&
+        (wish.intents as Record<string, unknown>[]).some(match),
+    );
+  }
+
+  async function toggleVibeDirective(entry: (typeof VIBE_DIRECTIVES)[number]) {
+    if (!activeJourneyId || wishLoading) return;
+    const existing = activeVibeWish(entry.match);
+    setWishLoading(true);
+    setError(undefined);
+    try {
+      if (existing) {
+        await api.undoMusicWish(activeJourneyId, existing.id);
+      } else {
+        await api.createMusicWish(activeJourneyId, {
+          text: entry.text,
+          source: "chip",
+          pinned: true,
+        });
+      }
+      setDetail(await api.journey(activeJourneyId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setWishLoading(false);
+    }
+  }
+
   function startWishSpeech() {
     const Ctor = getSpeechRecognitionCtor();
     if (!Ctor) return;
@@ -931,6 +985,12 @@ export function App() {
                   <div className="hero-meta">
                     <h2 className="hero-title">{heroTrack.title}</h2>
                     <p className="hero-artist">{heroTrack.artist}</p>
+                    {(() => {
+                      const why = detail?.tracks.find(
+                        (t) => t.id === heroTrack.id,
+                      )?.whyLine;
+                      return why ? <p className="why-line">{why}</p> : null;
+                    })()}
                   </div>
                 </div>
               ) : tracksFailed ? (
@@ -1051,6 +1111,23 @@ export function App() {
                   <Power size={20} />
                   <span>Stop</span>
                 </button>
+              </div>
+
+              <div className="vibe-row" role="group" aria-label="Vibe-Direktiven">
+                {VIBE_DIRECTIVES.map((entry) => {
+                  const active = Boolean(activeVibeWish(entry.match));
+                  return (
+                    <button
+                      className={`vibe-toggle${active ? " on" : ""}`}
+                      disabled={wishLoading || !activeJourneyId}
+                      key={entry.label}
+                      onClick={() => toggleVibeDirective(entry)}
+                      type="button"
+                    >
+                      {entry.label}
+                    </button>
+                  );
+                })}
               </div>
 
               <div className="wish-bar">
