@@ -396,7 +396,12 @@ export class JourneyService {
 
   async createMusicWish(
     journeyId: string,
-    input: { text: string; source: MusicWishSource; apply?: boolean },
+    input: {
+      text: string;
+      source: MusicWishSource;
+      apply?: boolean;
+      pinned?: boolean;
+    },
   ): Promise<{ wish: MusicWish }> {
     const journey = this.getJourneyOrThrow(journeyId);
     if (journey.status !== "active") {
@@ -413,7 +418,7 @@ export class JourneyService {
       status: parsed.status,
       confidence: parsed.confidence,
       summary: parsed.summary,
-      pinned: false,
+      pinned: input.pinned ?? false,
       expiresAfterTracks: 5,
       remainingTracks: 5,
       createdAtIso,
@@ -1296,6 +1301,17 @@ export class JourneyService {
       : undefined;
     const moment = this.activeMoment.get(journeyId);
     this.activeMoment.delete(journeyId);
+    // Vibe-Direktiven: tempo-/wake_up-Wünsche verschieben die Ziel-Energie direkt.
+    const vibeBias = (activeMusicWishes ?? [])
+      .flatMap((wish) => wish.intents)
+      .reduce((sum, intent) => {
+        if (intent.type === "tempo")
+          return sum + (intent.direction === "faster" ? 0.15 : -0.15);
+        if (intent.type === "role" && intent.role === "wake_up")
+          return sum + 0.15;
+        return sum;
+      }, 0);
+    const clampedVibeBias = Math.max(-0.2, Math.min(0.2, vibeBias));
     const groundedContext: JourneyContext = {
       ...contextWithWishes,
       varietyAngle: seededExplorationAngle(variety.seed),
@@ -1315,7 +1331,12 @@ export class JourneyService {
       momentDirective: moment?.directive,
       energyBias: Math.max(
         -0.3,
-        Math.min(0.3, (story?.energyOffset ?? 0) + (moment?.energyBias ?? 0)),
+        Math.min(
+          0.3,
+          clampedVibeBias +
+            (story?.energyOffset ?? 0) +
+            (moment?.energyBias ?? 0),
+        ),
       ),
     };
 

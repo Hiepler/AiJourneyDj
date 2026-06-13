@@ -166,3 +166,38 @@ describe("applyMusicWishesToPolicy", () => {
     ]);
   });
 });
+
+describe("tempo intent", () => {
+  it("parses faster/slower wishes", () => {
+    expect(parseMusicWish("schneller").intents).toEqual([
+      { type: "tempo", direction: "faster", strength: 0.8 },
+    ]);
+    expect(parseMusicWish("mehr tempo").intents).toEqual([
+      { type: "tempo", direction: "faster", strength: 0.8 },
+    ]);
+    expect(parseMusicWish("langsamer").intents).toEqual([
+      { type: "tempo", direction: "slower", strength: 0.8 },
+    ]);
+    // "ruhiger" bleibt die bestehende calm_down-Role:
+    expect(parseMusicWish("ruhiger").intents).toEqual([
+      { type: "role", role: "calm_down", strength: 0.86 },
+    ]);
+  });
+
+  it("maps tempo onto policy mood tags", () => {
+    const policy = buildRecommendationPolicy({
+      destination: "X",
+      localTimeIso: "2026-06-12T10:00:00.000Z",
+      speedBucket: "highway",
+      phase: "cruise",
+      userPrompt: "",
+      passengerMode: "solo",
+    });
+    const next = applyMusicWishesToPolicy(policy, [
+      activeWish([{ type: "tempo", direction: "faster", strength: 0.8 }]),
+    ]);
+    expect(next.moodTags).toEqual(
+      expect.arrayContaining(["uptempo", "high-energy"]),
+    );
+  });
+});

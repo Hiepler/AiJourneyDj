@@ -41,6 +41,7 @@ const musicWishSchema = z.object({
   text: z.string().min(1).max(240),
   source: z.enum(["text", "voice", "chip"]).default("text"),
   apply: z.boolean().optional(),
+  pinned: z.boolean().optional(),
 });
 
 const musicWishPatchSchema = z.object({
