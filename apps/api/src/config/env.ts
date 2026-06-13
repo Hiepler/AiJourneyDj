@@ -154,6 +154,31 @@ const schema = z.object({
   CANDIDATE_POOL_FLOOR: z.coerce.number().int().min(0).max(50).default(6),
   // Pause between consecutive device queue adds (gentle API pacing).
   SPOTIFY_QUEUE_ADD_DELAY_MS: z.coerce.number().int().min(0).max(2000).default(150),
+  // Vielfalts-Doktrin: harter Artist-Bann auf Basis des recent_plays-Ledgers.
+  ARTIST_BAN_PLAYS: z.coerce.number().int().min(0).default(2),
+  ARTIST_BAN_WINDOW_HOURS: z.coerce.number().min(1).default(168),
+  ARTIST_AVOID_PROMPT_LIMIT: z.coerce.number().int().min(1).max(100).default(40),
+  SIMILAR_SOURCE_ENABLED: envBoolean(true),
+  SIMILAR_RANK_MIN: z.coerce.number().int().min(1).default(5),
+  SIMILAR_RANK_MAX: z.coerce.number().int().min(2).default(30),
+  LASTFM_SIMILAR_CACHE_HOURS: z.coerce.number().min(1).default(168),
+  // Deep-Cut-Explorer-Lens (zusätzlicher grounded Scout-Call) + Genre-Spread im Buffer.
+  EXPLORER_LENS_ENABLED: envBoolean(true),
+  GENRE_SPREAD_ENABLED: envBoolean(true),
+  // Drive-Story-Akte (Erzählbogen) + Ankunfts-/Moment-Fenster in Minuten.
+  DRIVE_STORY_ENABLED: envBoolean(true),
+  ARRIVAL_MOMENT_MINUTES: z.coerce.number().int().min(2).default(10),
+  // Journey-Momente (Verkehr, Grenze, Golden Hour, Ankunft …).
+  MOMENTS_ENABLED: envBoolean(true),
+  MOMENT_COOLDOWN_MINUTES: z.coerce.number().int().min(1).default(25),
+  TRAFFIC_JAM_DELAY_MINUTES: z.coerce.number().int().min(1).default(10),
+  TRAFFIC_RELEASE_DELAY_MINUTES: z.coerce.number().int().min(0).default(3),
+  // Live-Skip-Feedback: lernt die Session-Stimmung aus übersprungenen Songs.
+  SKIP_FEEDBACK_ENABLED: envBoolean(true),
+  SKIP_FEEDBACK_THRESHOLD: z.coerce.number().min(0.1).max(0.95).default(0.6),
+  SKIP_FEEDBACK_ARTIST_PENALTY: z.coerce.number().min(0).max(1).default(0.3),
+  // Erklärbare Kuration: server-komponierte „Warum dieser Song?“-Zeile.
+  WHY_LINE_ENABLED: envBoolean(true),
   TESLA_FLEET_ENABLED: envBoolean(false),
   TESLA_CLIENT_ID: z.string().optional(),
   TESLA_CLIENT_SECRET: z.string().optional(),

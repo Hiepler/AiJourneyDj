@@ -215,6 +215,9 @@ describe("music wish routes", () => {
     const settled = await waitForAnalysis(app, journey.id);
     expect(settled.analysisPending).toBe(false);
     expect(settled.tracks.some((track: { artist: string }) => track.artist === "Taylor Swift")).toBe(true);
+    expect(
+      settled.tracks.some((track: { whyLine?: string }) => Boolean(track.whyLine)),
+    ).toBe(true);
 
     await app.close();
   });
@@ -320,6 +323,38 @@ describe("music wish journey application", () => {
     const active = (await app.inject({ method: "GET", url: `/journeys/${journey.id}/music-wishes` })).json();
     expect(active.active).toHaveLength(1);
     expect(active.active[0].remainingTracks).toBe(5);
+
+    await app.close();
+  });
+
+  it("creates a pinned vibe directive in one call", async () => {
+    const { app } = await buildApp(testConfig());
+    const journey = (
+      await app.inject({
+        method: "POST",
+        url: "/journeys",
+        payload: {
+          destination: "Dijon",
+          userPrompt: "drive",
+          passengerMode: "solo",
+          provider: "spotify",
+          deviceId: "mock-webplayer",
+        },
+      })
+    ).json<{ id: string }>();
+
+    const created = (
+      await app.inject({
+        method: "POST",
+        url: `/journeys/${journey.id}/music-wishes`,
+        payload: { text: "schneller", source: "chip", pinned: true },
+      })
+    ).json<{ wish: { pinned: boolean; intents: unknown[]; summary: string } }>();
+
+    expect(created.wish.pinned).toBe(true);
+    expect(created.wish.intents).toEqual([
+      { type: "tempo", direction: "faster", strength: 0.8 },
+    ]);
 
     await app.close();
   });

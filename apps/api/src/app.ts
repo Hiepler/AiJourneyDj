@@ -89,6 +89,7 @@ export async function buildApp(config: AppConfig) {
     multilens: {
       perLensCount: config.SONG_SCOUT_PER_LENS,
       maxOutputTokens: config.SONG_SCOUT_MAX_OUTPUT_TOKENS,
+      includeDeepCuts: config.EXPLORER_LENS_ENABLED,
     },
   });
   const openMusic = config.XAI_MOCK
@@ -105,6 +106,7 @@ export async function buildApp(config: AppConfig) {
     enabled: config.LASTFM_ENABLED,
     chartCacheHours: config.LASTFM_CHART_CACHE_HOURS,
     tagCacheHours: config.LASTFM_TAG_CACHE_HOURS,
+    similarCacheHours: config.LASTFM_SIMILAR_CACHE_HOURS,
   });
   const app = Fastify({
     logger: {

@@ -41,6 +41,8 @@ export interface Track {
   matchConfidence: number;
   matchReason: string;
   addedToPlaylist: boolean;
+  /** Server-composed "why this song?" line (explainable curation). */
+  whyLine?: string;
 }
 
 export type MusicWishSource = "text" | "voice" | "chip";
@@ -284,7 +286,12 @@ export const api = {
     }),
   createMusicWish: (
     id: string,
-    payload: { text: string; source: MusicWishSource; apply?: boolean },
+    payload: {
+      text: string;
+      source: MusicWishSource;
+      apply?: boolean;
+      pinned?: boolean;
+    },
   ) =>
     request<{ wish: MusicWish; update?: { id: string; batchSize: number; status: string } }>(
       `/journeys/${id}/music-wishes`,

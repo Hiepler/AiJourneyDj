@@ -86,6 +86,32 @@ describe("engine variety", () => {
     await app.close();
   });
 
+  it("bans an over-played artist across journeys", { timeout: 30_000 }, async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ai-journey-dj-ban-"));
+    tmpDirs.push(dir);
+    const { app } = await buildApp(
+      loadConfig({
+        NODE_ENV: "test",
+        DATABASE_PATH: join(dir, "test.db"),
+        APP_SECRET: "a-long-test-secret-value",
+        TIDAL_MOCK: "true",
+        SPOTIFY_MOCK: "true",
+        XAI_MOCK: "true",
+        CORS_ORIGIN: "http://localhost:5173",
+        ARTIST_BAN_PLAYS: "1",
+      }),
+    );
+
+    const a = await startJourney(app, "Lago di Garda");
+    const artistsA = new Set(a.queued.map((k) => k.split("::")[0]));
+    const b = await startJourney(app, "Lago di Garda");
+    const artistsB = b.queued.map((k) => k.split("::")[0]);
+
+    const repeats = artistsB.filter((artist) => artistsA.has(artist)).length;
+    expect(repeats).toBeLessThan(artistsB.length);
+    await app.close();
+  });
+
   it("guarantees at least the wish quota of artist tracks in the next queue", { timeout: 30_000 }, async () => {
     const { app } = await buildApp(testConfig());
     const journey = (

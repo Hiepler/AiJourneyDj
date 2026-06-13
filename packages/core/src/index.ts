@@ -83,10 +83,24 @@ export interface JourneyContext {
   elapsedMinutes?: number;
   /** Active music-wish layers steering this journey. */
   activeMusicWishes?: MusicWish[];
+  /** Gerade gespielter Track — Seed für das Momentum-Radio. */
+  nowPlaying?: { artist: string; title: string };
   /** Rotating "exploration angle" hint for the LLM scout (variety engine). */
   varietyAngle?: string;
   /** Recently surfaced artists across journeys to de-prioritize (variety engine). */
   recentlyPlayedArtists?: string[];
+  /** Live-Verkehrsverzögerung der Route in Minuten (Telemetrie). */
+  trafficDelayMinutes?: number;
+  /** Fahrstil aus Beschleunigungs-Varianz (nur Streaming-Telemetrie). */
+  accelStyle?: "stop_and_go" | "smooth_glide";
+  /** Leise Kabine (audioVolume niedrig) — sanftere Auswahl. */
+  quietCabin?: boolean;
+  /** Energie-Bias aus Vibe-Direktiven + Story-Akt (−0.3 … +0.3). */
+  energyBias?: number;
+  /** Story-Akt-Direktive für den LLM-Brief. */
+  storyDirective?: string;
+  /** Momente-Direktive für den LLM-Brief. */
+  momentDirective?: string;
 }
 
 export type SongCandidateRole =
@@ -131,7 +145,8 @@ export type MusicWishIntent =
       type: "role";
       role: "singalong" | "wake_up" | "kids" | "calm_down";
       strength: number;
-    };
+    }
+  | { type: "tempo"; direction: "faster" | "slower"; strength: number };
 
 export interface MusicWish {
   id: string;
@@ -182,7 +197,8 @@ export interface SongCandidate {
     | "musicbrainz"
     | "listenbrainz"
     | "lastfm"
-    | "music-wish";
+    | "music-wish"
+    | "lastfm-similar";
   confidence: number;
 }
 

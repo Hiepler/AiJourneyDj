@@ -15,7 +15,7 @@ import type {
   TasteProfile,
   TemperatureBucket,
 } from "@ai-journey-dj/core";
-import { songKey } from "@ai-journey-dj/core";
+import { normalizeText, songKey } from "@ai-journey-dj/core";
 import { speedBucket, temperatureBucket } from "@ai-journey-dj/telemetry";
 import { assessDriveState } from "@ai-journey-dj/recommendation";
 
@@ -564,6 +564,21 @@ export class Store {
       }));
   }
 
+  /** Auftritte pro (normalisiertem) Artist im Fenster — Grundlage des Vielfalts-Banns. */
+  artistPlayCounts(windowMs: number, nowMs: number = Date.now()): Map<string, number> {
+    const cutoff = new Date(nowMs - windowMs).toISOString();
+    const rows = this.db.all<any>(
+      "SELECT artist FROM recent_plays WHERE surfaced_at >= ?",
+      [cutoff],
+    );
+    const counts = new Map<string, number>();
+    for (const row of rows) {
+      const key = normalizeText(row.artist);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return counts;
+  }
+
   listResolvedTracks(
     journeyId: string,
   ): Array<
@@ -611,6 +626,37 @@ export class Store {
         addedToPlaylist: row.added_to_playlist === 1,
         savedToPlaylist: row.saved_to_playlist === 1,
       }));
+  }
+
+  /** Resolved Tracks inkl. Kandidaten-Attribution für die whyLine. */
+  listResolvedTracksDetailed(journeyId: string): Array<
+    ReturnType<Store["listResolvedTracks"]>[number] & {
+      candidateLens?: string;
+      candidateReason?: string;
+      candidateSource?: string;
+      candidateChartCountry?: string;
+    }
+  > {
+    const base = this.listResolvedTracks(journeyId);
+    const rows = this.db.all<any>(
+      `SELECT rt.id as rid, sc.lens, sc.reason, sc.source, sc.chart_country
+       FROM resolved_tracks rt JOIN song_candidates sc ON sc.id = rt.candidate_id
+       WHERE rt.journey_id = ?`,
+      [journeyId],
+    );
+    const byId = new Map(rows.map((row) => [row.rid, row]));
+    return base.map((track) => {
+      const meta = byId.get(track.id);
+      return meta
+        ? {
+            ...track,
+            candidateLens: meta.lens ?? undefined,
+            candidateReason: meta.reason ?? undefined,
+            candidateSource: meta.source ?? undefined,
+            candidateChartCountry: meta.chart_country ?? undefined,
+          }
+        : track;
+    });
   }
 
   markTracksAdded(ids: string[]): void {
@@ -959,7 +1005,29 @@ export function contextFromJourney(
       0,
       (Date.now() - Date.parse(journey.createdAtIso)) / 60000,
     ),
+    trafficDelayMinutes: telemetry?.trafficDelayMinutes,
+    accelStyle: accelStyleFrom(recentTelemetry),
+    quietCabin:
+      typeof telemetry?.audioVolume === "number"
+        ? telemetry.audioVolume <= 3
+        : undefined,
   };
+}
+
+/** stop_and_go bei hoher Beschleunigungs-Varianz, smooth_glide bei sehr niedriger; sonst undefined. */
+function accelStyleFrom(
+  recent: TelemetrySnapshotReadModel[] | undefined,
+): "stop_and_go" | "smooth_glide" | undefined {
+  const values = (recent ?? [])
+    .map((item) => item.longitudinalAccelMps2)
+    .filter((v): v is number => typeof v === "number");
+  if (values.length < 3) return undefined;
+  const mean = values.reduce((a, b) => a + b, 0) / values.length;
+  const variance =
+    values.reduce((a, b) => a + (b - mean) ** 2, 0) / values.length;
+  if (variance >= 0.8) return "stop_and_go";
+  if (variance <= 0.05) return "smooth_glide";
+  return undefined;
 }
 
 /**

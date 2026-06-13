@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { normalizeText } from "@ai-journey-dj/core";
 import { NoopOpenMusicClient } from "@ai-journey-dj/open-music";
 import { XaiSongScout } from "@ai-journey-dj/recommendation";
 import type { SpotifyAdapter, SpotifyPlaybackState, SpotifyTrackSearchResult } from "@ai-journey-dj/spotify";
@@ -479,5 +480,125 @@ describe("connect-mode queue sync", () => {
     for (const uri of newAdds) {
       expect(modelUris.has(uri)).toBe(true);
     }
+  });
+
+  it("opens the journey with a taste-anchor track", { timeout: 20_000 }, async () => {
+    const { service, store } = buildService();
+    // The reconcile harness adapter has no getTopArtists, so seed the taste profile
+    // directly — the opening anchor is drawn from representativeArtists.
+    const tasteArtists = [
+      "Bonobo",
+      "Tame Impala",
+      "Khruangbin",
+      "Tycho",
+      "The War on Drugs",
+    ];
+    store.saveCachedTasteProfile("local", {
+      topGenres: ["downtempo", "indie"],
+      representativeArtists: tasteArtists,
+    });
+
+    const journey = await startSpotifyJourney(service);
+    const session = store.getPlaybackSession(journey.id)!;
+    expect(session.activeTrack?.artist).toBeDefined();
+    expect(tasteArtists).toContain(session.activeTrack!.artist);
+  });
+
+  it("a border crossing schedules local hits with a priority slot", { timeout: 20_000 }, async () => {
+    const { service, store } = buildService({
+      SPOTIFY_REFILL_MIN_INTERVAL_SECONDS: "0",
+    });
+    const journey = await startSpotifyJourney(service);
+
+    // Telemetrie-Historie: Deutschland → Italien (älterer Snapshot zuerst gespeichert).
+    store.saveTelemetry(
+      journey.id,
+      {
+        timestampIso: new Date(Date.now() - 60_000).toISOString(),
+        countryCode: "DE",
+        countryName: "Germany",
+      } as any,
+      "cruise",
+    );
+    store.saveTelemetry(
+      journey.id,
+      {
+        timestampIso: new Date().toISOString(),
+        countryCode: "IT",
+        countryName: "Italy",
+      } as any,
+      "cruise",
+    );
+
+    await service.evaluateJourneyMoments(journey.id);
+    // moment:border_crossing ist vibe-changing → Analyse lief; Moment-Kandidaten gespeichert.
+    const deadline = Date.now() + 15_000;
+    while (service.isAnalysisPending(journey.id)) {
+      if (Date.now() > deadline) throw new Error("moment analysis did not finish");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const candidates = store.listResolvedTracks(journey.id);
+    expect(candidates.length).toBeGreaterThan(0);
+    const audit = store.latestAuditEvent(journey.id, "moment.triggered");
+    expect(audit).toBeDefined();
+  });
+
+  it("learns from a native skip detected via progress heuristic", async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+    const model = modelOf(store, journey.id);
+
+    // Track 0 läuft bei ~17% — Snapshot merken.
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: model[0].providerTrackId,
+      queuedProviderTrackIds: [],
+      progressMs: 30_000,
+      durationMs: 180_000,
+    };
+    await service.reconcileSpotifyPlayback(journey.id);
+
+    // Wechsel zu Track 1, während Track 0 erst bei 17% stand → Skip-Signal.
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: model[1].providerTrackId,
+      queuedProviderTrackIds: [],
+      progressMs: 1_000,
+      durationMs: 200_000,
+    };
+    await service.reconcileSpotifyPlayback(journey.id);
+
+    const skipped = store
+      .listResolvedTracks(journey.id)
+      .find((t) => t.providerTrackId === model[0].providerTrackId)!;
+    expect(
+      service.skipFeedbackFor(journey.id).artists.get(normalizeText(skipped.artist)),
+    ).toBeGreaterThan(0);
+    expect(store.latestAuditEvent(journey.id, "feedback.skip_learned")).toBeDefined();
+  });
+
+  it("a finished track (>=90% progress) is not counted as a skip", async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+    const model = modelOf(store, journey.id);
+
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: model[0].providerTrackId,
+      queuedProviderTrackIds: [],
+      progressMs: 175_000,
+      durationMs: 180_000,
+    };
+    await service.reconcileSpotifyPlayback(journey.id);
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: model[1].providerTrackId,
+      queuedProviderTrackIds: [],
+      progressMs: 1_000,
+      durationMs: 200_000,
+    };
+    await service.reconcileSpotifyPlayback(journey.id);
+
+    expect(service.skipFeedbackFor(journey.id).artists.size).toBe(0);
   });
 });

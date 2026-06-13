@@ -5,7 +5,7 @@ import type {
   ResolvedTrack,
   SongCandidate,
 } from "@ai-journey-dj/core";
-import { songKey } from "@ai-journey-dj/core";
+import { normalizeText, songKey } from "@ai-journey-dj/core";
 
 import type { RecommendationPolicy } from "./index.js";
 
@@ -967,6 +967,53 @@ describe("buildLensPrompt — valence", () => {
   });
 });
 
+describe("engine v2 lenses", () => {
+  it("appends the deep_cuts explorer lens when requested", () => {
+    const brief = buildMusicalBrief(context);
+    const without = selectJourneyLenses(brief);
+    expect(without.some((lens) => lens.key === "deep_cuts")).toBe(false);
+
+    const withExplorer = selectJourneyLenses(brief, { includeDeepCuts: true });
+    expect(withExplorer.some((lens) => lens.key === "deep_cuts")).toBe(true);
+    expect(withExplorer.length).toBe(without.length + 1); // zusätzlicher Call, verdrängt nichts
+  });
+
+  it("regional lens demands real place connection via web search", () => {
+    const lens = DEFAULT_LENSES.find((l) => l.key === "regional")!;
+    const brief = buildMusicalBrief(context);
+    const prompt = buildLensPrompt(lens, brief, 5);
+    expect(prompt.toLowerCase()).toContain("web search");
+    expect(prompt.toLowerCase()).toMatch(/region|destination/);
+  });
+});
+
+describe("telemetry fusion", () => {
+  it("surfaces traffic, accel style and quiet cabin as drive signals", () => {
+    const brief = buildMusicalBrief({
+      ...context,
+      trafficDelayMinutes: 14,
+      accelStyle: "stop_and_go",
+      quietCabin: true,
+    });
+    expect(brief.driveSignals).toEqual(
+      expect.arrayContaining(["heavy_traffic", "stop_and_go", "quiet_cabin"]),
+    );
+  });
+
+  it("heavy traffic dampens energy unless a wake-up bias is active", () => {
+    const calm = buildMusicalBrief({ ...context, trafficDelayMinutes: 14 });
+    const base = buildMusicalBrief(context);
+    expect(calm.targetEnergy).toBeLessThan(base.targetEnergy);
+
+    const awake = buildMusicalBrief({
+      ...context,
+      trafficDelayMinutes: 14,
+      energyBias: 0.15,
+    });
+    expect(awake.targetEnergy).toBeGreaterThanOrEqual(base.targetEnergy);
+  });
+});
+
 describe("overnight vacation drive — mood transitions", () => {
   function briefAt(localTimeIso: string, elapsedMinutes: number) {
     return buildMusicalBrief({
@@ -1094,5 +1141,39 @@ describe("variety-aware ranking", () => {
       fatigueExemptArtists: ["Tired Artist"],
     });
     expect(exempt[0].providerTrackId).toBe("tired");
+  });
+});
+
+describe("artist ban ranking", () => {
+  function bTrack(id: string, artist: string) {
+    return {
+      provider: "spotify" as const,
+      providerTrackId: id,
+      providerUri: `spotify:track:${id}`,
+      artist,
+      title: `Song ${id}`,
+      explicit: false,
+      popularity: 80,
+      matchConfidence: 0.9,
+      matchReason: "artist and title match",
+    };
+  }
+
+  it("hard-excludes banned artists but never exempted ones", () => {
+    const policy = buildRecommendationPolicy(context);
+    const tracks: ResolvedTrack[] = [bTrack("a", "Banned Star"), bTrack("b", "Fresh Find")];
+
+    const ranked = rankResolvedTracksForPolicy(tracks, policy, {
+      now: new Date("2026-06-11"),
+      bannedArtists: new Set([normalizeText("Banned Star")]),
+    });
+    expect(ranked.map((t) => t.providerTrackId)).toEqual(["b"]);
+
+    const exempt = rankResolvedTracksForPolicy(tracks, policy, {
+      now: new Date("2026-06-11"),
+      bannedArtists: new Set([normalizeText("Banned Star")]),
+      fatigueExemptArtists: ["Banned Star"],
+    });
+    expect(exempt.map((t) => t.providerTrackId).sort()).toEqual(["a", "b"]);
   });
 });
