@@ -451,6 +451,54 @@ describe("on-demand live telemetry (start-screen pre-fill + first-queue seed)", 
     expect(calls[0]).toContain("vehicle_data");
   });
 
+  it("throttles reads so an awake, parked car is touched at most once per interval (drain guard)", async () => {
+    const { config } = build({ TESLA_FLEET_ENABLED: "true", TESLA_VEHICLE_ID: "VID" });
+    const { calls, fetchImpl } = vehicleDataFetch("online");
+    let clock = 1_000;
+    const reader = createTeslaLiveReader({
+      config,
+      teslaAuth: { isConnected: () => true, getAccessToken: async () => "t" },
+      fetchImpl,
+      minIntervalMs: 30_000,
+      now: () => clock
+    });
+    await reader.read();
+    await reader.read(); // within the window → served from cache, no new vehicle_data call
+    await reader.read();
+    expect(calls).toHaveLength(1);
+    clock += 30_000; // window elapsed → one more read is allowed
+    await reader.read();
+    expect(calls).toHaveLength(2);
+  });
+
+  it("never calls a wake/command endpoint — only vehicle_data (and at most a cached list discovery)", async () => {
+    const { config } = build({ TESLA_FLEET_ENABLED: "true" }); // no TESLA_VEHICLE_ID → must discover
+    const calls: string[] = [];
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.endsWith("/api/1/vehicles")) {
+        return new Response(JSON.stringify({ response: [{ id_s: "7" }] }), { status: 200 });
+      }
+      return new Response(
+        JSON.stringify({ response: { drive_state: { speed: 10 } } }),
+        { status: 200 }
+      );
+    };
+    const reader = createTeslaLiveReader({
+      config,
+      teslaAuth: { isConnected: () => true, getAccessToken: async () => "t" },
+      fetchImpl,
+      minIntervalMs: 0 // disable throttle so we can observe discovery caching across reads
+    });
+    await reader.read();
+    await reader.read();
+    expect(calls.some((u) => /wake_up|\/command\//.test(u))).toBe(false);
+    // The list discovery happens at most once (cached); every other call is vehicle_data.
+    expect(calls.filter((u) => u.endsWith("/api/1/vehicles"))).toHaveLength(1);
+    expect(calls.filter((u) => u.includes("vehicle_data"))).toHaveLength(2);
+  });
+
   it("GET /telemetry/live reports unavailable when Fleet polling is off", async () => {
     const { app } = await buildApp(build().config);
     const res = await app.inject({ method: "GET", url: "/telemetry/live" });

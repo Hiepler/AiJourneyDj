@@ -102,8 +102,6 @@ export function App() {
   const [activeJourneyId, setActiveJourneyId] = useState<string>();
   const [detail, setDetail] = useState<JourneyDetail>();
   const [destination, setDestination] = useState("Lago di Garda");
-  // Whether the driver typed/picked a destination themselves — guards against clobbering it with nav.
-  const [destinationTouched, setDestinationTouched] = useState(false);
   const [liveTelemetry, setLiveTelemetry] = useState<LiveTelemetry>();
   const [liveLoading, setLiveLoading] = useState(false);
   const [selectedMood, setSelectedMood] = useState(MOOD_PRESETS[0].key);
@@ -127,6 +125,12 @@ export function App() {
   const playerRef = useRef<SpotifyPlayerInstance | null>(null);
   const recoveryAttemptedFor = useRef<string | undefined>(undefined);
   const keepAliveRef = useRef<SilentKeepAlive | null>(null);
+  // Did the driver type/pick a destination themselves? A ref (not state) so the in-flight live
+  // pre-fill reads the *latest* value at apply-time and never clobbers a destination typed mid-fetch.
+  const destinationTouchedRef = useRef(false);
+  // Guards the start-screen auto-pull to one Tesla read per session (reset when a journey starts), so
+  // a health re-fetch toggling teslaConnected can't re-trigger billed reads.
+  const liveAutoFetchedRef = useRef(false);
   // Holds the latest playback actions so MediaSession / visibility handlers never call stale closures.
   const playbackActionsRef = useRef({
     next: () => {},
@@ -195,11 +199,16 @@ export function App() {
   }, [showDevices]);
 
   // On the start screen, pull one live reading as soon as the car is connected so the destination/ETA
-  // can pre-fill — instead of waiting for the journey's first background poll. One-shot per open
-  // (Tesla calls are billed); the driver can re-pull with the refresh button.
+  // can pre-fill — instead of waiting for the journey's first background poll. Strictly one-shot per
+  // start-screen session (Tesla reads are billed and touch the car); a journey starting re-arms it,
+  // and the driver can re-pull explicitly with the refresh button.
   useEffect(() => {
-    if (activeJourneyId) return;
-    if (!health?.teslaConnected) return;
+    if (activeJourneyId) {
+      liveAutoFetchedRef.current = false;
+      return;
+    }
+    if (!health?.teslaConnected || liveAutoFetchedRef.current) return;
+    liveAutoFetchedRef.current = true;
     refreshLiveTelemetry();
   }, [activeJourneyId, health?.teslaConnected]);
 
@@ -285,7 +294,7 @@ export function App() {
       const live = await api.liveTelemetry();
       setLiveTelemetry(live);
       const navDestination = live.reading?.destination?.trim();
-      if (navDestination && !destinationTouched) {
+      if (navDestination && !destinationTouchedRef.current) {
         setDestination(navDestination);
       }
     } catch {
@@ -928,7 +937,7 @@ export function App() {
               <span>Destination</span>
               <input
                 onChange={(event) => {
-                  setDestinationTouched(true);
+                  destinationTouchedRef.current = true;
                   setDestination(event.target.value);
                 }}
                 placeholder="e.g. Lago di Garda"
@@ -941,7 +950,7 @@ export function App() {
                   <button
                     className="quick-pick nav"
                     onClick={() => {
-                      setDestinationTouched(true);
+                      destinationTouchedRef.current = true;
                       setDestination(navDestination!);
                     }}
                     title="Use the destination from your car's navigation"
@@ -957,7 +966,7 @@ export function App() {
                       className={`quick-pick${place === destination ? " on" : ""}`}
                       key={place}
                       onClick={() => {
-                        setDestinationTouched(true);
+                        destinationTouchedRef.current = true;
                         setDestination(place);
                       }}
                       type="button"

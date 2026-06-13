@@ -31,7 +31,7 @@ import { TidalAuthService } from "./auth/tidalAuth.js";
 import { JourneyService } from "./journeys/journeyService.js";
 import { registerJourneyRoutes } from "./journeys/routes.js";
 import { registerTelemetryRoutes } from "./telemetry/routes.js";
-import { createTeslaLiveReader } from "./telemetry/teslaFleetPoller.js";
+import { createTeslaLiveReader, createTeslaReadContext } from "./telemetry/teslaFleetPoller.js";
 import { StreamLiveness } from "./telemetry/streamSource.js";
 
 export function isAuthorizedAdminRequest(
@@ -130,9 +130,18 @@ export async function buildApp(config: AppConfig) {
 
   // On-demand live telemetry: pre-fills the start screen and seeds a journey's first queue without
   // waiting for the background poll cadence. Shared by the journey service and the /telemetry/live route.
+  // The read context (vehicle-id resolver + geocoder) is shared with the background poller so the
+  // vehicle id is discovered at most once per process.
+  const teslaReadContext = createTeslaReadContext({
+    apiBaseUrl: config.TESLA_API_BASE_URL,
+    configuredVehicleId: config.TESLA_VEHICLE_ID,
+    getAccessToken: () => teslaAuth.getAccessToken(),
+    geocoderUrl: config.GEOCODER_URL,
+  });
   const teslaLiveReader = createTeslaLiveReader({
     config,
     teslaAuth,
+    context: teslaReadContext,
     logger: app.log,
   });
   journeyService.setLiveTelemetryReader(teslaLiveReader);
@@ -514,5 +523,5 @@ export async function buildApp(config: AppConfig) {
     });
   }
 
-  return { app, store, journeyService, teslaAuth, streamLiveness };
+  return { app, store, journeyService, teslaAuth, streamLiveness, teslaReadContext };
 }
