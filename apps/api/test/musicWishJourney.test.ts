@@ -215,6 +215,9 @@ describe("music wish routes", () => {
     const settled = await waitForAnalysis(app, journey.id);
     expect(settled.analysisPending).toBe(false);
     expect(settled.tracks.some((track: { artist: string }) => track.artist === "Taylor Swift")).toBe(true);
+    expect(
+      settled.tracks.some((track: { whyLine?: string }) => Boolean(track.whyLine)),
+    ).toBe(true);
 
     await app.close();
   });

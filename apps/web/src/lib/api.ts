@@ -41,6 +41,8 @@ export interface Track {
   matchConfidence: number;
   matchReason: string;
   addedToPlaylist: boolean;
+  /** Server-composed "why this song?" line (explainable curation). */
+  whyLine?: string;
 }
 
 export type MusicWishSource = "text" | "voice" | "chip";
