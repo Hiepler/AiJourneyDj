@@ -974,7 +974,29 @@ export function contextFromJourney(
       0,
       (Date.now() - Date.parse(journey.createdAtIso)) / 60000,
     ),
+    trafficDelayMinutes: telemetry?.trafficDelayMinutes,
+    accelStyle: accelStyleFrom(recentTelemetry),
+    quietCabin:
+      typeof telemetry?.audioVolume === "number"
+        ? telemetry.audioVolume <= 3
+        : undefined,
   };
+}
+
+/** stop_and_go bei hoher Beschleunigungs-Varianz, smooth_glide bei sehr niedriger; sonst undefined. */
+function accelStyleFrom(
+  recent: TelemetrySnapshotReadModel[] | undefined,
+): "stop_and_go" | "smooth_glide" | undefined {
+  const values = (recent ?? [])
+    .map((item) => item.longitudinalAccelMps2)
+    .filter((v): v is number => typeof v === "number");
+  if (values.length < 3) return undefined;
+  const mean = values.reduce((a, b) => a + b, 0) / values.length;
+  const variance =
+    values.reduce((a, b) => a + (b - mean) ** 2, 0) / values.length;
+  if (variance >= 0.8) return "stop_and_go";
+  if (variance <= 0.05) return "smooth_glide";
+  return undefined;
 }
 
 /**

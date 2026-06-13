@@ -89,6 +89,18 @@ export interface JourneyContext {
   varietyAngle?: string;
   /** Recently surfaced artists across journeys to de-prioritize (variety engine). */
   recentlyPlayedArtists?: string[];
+  /** Live-Verkehrsverzögerung der Route in Minuten (Telemetrie). */
+  trafficDelayMinutes?: number;
+  /** Fahrstil aus Beschleunigungs-Varianz (nur Streaming-Telemetrie). */
+  accelStyle?: "stop_and_go" | "smooth_glide";
+  /** Leise Kabine (audioVolume niedrig) — sanftere Auswahl. */
+  quietCabin?: boolean;
+  /** Energie-Bias aus Vibe-Direktiven + Story-Akt (−0.3 … +0.3). */
+  energyBias?: number;
+  /** Story-Akt-Direktive für den LLM-Brief. */
+  storyDirective?: string;
+  /** Momente-Direktive für den LLM-Brief. */
+  momentDirective?: string;
 }
 
 export type SongCandidateRole =

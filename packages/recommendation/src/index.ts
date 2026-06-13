@@ -1551,6 +1551,20 @@ export function buildMusicalBrief(
   targetEnergy = Math.max(targetEnergy, energyFloor);
   if (energyFloor > 0) moodWords.push("alert", "wakeful");
 
+  // Telemetry fusion: a single energy stellschraube. Heavy traffic dampens energy
+  // (unless a wake-up bias is active); the vibe/story energyBias shifts it directly.
+  const trafficDamp =
+    typeof context.trafficDelayMinutes === "number" &&
+    context.trafficDelayMinutes >= 10 &&
+    (context.energyBias ?? 0) < 0.1
+      ? 0.1
+      : 0;
+  const fusedBias = Math.max(
+    -0.3,
+    Math.min(0.3, (context.energyBias ?? 0) - trafficDamp),
+  );
+  targetEnergy = Math.max(0.1, Math.min(1, targetEnergy + fusedBias));
+
   const focusLevel = clamp01(
     (context.phase === "focus" ? 0.75 : 0.35) +
       (context.autopilotState === "active" ? 0.15 : 0),
@@ -1608,6 +1622,12 @@ export function buildMusicalBrief(
     context.autopilotState,
     band === "deep_night" || band === "night" ? "night" : undefined,
     socialEnergy,
+    typeof context.trafficDelayMinutes === "number" &&
+    context.trafficDelayMinutes >= 10
+      ? "heavy_traffic"
+      : undefined,
+    context.accelStyle,
+    context.quietCabin ? "quiet_cabin" : undefined,
   ].filter((value): value is string => Boolean(value));
   const genres =
     context.passengerMode === "family"
