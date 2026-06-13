@@ -987,6 +987,33 @@ describe("engine v2 lenses", () => {
   });
 });
 
+describe("telemetry fusion", () => {
+  it("surfaces traffic, accel style and quiet cabin as drive signals", () => {
+    const brief = buildMusicalBrief({
+      ...context,
+      trafficDelayMinutes: 14,
+      accelStyle: "stop_and_go",
+      quietCabin: true,
+    });
+    expect(brief.driveSignals).toEqual(
+      expect.arrayContaining(["heavy_traffic", "stop_and_go", "quiet_cabin"]),
+    );
+  });
+
+  it("heavy traffic dampens energy unless a wake-up bias is active", () => {
+    const calm = buildMusicalBrief({ ...context, trafficDelayMinutes: 14 });
+    const base = buildMusicalBrief(context);
+    expect(calm.targetEnergy).toBeLessThan(base.targetEnergy);
+
+    const awake = buildMusicalBrief({
+      ...context,
+      trafficDelayMinutes: 14,
+      energyBias: 0.15,
+    });
+    expect(awake.targetEnergy).toBeGreaterThanOrEqual(base.targetEnergy);
+  });
+});
+
 describe("overnight vacation drive — mood transitions", () => {
   function briefAt(localTimeIso: string, elapsedMinutes: number) {
     return buildMusicalBrief({
