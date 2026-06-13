@@ -31,6 +31,7 @@ import { TidalAuthService } from "./auth/tidalAuth.js";
 import { JourneyService } from "./journeys/journeyService.js";
 import { registerJourneyRoutes } from "./journeys/routes.js";
 import { registerTelemetryRoutes } from "./telemetry/routes.js";
+import { createTeslaLiveReader } from "./telemetry/teslaFleetPoller.js";
 import { StreamLiveness } from "./telemetry/streamSource.js";
 
 export function isAuthorizedAdminRequest(
@@ -126,6 +127,15 @@ export async function buildApp(config: AppConfig) {
     lastfmCharts,
     app.log,
   );
+
+  // On-demand live telemetry: pre-fills the start screen and seeds a journey's first queue without
+  // waiting for the background poll cadence. Shared by the journey service and the /telemetry/live route.
+  const teslaLiveReader = createTeslaLiveReader({
+    config,
+    teslaAuth,
+    logger: app.log,
+  });
+  journeyService.setLiveTelemetryReader(teslaLiveReader);
 
   await app.register(cors, {
     origin: (origin, callback) => {
@@ -470,7 +480,7 @@ export async function buildApp(config: AppConfig) {
     config,
     streamLiveness,
   );
-  await registerTelemetryRoutes(app, config, journeyService);
+  await registerTelemetryRoutes(app, config, journeyService, teslaLiveReader);
 
   // In production (or when WEB_DIST_DIR is set), the API also serves the built web SPA so the whole
   // app lives on one origin (no CORS; OAuth/Spotify same-origin; one domain for Tesla's public key).
@@ -488,6 +498,7 @@ export async function buildApp(config: AppConfig) {
       "/journeys",
       "/history",
       "/internal",
+      "/telemetry",
       "/spotify",
       "/.well-known",
     ];

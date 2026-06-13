@@ -78,6 +78,7 @@ import type { AppConfig } from "../config/env.js";
 import { contextFromJourney, type Store } from "../db/store.js";
 import type { TidalAuthService } from "../auth/tidalAuth.js";
 import type { SpotifyAuthService } from "../auth/spotifyAuth.js";
+import type { TeslaLiveReader } from "../telemetry/teslaFleetPoller.js";
 
 export interface StartJourneyInput {
   destination: string;
@@ -125,6 +126,8 @@ export class JourneyService {
     string,
     { artists: Map<string, number>; moodTags: Map<string, number> }
   >();
+  /** On-demand live telemetry reader (injected post-construction; absent in mock/tests). */
+  private liveTelemetryReader?: TeslaLiveReader;
 
   constructor(
     private readonly config: AppConfig,
@@ -138,6 +141,46 @@ export class JourneyService {
     private readonly lastfmCharts?: LastfmChartClient,
     private readonly logger: JourneyLogger = noopLogger,
   ) {}
+
+  /**
+   * Wires the on-demand Tesla reader after construction so a journey can seed its first queue with a
+   * live reading. Optional: without it (mock mode, tests) the engine just waits for the poller.
+   */
+  setLiveTelemetryReader(reader: TeslaLiveReader): void {
+    this.liveTelemetryReader = reader;
+  }
+
+  /**
+   * Best-effort: pull one live telemetry reading *now* and persist it, so the journey's very first
+   * analysis already reflects real region / ETA / phase instead of waiting up to a full
+   * `TESLA_POLL_SECONDS` for the background poller. Never throws and never triggers a recurate — the
+   * `initial` analyze that follows consumes the freshly saved telemetry.
+   */
+  private async seedLiveTelemetry(journeyId: string): Promise<void> {
+    const reader = this.liveTelemetryReader;
+    if (!reader?.available()) return;
+    const event = await reader.read().catch(() => undefined);
+    if (!event) return;
+    const journey = this.store.getJourney(journeyId);
+    if (!journey) return;
+    const phase = derivePhase(event, journey.phase);
+    if (
+      journey.plannedDurationMinutes === undefined &&
+      typeof event.etaMinutes === "number" &&
+      event.etaMinutes > 0
+    ) {
+      this.store.setPlannedDurationMinutes(journeyId, event.etaMinutes);
+    }
+    this.store.saveTelemetry(journeyId, event, phase);
+    if (phase !== journey.phase) {
+      this.store.updateJourneyPhase(journeyId, phase);
+    }
+    this.store.audit(
+      journeyId,
+      "telemetry.seeded",
+      "Seeded the first queue with a live telemetry reading.",
+    );
+  }
 
   async startJourney(input: StartJourneyInput): Promise<JourneyRecord> {
     const provider = input.provider ?? "spotify";
@@ -175,6 +218,10 @@ export class JourneyService {
         lastHeartbeatAt: new Date().toISOString(),
       });
     }
+
+    // Pull a live reading right now so the first queue is context-aware (region / ETA / phase),
+    // rather than blind until the next background poll. Best-effort and time-boxed; degrades silently.
+    await this.seedLiveTelemetry(id);
 
     try {
       await this.analyzeJourney(id, "initial");
