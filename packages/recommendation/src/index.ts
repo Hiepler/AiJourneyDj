@@ -2382,3 +2382,9 @@ export {
   type VarietyContext,
   type VarietyInput,
 } from "./variety.js";
+
+export {
+  momentumRadioCandidates,
+  similarRankWindow,
+  type SimilarSource,
+} from "./momentumRadio.js";

@@ -114,3 +114,35 @@ describe("LastfmChartClient pagination", () => {
     expect(geoCalls[1]).toContain("page=3");
   });
 });
+
+describe("LastfmChartClient similar APIs", () => {
+  function clientWith(calls: string[]) {
+    const fetchImpl = (async (url: string | URL) => {
+      calls.push(String(url));
+      const u = String(url);
+      const body = u.includes("track.getSimilar")
+        ? { similartracks: { track: [{ name: "Neighbor Song", artist: { name: "Neighbor" }, match: 0.9 }] } }
+        : u.includes("artist.getSimilar")
+          ? { similarartists: { artist: [{ name: "Cousin Act", match: 0.8 }] } }
+          : { toptracks: { track: [{ name: "Top Cut", artist: { name: "Seed Act" }, playcount: "1200", "@attr": { rank: "1" } }] } };
+      return { ok: true, status: 200, json: async () => body } as Response;
+    }) as typeof fetch;
+    return new LastfmChartClient({ apiKey: "k", enabled: true, fetchImpl });
+  }
+
+  it("fetches similar tracks, similar artists and artist top tracks (cached)", async () => {
+    const calls: string[] = [];
+    const client = clientWith(calls);
+
+    const sim = await client.getSimilarTracks("Seed Act", "Seed Song", 10);
+    expect(sim[0]).toMatchObject({ artist: "Neighbor", title: "Neighbor Song" });
+    await client.getSimilarTracks("Seed Act", "Seed Song", 10);
+    expect(calls.filter((u) => u.includes("track.getSimilar"))).toHaveLength(1); // cache
+
+    const artists = await client.getSimilarArtists("Seed Act", 20);
+    expect(artists[0]).toBe("Cousin Act");
+
+    const top = await client.getArtistTopTracks("Seed Act", 5);
+    expect(top[0]).toMatchObject({ artist: "Seed Act", title: "Top Cut" });
+  });
+});

@@ -83,6 +83,8 @@ export interface JourneyContext {
   elapsedMinutes?: number;
   /** Active music-wish layers steering this journey. */
   activeMusicWishes?: MusicWish[];
+  /** Gerade gespielter Track — Seed für das Momentum-Radio. */
+  nowPlaying?: { artist: string; title: string };
   /** Rotating "exploration angle" hint for the LLM scout (variety engine). */
   varietyAngle?: string;
   /** Recently surfaced artists across journeys to de-prioritize (variety engine). */
@@ -182,7 +184,8 @@ export interface SongCandidate {
     | "musicbrainz"
     | "listenbrainz"
     | "lastfm"
-    | "music-wish";
+    | "music-wish"
+    | "lastfm-similar";
   confidence: number;
 }
 
