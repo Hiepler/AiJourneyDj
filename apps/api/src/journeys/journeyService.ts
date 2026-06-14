@@ -2289,49 +2289,55 @@ export class JourneyService {
       preferredDeviceId: args.deviceId,
     });
 
-    const priorSession = this.store.getPlaybackSession(args.journeyId);
-    const deviceChanged = priorSession?.deviceId !== deviceId;
     let transferFailed = false;
-    try {
-      await this.spotifyAdapter.transferPlayback({
-        accessToken: args.accessToken,
-        deviceId,
-      });
-      // Spotify needs a settle moment only when playback actually moves between devices.
-      if (deviceChanged) {
-        await new Promise((resolve) => setTimeout(resolve, 600));
-      }
-    } catch (error) {
-      if (isSpotifyDeviceNotFoundError(error)) {
-        transferFailed = true;
-        this.store.audit(
-          args.journeyId,
-          "spotify.device_missing",
-          "Spotify Webplayer not active yet; will retry play.",
-          {
-            deviceId,
-          },
-        );
-      } else if (isSpotifyRateLimitError(error)) {
-        return { deviceReachable: true, rateLimited: true };
-      } else {
-        // Playback is best-effort: a transient Spotify error (e.g. 500) must not fail the
-        // journey. The queue is already saved; degrade and let the user retry playback.
-        const message = error instanceof Error ? error.message : String(error);
-        this.logger.warn(
-          { journeyId: args.journeyId, deviceId, err: message },
-          "spotify.transfer.degraded",
-        );
-        this.store.audit(
-          args.journeyId,
-          "spotify.playback_error",
-          "Spotify transfer failed; queue saved, playback degraded.",
-          {
-            deviceId,
-            error: message,
-          },
-        );
-        return { deviceReachable: false };
+    // Only (re)assert the device when we actually intend to (re)start playback. A pure queue
+    // refill (shouldStart:false) must NEVER transfer — that would yank playback back to the
+    // bound browser player from whatever Connect device (e.g. the native Tesla app) the user
+    // moved it to. Refills only append to the queue of the device already playing.
+    if (args.shouldStart) {
+      const priorSession = this.store.getPlaybackSession(args.journeyId);
+      const deviceChanged = priorSession?.deviceId !== deviceId;
+      try {
+        await this.spotifyAdapter.transferPlayback({
+          accessToken: args.accessToken,
+          deviceId,
+        });
+        // Spotify needs a settle moment only when playback actually moves between devices.
+        if (deviceChanged) {
+          await new Promise((resolve) => setTimeout(resolve, 600));
+        }
+      } catch (error) {
+        if (isSpotifyDeviceNotFoundError(error)) {
+          transferFailed = true;
+          this.store.audit(
+            args.journeyId,
+            "spotify.device_missing",
+            "Spotify Webplayer not active yet; will retry play.",
+            {
+              deviceId,
+            },
+          );
+        } else if (isSpotifyRateLimitError(error)) {
+          return { deviceReachable: true, rateLimited: true };
+        } else {
+          // Playback is best-effort: a transient Spotify error (e.g. 500) must not fail the
+          // journey. The queue is already saved; degrade and let the user retry playback.
+          const message = error instanceof Error ? error.message : String(error);
+          this.logger.warn(
+            { journeyId: args.journeyId, deviceId, err: message },
+            "spotify.transfer.degraded",
+          );
+          this.store.audit(
+            args.journeyId,
+            "spotify.playback_error",
+            "Spotify transfer failed; queue saved, playback degraded.",
+            {
+              deviceId,
+              error: message,
+            },
+          );
+          return { deviceReachable: false };
+        }
       }
     }
 
@@ -2462,7 +2468,7 @@ export class JourneyService {
     ) {
       return "idle";
     }
-    const session = this.store.getPlaybackSession(journeyId);
+    let session = this.store.getPlaybackSession(journeyId);
     if (!session) {
       return "idle";
     }
@@ -2547,6 +2553,30 @@ export class JourneyService {
       new Set(stored.map((track) => track.providerTrackId)),
     );
 
+    // Follow Spotify Connect: when one of OUR tracks is playing on a device other than the one
+    // we're bound to (the user moved playback to the native Tesla app via Connect), re-bind the
+    // journey + session to the active device so subsequent refills/curation target where the
+    // user is actually listening — instead of queueing to the now-idle browser player. This is
+    // passive: we never transfer or start, so we don't disrupt the playback we're following.
+    if (
+      (result.kind === "same" ||
+        result.kind === "skipped" ||
+        result.kind === "drifted") &&
+      state.activeDeviceId &&
+      state.activeDeviceId !== session.deviceId
+    ) {
+      const previousDeviceId = session.deviceId;
+      this.store.updateJourneySpotifyDevice(journeyId, state.activeDeviceId);
+      session = { ...session, deviceId: state.activeDeviceId };
+      this.saveSession({ ...session, lastHeartbeatAt: now });
+      this.store.audit(
+        journeyId,
+        "spotify.device_followed",
+        "Followed Spotify Connect to the active playback device.",
+        { fromDeviceId: previousDeviceId, toDeviceId: state.activeDeviceId },
+      );
+    }
+
     if (result.kind === "drifted") {
       // One of OUR journey tracks is on air, just not at a position the 6-slot model shows.
       // Spotify's queue is append-only (no remove/reorder), so stale adds or a wish rebuild
@@ -2598,10 +2628,13 @@ export class JourneyService {
       const lastReclaim = this.reclaimAttemptAt.get(journeyId) ?? 0;
       const cooldownMs = this.config.PLAYBACK_RECLAIM_COOLDOWN_SECONDS * 1000;
       const queueDrained = session.queuedTrackIds.length <= 1;
+      // Reclaim onto the device autoplay actually took over (the one the user is listening on
+      // via Connect), not the bound browser player — otherwise we'd steal back to the browser.
+      const reclaimDeviceId = state.activeDeviceId ?? session.deviceId;
       if (
         this.config.PLAYBACK_RECLAIM_ENABLED &&
         queueDrained &&
-        session.deviceId &&
+        reclaimDeviceId &&
         Date.now() - lastReclaim > cooldownMs
       ) {
         const consumedIds = new Set<string>([
@@ -2620,15 +2653,18 @@ export class JourneyService {
           const applied = await this.playExact({
             journeyId,
             accessToken,
-            deviceId: session.deviceId,
+            deviceId: reclaimDeviceId,
             activeTrack: nextTrack,
             queueTracks: [],
           });
           if (applied.deviceReachable) {
+            if (reclaimDeviceId !== session.deviceId) {
+              this.store.updateJourneySpotifyDevice(journeyId, reclaimDeviceId);
+            }
             this.saveSession({
               journeyId,
               provider: "spotify",
-              deviceId: session.deviceId,
+              deviceId: reclaimDeviceId,
               status: "playing",
               activeTrack: nextTrack,
               queuedTrackIds: [],

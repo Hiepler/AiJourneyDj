@@ -138,6 +138,10 @@ export function App() {
     toggle: () => {},
     resume: () => {}
   });
+  // Mirrors `remoteDeviceActive` for background handlers: when a remote Connect device (e.g. the
+  // native Tesla app) is playing the journey, the visibility handler must not re-assert browser
+  // playback and steal it back.
+  const remoteDeviceActiveRef = useRef(false);
 
   function armKeepAlive() {
     // Must be created inside a user gesture (button click) so autoplay permits the silent element.
@@ -741,6 +745,7 @@ export function App() {
     detail?.journey.spotifyDeviceId &&
       detail.journey.spotifyDeviceId !== spotifyDeviceId,
   );
+  remoteDeviceActiveRef.current = remoteDeviceActive;
   const sessionStatus = detail?.playbackSession?.status;
   const playing = remoteDeviceActive
     ? sessionStatus === "playing"
@@ -800,6 +805,9 @@ export function App() {
     const onVisible = () => {
       if (document.visibilityState !== "visible") return;
       if (!activeJourneyId || !isSpotifyJourney || health?.spotifyMock) return;
+      // A remote Connect device (e.g. the native Tesla app) is playing the journey — re-asserting
+      // browser playback here would steal it back. Leave it; the backend follows that device.
+      if (remoteDeviceActiveRef.current) return;
       playbackActionsRef.current.resume();
     };
     document.addEventListener("visibilitychange", onVisible);

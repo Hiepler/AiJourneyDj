@@ -26,6 +26,12 @@ export interface SpotifyPlaybackState {
   progressMs?: number;
   /** Total length of the active track in ms (skip heuristic). */
   durationMs?: number;
+  /**
+   * Id of the device Spotify is actually playing on. Lets the backend follow Spotify Connect
+   * when the user moves playback to another device (e.g. the native Tesla app) instead of
+   * staying bound to the browser webplayer.
+   */
+  activeDeviceId?: string;
 }
 
 export interface SpotifyPlaylist {
@@ -325,6 +331,10 @@ export class OfficialSpotifyAdapter implements SpotifyAdapter {
       durationMs:
         typeof payload?.item?.duration_ms === "number"
           ? payload.item.duration_ms
+          : undefined,
+      activeDeviceId:
+        typeof payload?.device?.id === "string"
+          ? payload.device.id
           : undefined,
     };
   }
@@ -631,7 +641,7 @@ export class MockSpotifyAdapter implements SpotifyAdapter {
   }
 
   async getPlaybackState(): Promise<SpotifyPlaybackState> {
-    const activeProviderUri = [...this.active.values()][0];
+    const [activeDeviceId, activeProviderUri] = [...this.active.entries()][0] ?? [];
     return {
       activeProviderTrackId: activeProviderUri?.split(":").pop(),
       activeProviderUri,
@@ -640,6 +650,7 @@ export class MockSpotifyAdapter implements SpotifyAdapter {
         .flat()
         .map((uri) => uri.split(":").pop())
         .filter((id): id is string => Boolean(id)),
+      activeDeviceId,
     };
   }
 
