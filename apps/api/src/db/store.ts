@@ -211,6 +211,14 @@ export class Store {
     );
   }
 
+  /** Stamps the journey's last meaningful-activity time (telemetry / owned playback / user action). */
+  touchJourneyActivity(journeyId: string): void {
+    this.db.run("UPDATE journeys SET last_active_at = ? WHERE id = ?", [
+      now(),
+      journeyId,
+    ]);
+  }
+
   /** Clears the last-known geo (e.g. when the driver reverts a manual override back to auto). */
   clearLastGeo(journeyId: string): void {
     this.db.run(
@@ -1009,6 +1017,7 @@ function mapJourney(row: any): JourneyRecord {
         : undefined,
     createdAtIso: row.created_at,
     stoppedAtIso: row.stopped_at,
+    lastActiveAtIso: row.last_active_at ?? row.created_at,
   };
 }
 
