@@ -142,6 +142,94 @@ export class Store {
     ]);
   }
 
+  setKidsMode(journeyId: string, enabled: boolean): void {
+    this.db.run("UPDATE journeys SET kids_mode = ? WHERE id = ?", [
+      enabled ? 1 : 0,
+      journeyId,
+    ]);
+  }
+
+  /**
+   * Persists the last-known location used as the geo fallback. Higher-confidence sources win, and any
+   * source may refresh a stale fix — so a real GPS/telemetry reading always updates, browser geo
+   * replaces a destination seed (or a stale GPS fix), and the destination seed only fills an empty slot.
+   */
+  setLastGeo(
+    journeyId: string,
+    geo: {
+      countryName?: string;
+      countryCode?: string;
+      coarseRegion?: string;
+      source: "reverse-geocode" | "manual" | "browser-gps" | "destination";
+    },
+  ): void {
+    if (!geo.countryName && !geo.countryCode && !geo.coarseRegion) return;
+    const rank: Record<string, number> = {
+      destination: 1,
+      "browser-gps": 2,
+      manual: 3,
+      "reverse-geocode": 3,
+    };
+    const STALE_MS = 10 * 60 * 1000;
+    const current = this.db.get<{
+      last_geo_source: string | null;
+      last_geo_country_code: string | null;
+      last_geo_updated_at: string | null;
+    }>(
+      "SELECT last_geo_source, last_geo_country_code, last_geo_updated_at FROM journeys WHERE id = ?",
+      [journeyId],
+    );
+    if (current?.last_geo_source === "manual" && geo.source !== "manual") {
+      // Respect a manual override until a live fix shows the driver has moved to a *different*
+      // country (then auto wins again); within the same country, keep the manual correction.
+      const movedCountry =
+        geo.countryCode &&
+        current.last_geo_country_code &&
+        geo.countryCode.toUpperCase() !== current.last_geo_country_code.toUpperCase();
+      if (!movedCountry) return;
+    } else if (current?.last_geo_source) {
+      const incoming = rank[geo.source] ?? 0;
+      const existing = rank[current.last_geo_source] ?? 0;
+      const ageMs = current.last_geo_updated_at
+        ? Date.now() - new Date(current.last_geo_updated_at).getTime()
+        : Number.POSITIVE_INFINITY;
+      if (incoming < existing && ageMs < STALE_MS) return;
+    }
+    this.db.run(
+      `UPDATE journeys
+       SET last_geo_country_name = ?, last_geo_country_code = ?,
+           last_geo_coarse_region = ?, last_geo_source = ?, last_geo_updated_at = ?
+       WHERE id = ?`,
+      [
+        geo.countryName ?? null,
+        geo.countryCode ?? null,
+        geo.coarseRegion ?? null,
+        geo.source,
+        new Date().toISOString(),
+        journeyId,
+      ],
+    );
+  }
+
+  /** Stamps the journey's last meaningful-activity time (telemetry / owned playback / user action). */
+  touchJourneyActivity(journeyId: string): void {
+    this.db.run("UPDATE journeys SET last_active_at = ? WHERE id = ?", [
+      now(),
+      journeyId,
+    ]);
+  }
+
+  /** Clears the last-known geo (e.g. when the driver reverts a manual override back to auto). */
+  clearLastGeo(journeyId: string): void {
+    this.db.run(
+      `UPDATE journeys
+       SET last_geo_country_name = NULL, last_geo_country_code = NULL,
+           last_geo_coarse_region = NULL, last_geo_source = NULL, last_geo_updated_at = NULL
+       WHERE id = ?`,
+      [journeyId],
+    );
+  }
+
   /** Snapshot the planned trip duration once; subsequent calls are no-ops. */
   setPlannedDurationMinutes(journeyId: string, minutes: number): void {
     if (!Number.isFinite(minutes) || minutes <= 0) return;
@@ -844,6 +932,32 @@ export class Store {
     ]);
   }
 
+  /**
+   * Most recent fired journey moment (type + optional country from the payload) for the family-event
+   * banner. Returns undefined when none, or the payload can't be parsed.
+   */
+  latestMomentEvent(
+    journeyId: string,
+  ): { type: string; country?: string; createdAtIso: string } | undefined {
+    const row = this.db.get<{ payload_json: string | null; created_at: string }>(
+      "SELECT payload_json, created_at FROM audit_events WHERE journey_id = ? AND type = 'moment.triggered' ORDER BY id DESC LIMIT 1",
+      [journeyId],
+    );
+    if (!row) return undefined;
+    let payload: { type?: string; country?: string } = {};
+    try {
+      payload = row.payload_json ? JSON.parse(row.payload_json) : {};
+    } catch {
+      payload = {};
+    }
+    if (!payload.type) return undefined;
+    return {
+      type: payload.type,
+      country: payload.country,
+      createdAtIso: row.created_at,
+    };
+  }
+
   auditEvents(
     journeyId: string,
     sinceId = 0,
@@ -888,8 +1002,22 @@ function mapJourney(row: any): JourneyRecord {
         ? undefined
         : row.adaptive_mode_enabled !== 0,
     plannedDurationMinutes: row.planned_duration_minutes ?? undefined,
+    kidsMode: row.kids_mode === 1,
+    lastGeo:
+      row.last_geo_country_name ||
+      row.last_geo_country_code ||
+      row.last_geo_coarse_region
+        ? {
+            countryName: row.last_geo_country_name ?? undefined,
+            countryCode: row.last_geo_country_code ?? undefined,
+            coarseRegion: row.last_geo_coarse_region ?? undefined,
+            source: row.last_geo_source ?? undefined,
+            updatedAtIso: row.last_geo_updated_at ?? undefined,
+          }
+        : undefined,
     createdAtIso: row.created_at,
     stoppedAtIso: row.stopped_at,
+    lastActiveAtIso: row.last_active_at ?? row.created_at,
   };
 }
 
@@ -981,12 +1109,25 @@ export function contextFromJourney(
   const speed = telemetry?.speedBucket ?? speedBucket(telemetry?.speedKph);
   const temp =
     telemetry?.temperatureBucket ?? temperatureBucket(telemetry?.outsideTempC);
+  // Geo precedence: a manual correction wins over everything; otherwise live telemetry; otherwise the
+  // journey's last-known location (browser geo, a prior GPS fix, or the destination seed) so the
+  // "local touch" works without active GPS.
+  const fallback = journey.lastGeo;
+  const resolvedGeo =
+    fallback?.source === "manual"
+      ? fallback
+      : {
+          coarseRegion: telemetry?.coarseRegion ?? fallback?.coarseRegion,
+          countryName: telemetry?.countryName ?? fallback?.countryName,
+          countryCode: telemetry?.countryCode ?? fallback?.countryCode,
+          source: telemetry?.geoSource ?? fallback?.source,
+        };
   return {
     destination: telemetry?.destination ?? journey.destination,
-    coarseRegion: telemetry?.coarseRegion,
-    countryName: telemetry?.countryName,
-    countryCode: telemetry?.countryCode,
-    geoSource: telemetry?.geoSource,
+    coarseRegion: resolvedGeo.coarseRegion,
+    countryName: resolvedGeo.countryName,
+    countryCode: resolvedGeo.countryCode,
+    geoSource: resolvedGeo.source,
     localTimeIso: telemetry?.timestampIso ?? new Date().toISOString(),
     etaMinutes: telemetry?.etaMinutes,
     speedBucket: speed,
@@ -998,6 +1139,7 @@ export function contextFromJourney(
     phase: journey.phase,
     userPrompt: journey.userPrompt,
     passengerMode: journey.passengerMode,
+    kidsMode: journey.kidsMode === true,
     driveState: driveStateForBrief(journey, recentTelemetry),
     telemetrySource,
     plannedDurationMinutes: journey.plannedDurationMinutes,

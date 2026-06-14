@@ -1056,6 +1056,8 @@ export interface MusicalBrief {
   countryName?: string;
   userPrompt: string;
   passengerMode: string;
+  /** "Kids am Steuer": allow Disney/film/animated singalongs that family mode otherwise avoids. */
+  kidsMode?: boolean;
   /** Adaptive Drive Mode applied to this brief (comfort feature; selection bias only). */
   driveMode: DriveMode;
   /** Human-readable cause when driveMode is not neutral (for prompts/diagnostics). */
@@ -1086,6 +1088,50 @@ export interface MusicalBrief {
   storyDirective?: string;
   /** Moment directive for the LLM (arrival/sunset/etc). */
   momentDirective?: string;
+  /** Local-music language for the journey country (e.g. "French"), when the country is mapped. */
+  localLanguage?: string;
+  /** Demonym for homegrown-artist phrasing (e.g. "French", "Italian"), paired with localLanguage. */
+  localDemonym?: string;
+}
+
+/**
+ * Country (ISO-3166 alpha-2) → primary local-music language + demonym, for the "local touch" geo bias.
+ * Covers the common European road-trip corridor plus a few majors; unmapped countries fall back to a
+ * region-text directive so the grounded LLM can still infer the local language from the place name.
+ */
+const COUNTRY_LOCAL_FLAVOR: Record<string, { language: string; demonym: string }> = {
+  FR: { language: "French", demonym: "French" },
+  DE: { language: "German", demonym: "German" },
+  AT: { language: "German", demonym: "Austrian" },
+  CH: { language: "German, French or Italian", demonym: "Swiss" },
+  IT: { language: "Italian", demonym: "Italian" },
+  ES: { language: "Spanish", demonym: "Spanish" },
+  PT: { language: "Portuguese", demonym: "Portuguese" },
+  NL: { language: "Dutch", demonym: "Dutch" },
+  BE: { language: "Dutch or French", demonym: "Belgian" },
+  PL: { language: "Polish", demonym: "Polish" },
+  CZ: { language: "Czech", demonym: "Czech" },
+  SE: { language: "Swedish", demonym: "Swedish" },
+  NO: { language: "Norwegian", demonym: "Norwegian" },
+  DK: { language: "Danish", demonym: "Danish" },
+  FI: { language: "Finnish", demonym: "Finnish" },
+  GR: { language: "Greek", demonym: "Greek" },
+  HR: { language: "Croatian", demonym: "Croatian" },
+  HU: { language: "Hungarian", demonym: "Hungarian" },
+  RO: { language: "Romanian", demonym: "Romanian" },
+  TR: { language: "Turkish", demonym: "Turkish" },
+  BR: { language: "Portuguese", demonym: "Brazilian" },
+  MX: { language: "Spanish", demonym: "Mexican" },
+  JP: { language: "Japanese", demonym: "Japanese" },
+  KR: { language: "Korean", demonym: "Korean" },
+};
+
+/** Resolves the local-music flavor for a country code (case-insensitive). Undefined when unmapped. */
+export function localMusicFlavor(
+  countryCode?: string,
+): { language: string; demonym: string } | undefined {
+  if (!countryCode) return undefined;
+  return COUNTRY_LOCAL_FLAVOR[countryCode.trim().toUpperCase()];
 }
 
 /**
@@ -1177,7 +1223,9 @@ export function buildRecommendationPolicy(
   overrides: Partial<RecommendationPolicy> = {},
 ): RecommendationPolicy {
   const prompt = normalizeText(context.userPrompt);
-  const familyMode = context.passengerMode === "family";
+  const kidsMode = context.kidsMode === true;
+  // Kids mode inherits family's all-ages guardrails (clean, broadly-known, distinct artists).
+  const familyMode = context.passengerMode === "family" || kidsMode;
   const nostalgic =
     prompt.includes("nostalgic") || prompt.includes("throwback");
   const highAcceptance =
@@ -1188,7 +1236,8 @@ export function buildRecommendationPolicy(
   return {
     cleanRequired: familyMode,
     targetPopularity: familyMode ? 72 : highAcceptance ? 66 : 58,
-    recencyBias: familyMode ? 0.78 : nostalgic ? 0.18 : 0.42,
+    // Kids singalongs are often catalog (Disney classics), so don't over-bias toward fresh releases.
+    recencyBias: kidsMode ? 0.4 : familyMode ? 0.78 : nostalgic ? 0.18 : 0.42,
     moodTags: moodTagsForContext(context),
     avoidArtists: [],
     avoidSongKeys: [],
@@ -1567,6 +1616,15 @@ export function buildMusicalBrief(
     moodWords.push("clean", "upbeat", "singalong", "good-mood", "current-pop");
   }
 
+  // "Kids am Steuer": lean into Disney/film/animated singalongs kids adore (still clean), independent
+  // of passengerMode — a parent can flip it on a solo-with-kids drive too.
+  if (context.kidsMode) {
+    targetEnergy = clamp01(Math.max(0.6, Math.min(0.8, targetEnergy + 0.06)));
+    intensityLabel = "bright";
+    tasteWeight = clamp01(Math.min(tasteWeight, 0.35));
+    moodWords.push("disney", "movie", "animated", "kids", "singalong", "fun");
+  }
+
   // Fatigue-aware floor — applied last so it wins on the energy lower bound,
   // even after Adaptive Drive Mode "calm" lowered the character.
   const energyFloor = alertnessFloor(
@@ -1686,8 +1744,11 @@ export function buildMusicalBrief(
     driveSignals,
     destination: context.destination,
     countryName: context.countryName,
+    localLanguage: localMusicFlavor(context.countryCode)?.language,
+    localDemonym: localMusicFlavor(context.countryCode)?.demonym,
     userPrompt: context.userPrompt,
     passengerMode: context.passengerMode,
+    kidsMode: context.kidsMode === true,
     driveMode,
     driveReason:
       assessment?.mode && assessment.mode !== "neutral"
@@ -1762,6 +1823,12 @@ const CINEMATIC_LENSES: Record<string, SongLens> = {
     instruction:
       "Geo soundtrack lens: use web search to find music with a REAL connection to the journey's region, route and destination — artists born or based there, songs naming these places or landscapes, local scenes. The drive should sound like the geography it passes through. ONLY real music — never audio dramas, Hörspiele, audiobooks or spoken-word.",
   },
+  local_language_hits: {
+    key: "local_language_hits",
+    grounded: true,
+    instruction:
+      "Local-language lens: use web search to find currently-loved, well-produced songs sung in the journey country's OWN language by homegrown artists from there — the kind locals actually play right now, across genres. Make the car feel like it belongs in this place. ONLY real music — never audio dramas, Hörspiele, audiobooks, spoken-word, anthems or tourist clichés.",
+  },
   timeless_anchor: {
     key: "timeless_anchor",
     grounded: false,
@@ -1804,6 +1871,12 @@ const CINEMATIC_LENSES: Record<string, SongLens> = {
     instruction:
       "Find familiar clean singalong pop classics that children and adults can both recognize.",
   },
+  kids_hits: {
+    key: "kids_hits",
+    grounded: true,
+    instruction:
+      "Kids mode: find clean, joyful, widely-loved singalong hits from Disney / Pixar / animated films and modern family movie soundtracks that BOTH children and adults enjoy in the car. Real, well-produced songs only — no lo-fi nursery rhymes, no 'Folge/Kapitel/Teil N' audio-drama episodes, nothing babyish or annoying to adults.",
+  },
   taste_anchor: {
     key: "taste_anchor",
     grounded: false,
@@ -1828,9 +1901,20 @@ export function selectJourneyLenses(
     if (!picked.some((item) => item.key === lens.key)) picked.push(lens);
   };
 
+  // "Kids am Steuer" leads with the Disney/film singalong lens, then the all-ages good-mood set.
+  if (brief.kidsMode) {
+    add("kids_hits");
+    add("singalong_classics");
+    add("good_mood");
+    add("current_pop_hits");
+    add("taste_anchor");
+    return picked.slice(0, 5);
+  }
+
   if (brief.passengerMode === "family") {
     add("current_pop_hits");
     add("good_mood");
+    if (brief.regionHint || brief.countryName) add("local_language_hits");
     add("singalong_classics");
     if (brief.regionHint || brief.countryName) add("regional_texture");
     add("taste_anchor");
@@ -1855,6 +1939,10 @@ export function selectJourneyLenses(
   } else {
     add("steady_momentum");
   }
+
+  // Local touch: when we know where the drive is, guarantee a noticeable share of local-language /
+  // homegrown picks by seeding the local lens high (so it survives the 5-lens cap) plus geo texture.
+  if (brief.regionHint || brief.countryName) add("local_language_hits");
 
   if (brief.targetEnergy >= 0.5) add("steady_momentum");
   if (brief.regionHint) add("regional_texture");
@@ -1907,6 +1995,18 @@ export function buildLensPrompt(
   brief: MusicalBrief,
   count: number,
 ): string {
+  // Concentrate the "local touch" in the geo lenses so the overall set stays international while a
+  // noticeable share feels local. Names the language when the country is mapped, else lets the
+  // grounded LLM infer the local language from the place.
+  const isGeoLens =
+    lens.key === "local_language_hits" || lens.key === "regional_texture";
+  const localPlace = brief.countryName ?? brief.regionHint;
+  const localTouchLine =
+    isGeoLens && localPlace
+      ? brief.localLanguage
+        ? `Local touch: prioritize current, well-loved songs sung in ${brief.localLanguage} by homegrown ${brief.localDemonym} artists popular in ${localPlace} right now — make the set feel local without abandoning the listener's taste or sliding into tourist clichés.`
+        : `Local touch: prioritize current, well-loved songs in the LOCAL LANGUAGE of ${localPlace} by homegrown artists from there — make the set feel local without tourist clichés.`
+      : "";
   return [
     `You are AI Journey DJ curating the "${lens.key}" portion of a road-trip set.`,
     lens.instruction,
@@ -1920,6 +2020,7 @@ export function buildLensPrompt(
     brief.countryName
       ? `Current country chart context: ${brief.countryName}.`
       : "",
+    localTouchLine,
     brief.weatherFeel ? `Weather right now: ${brief.weatherFeel}.` : "",
     brief.explorationAngle ? `Freshness directive: ${brief.explorationAngle}.` : "",
     brief.storyDirective ? `Drive story: ${brief.storyDirective}` : "",
@@ -1929,9 +2030,11 @@ export function buildLensPrompt(
       : "",
     tasteSteeringLine(lens, brief),
     `Listener mode: ${brief.passengerMode}. Direction: "${brief.userPrompt}".`,
-    brief.passengerMode === "family"
-      ? "Family mode: prefer clean/radio-friendly current pop, dance-pop, upbeat singalong tracks; avoid explicit, aggressive, gloomy, sleepy, or novelty children-song picks."
-      : "",
+    brief.kidsMode
+      ? "Kids mode: clean, joyful, all-ages picks the WHOLE car enjoys — Disney/Pixar/animated-film and modern family-movie singalongs are explicitly welcome. Still NO explicit lyrics; avoid babyish nursery rhymes, audio-drama/Hörspiel episodes, and anything grating for adults."
+      : brief.passengerMode === "family"
+        ? "Family mode: prefer clean/radio-friendly current pop, dance-pop, upbeat singalong tracks; avoid explicit, aggressive, gloomy, sleepy, or novelty children-song picks."
+        : "",
     `Return ONLY JSON {"songs":[{"artist","title","year","genre","reason","role"}]} with exactly ${count} real, released songs.`,
     `If you include role, use one of: ${SET_ROLES.join(", ")}.`,
     "Vary artists; no duplicates. Keep 'reason' to one short clause tying the pick to the drive.",

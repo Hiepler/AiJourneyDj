@@ -73,9 +73,11 @@ if a data source is missing.
 
 The brief **selects the right generators for this drive** from a lens catalog — focused/low-
 distraction, cinematic warmth, steady momentum, a sharpened **geo-soundtrack lens** (artists and songs
-with a *real* connection to the route and destination, found via web search), a **deep-cut explorer
-lens** (B-sides, regional scenes, fresh releases — no superstars), a timeless anchor, a leftfield
-bridge — instead of always running the same four. Chosen lenses run as parallel Gemini calls
+with a *real* connection to the route and destination, found via web search), a **local-language lens**
+(when the country is known, a noticeable share of current songs in the local language by homegrown
+artists — French near Montpellier, Italian near Garda — so the drive feels like where you are), a
+**deep-cut explorer lens** (B-sides, regional scenes, fresh releases — no superstars), a timeless
+anchor, a leftfield bridge — instead of always running the same four. Chosen lenses run as parallel Gemini calls
 (current/regional/explorer lenses web-grounded via Google Search for real, recent tracks).
 
 ### 🔭 Momentum Radio — discovery without an echo chamber
@@ -172,6 +174,13 @@ faster, complete responses. A persistent search cache means a 10-hour drive neve
 - **Tap-to-steer** — vibe toggles (⚡🎤☀️), drive-phase and Vibe-Mix (Familiar ↔ Discover) controls
   re-tune the queue with a visible "re-tuning" moment.
 - **Journey Moments & Drive Story** — situational re-curation and a narrative arc, on by default.
+  Moments also surface as **celebratory cockpit banners** ("Welcome to Italy!", "Jam's cleared!")
+  so the whole car shares the moment.
+- **Family fun** — a **🧸 Kids mode** that welcomes clean Disney/film/animated singalongs the whole
+  car enjoys (overriding family mode's usual avoidance), and a **synced karaoke / singalong view**:
+  time-synced, line-by-line highlighting that follows playback on the car's or phone's native Spotify
+  too (not just the in-browser player), duration-matched to the right recording, with a static
+  fallback when no synced lyrics exist (via LRCLIB — free, no API key).
 - **Adaptive Drive Mode** — automatic calm/focus selection bias from live telemetry. A comfort
   feature, explicitly not a safety system.
 - **Spotify Connect device picker** — play on the in-browser player, your phone, or the car's native

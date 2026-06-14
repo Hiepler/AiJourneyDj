@@ -68,7 +68,12 @@ export interface SpotifyPlayerInstance {
   togglePlay?: () => Promise<void>;
   nextTrack?: () => Promise<void>;
   previousTrack?: () => Promise<void>;
-  getCurrentState?: () => Promise<{ paused: boolean; track_window: { current_track?: { name: string } } } | null>;
+  getCurrentState?: () => Promise<{
+    paused: boolean;
+    position?: number;
+    duration?: number;
+    track_window: { current_track?: { name: string } };
+  } | null>;
 }
 
 declare global {

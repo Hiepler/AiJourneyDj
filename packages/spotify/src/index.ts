@@ -26,12 +26,16 @@ export interface SpotifyPlaybackState {
   progressMs?: number;
   /** Total length of the active track in ms (skip heuristic). */
   durationMs?: number;
+  /** What kind of item is playing — distinguishes a track from a podcast/episode or ad. */
+  currentlyPlayingType?: "track" | "episode" | "ad" | "unknown";
   /**
    * Id of the device Spotify is actually playing on. Lets the backend follow Spotify Connect
    * when the user moves playback to another device (e.g. the native Tesla app) instead of
    * staying bound to the browser webplayer.
    */
   activeDeviceId?: string;
+  /** Human-readable name of the active device (diagnostics / UI). */
+  activeDeviceName?: string;
 }
 
 export interface SpotifyPlaylist {
@@ -332,9 +336,17 @@ export class OfficialSpotifyAdapter implements SpotifyAdapter {
         typeof payload?.item?.duration_ms === "number"
           ? payload.item.duration_ms
           : undefined,
+      currentlyPlayingType:
+        typeof payload?.currently_playing_type === "string"
+          ? payload.currently_playing_type
+          : undefined,
       activeDeviceId:
         typeof payload?.device?.id === "string"
           ? payload.device.id
+          : undefined,
+      activeDeviceName:
+        typeof payload?.device?.name === "string"
+          ? payload.device.name
           : undefined,
     };
   }
@@ -641,7 +653,8 @@ export class MockSpotifyAdapter implements SpotifyAdapter {
   }
 
   async getPlaybackState(): Promise<SpotifyPlaybackState> {
-    const [activeDeviceId, activeProviderUri] = [...this.active.entries()][0] ?? [];
+    const activeProviderUri = [...this.active.values()][0];
+    const activeDeviceId = [...this.active.keys()][0];
     return {
       activeProviderTrackId: activeProviderUri?.split(":").pop(),
       activeProviderUri,
@@ -650,6 +663,7 @@ export class MockSpotifyAdapter implements SpotifyAdapter {
         .flat()
         .map((uri) => uri.split(":").pop())
         .filter((id): id is string => Boolean(id)),
+      currentlyPlayingType: "track",
       activeDeviceId,
     };
   }
