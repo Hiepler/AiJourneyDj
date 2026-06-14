@@ -61,9 +61,11 @@ export type OwnershipVerdict = "owned" | "handed-over";
  * Decides whether the backend still "owns" playback and may push curated music, or whether the
  * user has clearly taken over (so automated transfer/queue must be suppressed). Pure + testable.
  *
- * Hand-over when something is actually playing AND any of: a podcast/episode is on air, playback
- * runs on a device other than the journey's, or the current track is off-journey (`external`).
- * Idle (`isPlaying` false) is NOT a hand-over — that's the normal pause path. Ads are neutral.
+ * Hand-over when something is actually playing AND either a podcast/episode is on air or the
+ * current track is off-journey (`external`). A journey track playing on a *different* device is
+ * NOT a hand-over: that's the user moving our journey to another Connect device (e.g. the native
+ * Tesla app), which we follow rather than abandon. Idle (`isPlaying` false) is the normal pause
+ * path, not a hand-over. Ads are neutral.
  */
 export function playbackOwnership(input: {
   isPlaying: boolean;
@@ -74,13 +76,6 @@ export function playbackOwnership(input: {
 }): OwnershipVerdict {
   if (!input.isPlaying) return "owned";
   if (input.currentlyPlayingType === "episode") return "handed-over";
-  if (
-    input.activeDeviceId &&
-    input.journeyDeviceId &&
-    input.activeDeviceId !== input.journeyDeviceId
-  ) {
-    return "handed-over";
-  }
   if (input.reconcileKind === "external") return "handed-over";
   return "owned";
 }

@@ -11,9 +11,17 @@ describe("playbackOwnership", () => {
     ).toBe("handed-over");
   });
 
-  it("hands over when playback is on a different device", () => {
+  it("stays owned for a journey track on a different device (we follow Connect, not hand over)", () => {
+    // The user moved our journey to another Connect device (e.g. the native Tesla app). That is
+    // not a takeover — the backend follows the active device and keeps curating there.
     expect(
       playbackOwnership({ isPlaying: true, currentlyPlayingType: "track", activeDeviceId: "phone-xyz", journeyDeviceId: dev }),
+    ).toBe("owned");
+  });
+
+  it("still hands over to a podcast even on a different device", () => {
+    expect(
+      playbackOwnership({ isPlaying: true, currentlyPlayingType: "episode", activeDeviceId: "phone-xyz", journeyDeviceId: dev }),
     ).toBe("handed-over");
   });
 
