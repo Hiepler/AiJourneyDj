@@ -96,6 +96,8 @@ export interface JourneyContext {
   varietyAngle?: string;
   /** Recently surfaced artists across journeys to de-prioritize (variety engine). */
   recentlyPlayedArtists?: string[];
+  /** Mood tags the listener has been skipping this session — surfaced so the scout avoids them. */
+  skippedMoodTags?: string[];
   /** Live-Verkehrsverzögerung der Route in Minuten (Telemetrie). */
   trafficDelayMinutes?: number;
   /** Fahrstil aus Beschleunigungs-Varianz (nur Streaming-Telemetrie). */

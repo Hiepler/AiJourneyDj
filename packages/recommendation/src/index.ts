@@ -1127,6 +1127,8 @@ export interface MusicalBrief {
   explorationAngle?: string;
   /** Recently-played artists to avoid (cross-journey fatigue, surfaced to the LLM). */
   avoidRecentArtists?: string[];
+  /** Mood tags the listener keeps skipping this session — surfaced so the scout steers away. */
+  skippedMoodTags?: string[];
   /** Drive-story act directive for the LLM (narrative arc). */
   storyDirective?: string;
   /** Moment directive for the LLM (arrival/sunset/etc). */
@@ -1874,6 +1876,7 @@ export function buildMusicalBrief(
     weatherFeel: context.weatherFeel,
     explorationAngle: context.varietyAngle,
     avoidRecentArtists: context.recentlyPlayedArtists ?? [],
+    skippedMoodTags: context.skippedMoodTags ?? [],
     storyDirective: context.storyDirective,
     momentDirective: context.momentDirective,
   };
@@ -2174,6 +2177,9 @@ export function buildLensPrompt(
     brief.momentDirective ? `Moment: ${brief.momentDirective}` : "",
     brief.avoidRecentArtists && brief.avoidRecentArtists.length > 0
       ? `Avoid these recently played artists: ${brief.avoidRecentArtists.slice(0, 12).join(", ")}.`
+      : "",
+    brief.skippedMoodTags && brief.skippedMoodTags.length > 0
+      ? `The listener has been skipping these moods/vibes this session — steer away from them: ${brief.skippedMoodTags.slice(0, 6).join(", ")}.`
       : "",
     tasteSteeringLine(lens, brief),
     `Listener mode: ${brief.passengerMode}. Direction: "${brief.userPrompt}".`,
