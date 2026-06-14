@@ -51,6 +51,15 @@ import { activeDeviceLabel } from "./lib/devices.js";
 
 const passengerModes = ["solo", "couple", "family", "friends"];
 
+// Short German labels for where the journey's location came from (shown on the cockpit geo chip).
+const GEO_SOURCE_LABELS: Record<string, string> = {
+  "reverse-geocode": "GPS",
+  "browser-gps": "Browser",
+  destination: "Ziel",
+  manual: "manuell",
+  simulated: "Sim"
+};
+
 // German labels for the Adaptive Drive Mode reasons surfaced by the backend.
 const DRIVE_MODE_REASON_LABELS: Record<string, string> = {
   "heavy traffic": "zäher Verkehr",
@@ -164,6 +173,9 @@ export function App() {
   const [wishDrawerOpen, setWishDrawerOpen] = useState(false);
   const [wishLoading, setWishLoading] = useState(false);
   const [kidsBusy, setKidsBusy] = useState(false);
+  const [geoEditing, setGeoEditing] = useState(false);
+  const [geoInput, setGeoInput] = useState("");
+  const [geoBusy, setGeoBusy] = useState(false);
   const [listening, setListening] = useState(false);
   const speechSupported = typeof window !== "undefined" && isSpeechRecognitionSupported();
   const [loading, setLoading] = useState(false);
@@ -599,6 +611,22 @@ export function App() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setWishLoading(false);
+    }
+  }
+
+  async function applyManualGeo(place: string) {
+    if (!activeJourneyId || geoBusy) return;
+    setGeoBusy(true);
+    setError(undefined);
+    try {
+      await api.setManualGeo(activeJourneyId, place);
+      setDetail(await api.journey(activeJourneyId));
+      setGeoEditing(false);
+      setGeoInput("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGeoBusy(false);
     }
   }
 
@@ -1285,12 +1313,82 @@ export function App() {
 
               {contextPills.length > 0 ? (
                 <div className="context-strip" aria-label="Live drive context">
-                  {contextPills.map((pill) => (
-                    <span className="ctx-pill" key={pill.key}>
-                      <span className="ctx-label">{pill.label}</span>
-                      <span className="ctx-value">{pill.value}</span>
-                    </span>
-                  ))}
+                  {/* "region" is rendered by the editable geo chip below, so skip it here. */}
+                  {contextPills
+                    .filter((pill) => pill.key !== "region")
+                    .map((pill) => (
+                      <span className="ctx-pill" key={pill.key}>
+                        <span className="ctx-label">{pill.label}</span>
+                        <span className="ctx-value">{pill.value}</span>
+                      </span>
+                    ))}
+                </div>
+              ) : null}
+
+              {activeJourneyId ? (
+                <div className="geo-control">
+                  {geoEditing ? (
+                    <form
+                      className="geo-edit"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        void applyManualGeo(geoInput);
+                      }}
+                    >
+                      <input
+                        autoFocus
+                        className="geo-input"
+                        disabled={geoBusy}
+                        onChange={(event) => setGeoInput(event.target.value)}
+                        placeholder="Ort/Land, z.B. Marseille"
+                        value={geoInput}
+                      />
+                      <button className="geo-btn" disabled={geoBusy || !geoInput.trim()} type="submit">
+                        OK
+                      </button>
+                      {detail?.context?.geoSource === "manual" ? (
+                        <button
+                          className="geo-btn ghost"
+                          disabled={geoBusy}
+                          onClick={() => void applyManualGeo("")}
+                          type="button"
+                        >
+                          Auto
+                        </button>
+                      ) : null}
+                      <button
+                        className="geo-btn ghost"
+                        disabled={geoBusy}
+                        onClick={() => {
+                          setGeoEditing(false);
+                          setGeoInput("");
+                        }}
+                        type="button"
+                      >
+                        ✕
+                      </button>
+                    </form>
+                  ) : (
+                    <button
+                      className="geo-chip"
+                      onClick={() => {
+                        setGeoInput(detail?.context?.coarseRegion ?? detail?.context?.countryName ?? "");
+                        setGeoEditing(true);
+                      }}
+                      title="Standort korrigieren — bestimmt den lokalen Musik-Touch"
+                      type="button"
+                    >
+                      <MapPin size={13} />
+                      <span className="geo-place">
+                        {detail?.context?.coarseRegion ?? detail?.context?.countryName ?? "Standort setzen"}
+                      </span>
+                      {detail?.context?.geoSource ? (
+                        <span className="geo-src">
+                          {GEO_SOURCE_LABELS[detail.context.geoSource] ?? detail.context.geoSource}
+                        </span>
+                      ) : null}
+                    </button>
+                  )}
                 </div>
               ) : null}
 

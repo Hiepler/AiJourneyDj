@@ -173,12 +173,21 @@ export class Store {
     const STALE_MS = 10 * 60 * 1000;
     const current = this.db.get<{
       last_geo_source: string | null;
+      last_geo_country_code: string | null;
       last_geo_updated_at: string | null;
     }>(
-      "SELECT last_geo_source, last_geo_updated_at FROM journeys WHERE id = ?",
+      "SELECT last_geo_source, last_geo_country_code, last_geo_updated_at FROM journeys WHERE id = ?",
       [journeyId],
     );
-    if (current?.last_geo_source) {
+    if (current?.last_geo_source === "manual" && geo.source !== "manual") {
+      // Respect a manual override until a live fix shows the driver has moved to a *different*
+      // country (then auto wins again); within the same country, keep the manual correction.
+      const movedCountry =
+        geo.countryCode &&
+        current.last_geo_country_code &&
+        geo.countryCode.toUpperCase() !== current.last_geo_country_code.toUpperCase();
+      if (!movedCountry) return;
+    } else if (current?.last_geo_source) {
       const incoming = rank[geo.source] ?? 0;
       const existing = rank[current.last_geo_source] ?? 0;
       const ageMs = current.last_geo_updated_at
@@ -199,6 +208,17 @@ export class Store {
         new Date().toISOString(),
         journeyId,
       ],
+    );
+  }
+
+  /** Clears the last-known geo (e.g. when the driver reverts a manual override back to auto). */
+  clearLastGeo(journeyId: string): void {
+    this.db.run(
+      `UPDATE journeys
+       SET last_geo_country_name = NULL, last_geo_country_code = NULL,
+           last_geo_coarse_region = NULL, last_geo_source = NULL, last_geo_updated_at = NULL
+       WHERE id = ?`,
+      [journeyId],
     );
   }
 
@@ -1080,15 +1100,25 @@ export function contextFromJourney(
   const speed = telemetry?.speedBucket ?? speedBucket(telemetry?.speedKph);
   const temp =
     telemetry?.temperatureBucket ?? temperatureBucket(telemetry?.outsideTempC);
-  // Live telemetry geo wins; otherwise fall back to the journey's last-known location (browser geo,
-  // a prior GPS fix, or the destination seed) so the "local touch" works without active GPS.
-  const geo = journey.lastGeo;
+  // Geo precedence: a manual correction wins over everything; otherwise live telemetry; otherwise the
+  // journey's last-known location (browser geo, a prior GPS fix, or the destination seed) so the
+  // "local touch" works without active GPS.
+  const fallback = journey.lastGeo;
+  const resolvedGeo =
+    fallback?.source === "manual"
+      ? fallback
+      : {
+          coarseRegion: telemetry?.coarseRegion ?? fallback?.coarseRegion,
+          countryName: telemetry?.countryName ?? fallback?.countryName,
+          countryCode: telemetry?.countryCode ?? fallback?.countryCode,
+          source: telemetry?.geoSource ?? fallback?.source,
+        };
   return {
     destination: telemetry?.destination ?? journey.destination,
-    coarseRegion: telemetry?.coarseRegion ?? geo?.coarseRegion,
-    countryName: telemetry?.countryName ?? geo?.countryName,
-    countryCode: telemetry?.countryCode ?? geo?.countryCode,
-    geoSource: telemetry?.geoSource ?? geo?.source,
+    coarseRegion: resolvedGeo.coarseRegion,
+    countryName: resolvedGeo.countryName,
+    countryCode: resolvedGeo.countryCode,
+    geoSource: resolvedGeo.source,
     localTimeIso: telemetry?.timestampIso ?? new Date().toISOString(),
     etaMinutes: telemetry?.etaMinutes,
     speedBucket: speed,

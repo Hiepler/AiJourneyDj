@@ -268,6 +268,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ lat, lon }),
     }),
+  setManualGeo: (journeyId: string, place: string) =>
+    request<Journey>(`/journeys/${journeyId}/geo/manual`, {
+      method: "POST",
+      body: JSON.stringify({ place }),
+    }),
   analyze: (id: string) =>
     request<{ id: string; batchSize: number; status: string }>(
       `/journeys/${id}/analyze`,
