@@ -106,7 +106,7 @@ export interface JourneyDetail {
     coarseRegion?: string;
     countryName?: string;
     countryCode?: string;
-    geoSource?: "reverse-geocode" | "manual" | "simulated";
+    geoSource?: "reverse-geocode" | "manual" | "simulated" | "browser-gps" | "destination";
     localTimeIso?: string;
     lastTelemetryAt?: string;
     driveMode?: "calm" | "focus" | "neutral";
@@ -140,7 +140,7 @@ export interface LiveTelemetry {
     coarseRegion?: string;
     countryName?: string;
     countryCode?: string;
-    geoSource?: "reverse-geocode" | "manual" | "simulated";
+    geoSource?: "reverse-geocode" | "manual" | "simulated" | "browser-gps" | "destination";
     speedBucket?: string;
     temperatureBucket?: string;
     autopilotState?: "off" | "available" | "active" | "unknown";
@@ -263,6 +263,11 @@ export const api = {
       isPlaying: boolean;
       activeProviderTrackId?: string;
     }>(`/journeys/${journeyId}/playback-progress`),
+  setGeo: (journeyId: string, lat: number, lon: number) =>
+    request<{ ok: boolean }>(`/journeys/${journeyId}/geo`, {
+      method: "POST",
+      body: JSON.stringify({ lat, lon }),
+    }),
   analyze: (id: string) =>
     request<{ id: string; batchSize: number; status: string }>(
       `/journeys/${id}/analyze`,

@@ -76,6 +76,7 @@ const COUNTRY_NAME_BY_CODE: Record<string, string> = {
 
 import type { AppConfig } from "../config/env.js";
 import { contextFromJourney, type Store } from "../db/store.js";
+import { forwardGeocodeFor, geocodeFor } from "../telemetry/geocoder.js";
 import type { TidalAuthService } from "../auth/tidalAuth.js";
 import type { SpotifyAuthService } from "../auth/spotifyAuth.js";
 import type { TeslaLiveReader } from "../telemetry/teslaFleetPoller.js";
@@ -203,10 +204,76 @@ export class JourneyService {
       this.store.setPlannedDurationMinutes(journey.id, event.etaMinutes);
     }
     this.store.saveTelemetry(journey.id, event, phase);
+    if (event.countryName || event.countryCode || event.coarseRegion) {
+      // Persist the last real GPS fix so the country survives telemetry gaps / app reloads.
+      this.store.setLastGeo(journey.id, {
+        countryName: event.countryName,
+        countryCode: event.countryCode,
+        coarseRegion: event.coarseRegion,
+        source: event.geoSource === "manual" ? "manual" : "reverse-geocode",
+      });
+    }
     if (phase !== journey.phase) {
       this.store.updateJourneyPhase(journey.id, phase);
     }
     return phase;
+  }
+
+  /**
+   * Seeds the journey's geo fallback from its destination text (forward geocode) when no location is
+   * known yet. Runs at most once per journey (the persisted seed makes later calls cheap no-ops) and
+   * never overwrites a real GPS fix. Best-effort: any failure leaves the journey geo-less as before.
+   */
+  private async ensureBaselineGeo(journey: JourneyRecord): Promise<void> {
+    if (journey.lastGeo?.countryName || journey.lastGeo?.countryCode) return;
+    const latest = this.store.latestTelemetry(journey.id);
+    if (latest?.countryName || latest?.countryCode) return;
+    const result = await forwardGeocodeFor(journey.destination, {
+      baseUrl: this.config.GEOCODER_SEARCH_URL,
+    }).catch(() => undefined);
+    if (!result) return;
+    this.store.setLastGeo(journey.id, {
+      countryName: result.countryName,
+      countryCode: result.countryCode,
+      coarseRegion: result.coarseRegion,
+      source: "destination",
+    });
+    this.store.audit(
+      journey.id,
+      "geo.baseline_seeded",
+      `Seeded location from destination: ${result.coarseRegion ?? result.countryName ?? journey.destination}.`,
+      { source: "destination" },
+    );
+  }
+
+  /**
+   * Browser-geolocation fallback: reverse-geocodes coordinates the web client obtained from the
+   * device (Tesla browser / phone) and stores them as the last-known location. Higher-confidence than
+   * the destination seed; deferred to live telemetry when that's present (see store.setLastGeo).
+   */
+  async setBrowserGeo(
+    journeyId: string,
+    lat: number,
+    lon: number,
+  ): Promise<void> {
+    const journey = this.store.getJourney(journeyId);
+    if (!journey || journey.status !== "active") return;
+    const result = await geocodeFor(lat, lon, {
+      baseUrl: this.config.GEOCODER_URL,
+    }).catch(() => undefined);
+    if (!result) return;
+    this.store.setLastGeo(journeyId, {
+      countryName: result.countryName,
+      countryCode: result.countryCode,
+      coarseRegion: result.coarseRegion,
+      source: "browser-gps",
+    });
+    this.store.audit(
+      journeyId,
+      "geo.browser_fix",
+      `Browser location: ${result.coarseRegion ?? result.countryName ?? "unknown"}.`,
+      { source: "browser-gps" },
+    );
   }
 
   async startJourney(input: StartJourneyInput): Promise<JourneyRecord> {
@@ -682,6 +749,9 @@ export class JourneyService {
     if (journey.status !== "active") {
       throw new Error("Cannot analyze a stopped journey.");
     }
+
+    // Seed a geo baseline from the destination once, so "local touch" works before/without live GPS.
+    await this.ensureBaselineGeo(journey);
 
     const startedAt = Date.now();
     this.logger.info(
