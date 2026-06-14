@@ -199,6 +199,13 @@ export async function registerJourneyRoutes(
     return reply.code(202).send({ ok: true });
   });
 
+  // Manual location override (driver types a place, or blank to revert to auto). Re-curates.
+  app.post("/journeys/:id/geo/manual", async (request) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const { place } = z.object({ place: z.string() }).parse(request.body);
+    return service.setManualGeo(id, place);
+  });
+
   // Device-independent playback position for synced karaoke (works on car/phone Connect, not just
   // the browser SDK). The client interpolates between polls with a local clock for smooth highlighting.
   app.get("/journeys/:id/playback-progress", async (request) => {

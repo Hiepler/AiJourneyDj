@@ -276,6 +276,50 @@ export class JourneyService {
     );
   }
 
+  /**
+   * Manual location override: the driver types a place ("Marseille", "France"); we forward-geocode it
+   * and pin it as the highest-confidence geo (wins over auto-detection until they cross into a
+   * different country or revert). A blank place clears the override. Re-curates immediately.
+   */
+  async setManualGeo(journeyId: string, place: string): Promise<JourneyRecord> {
+    const journey = this.getJourneyOrThrow(journeyId);
+    if (journey.status !== "active") {
+      throw new Error("Cannot set the location of a stopped journey.");
+    }
+    const trimmed = place.trim();
+    if (!trimmed) {
+      this.store.clearLastGeo(journeyId);
+      this.store.audit(
+        journeyId,
+        "geo.manual_cleared",
+        "Manual location cleared — back to auto-detection.",
+        {},
+      );
+      await this.analyzeJourney(journeyId, "geo-manual");
+      return this.getJourneyOrThrow(journeyId);
+    }
+    const result = await forwardGeocodeFor(trimmed, {
+      baseUrl: this.config.GEOCODER_SEARCH_URL,
+    }).catch(() => undefined);
+    if (!result) {
+      throw new Error(`Couldn't find a place called "${trimmed}".`);
+    }
+    this.store.setLastGeo(journeyId, {
+      countryName: result.countryName,
+      countryCode: result.countryCode,
+      coarseRegion: result.coarseRegion,
+      source: "manual",
+    });
+    this.store.audit(
+      journeyId,
+      "geo.manual_set",
+      `Manual location: ${result.coarseRegion ?? result.countryName ?? trimmed}.`,
+      { source: "manual" },
+    );
+    await this.analyzeJourney(journeyId, "geo-manual");
+    return this.getJourneyOrThrow(journeyId);
+  }
+
   async startJourney(input: StartJourneyInput): Promise<JourneyRecord> {
     const provider = input.provider ?? "spotify";
     const id = crypto.randomUUID();

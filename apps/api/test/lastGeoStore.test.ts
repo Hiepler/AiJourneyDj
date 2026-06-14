@@ -77,6 +77,69 @@ describe("last-known geo fallback", () => {
     expect(store.getJourney("journey-1")?.lastGeo?.countryCode).toBe("ES");
   });
 
+  it("a manual override sticks within the same country but yields when the driver moves", () => {
+    const store = freshStore();
+    store.createJourney(makeJourney());
+    store.setLastGeo("journey-1", {
+      countryName: "France",
+      countryCode: "FR",
+      coarseRegion: "Marseille, France",
+      source: "manual",
+    });
+
+    // Same-country GPS fix must NOT override the manual correction (it may only refine, not replace).
+    store.setLastGeo("journey-1", {
+      countryName: "France",
+      countryCode: "FR",
+      coarseRegion: "Lyon, France",
+      source: "reverse-geocode",
+    });
+    expect(store.getJourney("journey-1")?.lastGeo?.coarseRegion).toBe("Marseille, France");
+    expect(store.getJourney("journey-1")?.lastGeo?.source).toBe("manual");
+
+    // Crossing into a different country: the live fix wins (manual is stale, the driver moved).
+    store.setLastGeo("journey-1", {
+      countryName: "Spain",
+      countryCode: "ES",
+      coarseRegion: "Catalonia, Spain",
+      source: "reverse-geocode",
+    });
+    expect(store.getJourney("journey-1")?.lastGeo?.countryCode).toBe("ES");
+    expect(store.getJourney("journey-1")?.lastGeo?.source).toBe("reverse-geocode");
+  });
+
+  it("clearLastGeo resets the override back to auto", () => {
+    const store = freshStore();
+    store.createJourney(makeJourney());
+    store.setLastGeo("journey-1", { countryName: "France", countryCode: "FR", source: "manual" });
+    store.clearLastGeo("journey-1");
+    expect(store.getJourney("journey-1")?.lastGeo).toBeUndefined();
+  });
+
+  it("a manual override wins over live telemetry in the context", () => {
+    const journey = makeJourney({
+      lastGeo: {
+        countryName: "France",
+        countryCode: "FR",
+        coarseRegion: "Occitanie, France",
+        source: "manual",
+      },
+    });
+    const context = contextFromJourney(
+      journey,
+      {
+        timestampIso: new Date().toISOString(),
+        countryName: "Germany",
+        countryCode: "DE",
+        coarseRegion: "Bavaria, Germany",
+        geoSource: "reverse-geocode",
+      } as never,
+      [],
+    );
+    expect(context.countryName).toBe("France");
+    expect(context.geoSource).toBe("manual");
+  });
+
   it("contextFromJourney falls back to last-known geo when no telemetry geo exists", () => {
     const journey = makeJourney({
       lastGeo: {
