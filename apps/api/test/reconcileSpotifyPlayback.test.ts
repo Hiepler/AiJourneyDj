@@ -26,6 +26,7 @@ class ControllableAdapter implements SpotifyAdapter {
   playbackState: SpotifyPlaybackState = { isPlaying: false, queuedProviderTrackIds: [] };
   startCalls: { deviceId: string; uris: string[] }[] = [];
   queueCalls: { deviceId: string; uri: string }[] = [];
+  transferCalls: { deviceId: string }[] = [];
 
   async searchTracks(args: { query: string; market: string }): Promise<SpotifyTrackSearchResult[]> {
     const [artist, ...rest] = args.query.split(" - ");
@@ -45,7 +46,9 @@ class ControllableAdapter implements SpotifyAdapter {
     ];
   }
 
-  async transferPlayback(): Promise<void> {}
+  async transferPlayback(args: { deviceId: string }): Promise<void> {
+    this.transferCalls.push({ deviceId: args.deviceId });
+  }
   async resolvePlaybackDeviceId(args: { preferredDeviceId: string }): Promise<string> {
     return args.preferredDeviceId;
   }
@@ -243,6 +246,63 @@ describe("reconcileSpotifyPlayback", () => {
     };
     await service.reconcileSpotifyPlayback(journey.id);
     expect(store.getPlaybackSession(journey.id)!.status).toBe("playing");
+  });
+
+  it("follows Spotify Connect to the active device without stealing playback", async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+    const model = modelOf(store, journey.id);
+    adapter.startCalls.length = 0;
+    adapter.transferCalls.length = 0;
+    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("tesla-web-device");
+
+    // Our active track is now playing on a *different* Connect device (native Tesla app).
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: model[0].providerTrackId,
+      queuedProviderTrackIds: [],
+      activeDeviceId: "native-tesla-app",
+    };
+    const outcome = await service.reconcileSpotifyPlayback(journey.id);
+
+    expect(outcome).toBe("playing");
+    // Re-bound to the device the user is actually listening on…
+    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("native-tesla-app");
+    expect(store.getPlaybackSession(journey.id)!.deviceId).toBe("native-tesla-app");
+    // …and nothing was transferred or (re)started — following is passive.
+    expect(adapter.startCalls.length).toBe(0);
+    expect(adapter.transferCalls.length).toBe(0);
+  });
+
+  it("queues a refill against the followed device, not the original browser id", async () => {
+    const { service, store, adapter } = buildService({
+      SPOTIFY_REFILL_MIN_INTERVAL_SECONDS: "0",
+    });
+    const journey = await startSpotifyJourney(service);
+    const model = modelOf(store, journey.id);
+
+    // Follow the native app first (skipped far enough to drop the buffer under the refill floor).
+    const skipTarget = model[Math.min(model.length - 1, 3)];
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: skipTarget.providerTrackId,
+      queuedProviderTrackIds: [],
+      activeDeviceId: "native-tesla-app",
+    };
+    adapter.queueCalls.length = 0;
+    await service.reconcileSpotifyPlayback(journey.id);
+
+    const deadline = Date.now() + 20_000;
+    while (service.isAnalysisPending(journey.id)) {
+      if (Date.now() > deadline) throw new Error("refill analysis did not finish");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    // Every queue add issued after the follow targets the followed device.
+    expect(adapter.queueCalls.length).toBeGreaterThan(0);
+    for (const call of adapter.queueCalls) {
+      expect(call.deviceId).toBe("native-tesla-app");
+    }
   });
 
   it("re-anchors instead of pausing when one of OUR tracks plays outside the model", async () => {
@@ -454,6 +514,18 @@ describe("connect-mode queue sync", () => {
     expect(adapter.startCalls.length).toBe(startCallsBefore);
   });
 
+  it("never transfers playback on a refill of an already-playing session", async () => {
+    const { service, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+    // A live session that is already playing → a refill must only queue, never (re)assert the
+    // device, or it would steal playback back from whatever Connect device the user moved to.
+    adapter.transferCalls.length = 0;
+
+    await service.analyzeJourney(journey.id, "manual");
+
+    expect(adapter.transferCalls.length).toBe(0);
+  });
+
   // Two full analysis passes (initial + wish rebuild) with real per-add pacing → allow 30s.
   it("keeps every wish-rebuild queue add inside the visible model", { timeout: 30_000 }, async () => {
     const { service, store, adapter } = buildService();
@@ -623,13 +695,16 @@ describe("respects user takeover (podcast / foreign device)", () => {
     expect(store.getPlaybackSession(journey.id)!.status).toBe("external");
   });
 
-  it("hands over when playback moves to a different device", async () => {
+  it("follows (does NOT hand over) when our track moves to a different device", async () => {
     const { service, store, adapter } = buildService();
     const journey = await startSpotifyJourney(service);
     const model = modelOf(store, journey.id);
     adapter.startCalls.length = 0;
+    adapter.transferCalls.length = 0;
 
-    // A journey track id, but playing on the user's phone (foreign device).
+    // A journey track id, but playing on the user's phone (foreign Connect device). This is the
+    // user moving our journey to another device — we follow it rather than treating it as a
+    // takeover, and never steal playback back.
     adapter.playbackState = {
       isPlaying: true,
       activeProviderTrackId: model[0].providerTrackId,
@@ -639,8 +714,10 @@ describe("respects user takeover (podcast / foreign device)", () => {
     };
     const outcome = await service.reconcileSpotifyPlayback(journey.id);
 
-    expect(outcome).toBe("external");
+    expect(outcome).toBe("playing");
+    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("phone-xyz");
     expect(adapter.startCalls.length).toBe(0);
+    expect(adapter.transferCalls.length).toBe(0);
   });
 
   it("auto-resumes when a journey track returns to the journey device", async () => {

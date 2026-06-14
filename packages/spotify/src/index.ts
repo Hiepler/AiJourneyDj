@@ -28,7 +28,11 @@ export interface SpotifyPlaybackState {
   durationMs?: number;
   /** What kind of item is playing — distinguishes a track from a podcast/episode or ad. */
   currentlyPlayingType?: "track" | "episode" | "ad" | "unknown";
-  /** Id of the device currently playing (to detect playback on a foreign device). */
+  /**
+   * Id of the device Spotify is actually playing on. Lets the backend follow Spotify Connect
+   * when the user moves playback to another device (e.g. the native Tesla app) instead of
+   * staying bound to the browser webplayer.
+   */
   activeDeviceId?: string;
   /** Human-readable name of the active device (diagnostics / UI). */
   activeDeviceName?: string;
