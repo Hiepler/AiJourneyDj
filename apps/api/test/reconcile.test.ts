@@ -1,6 +1,50 @@
 import { describe, expect, it } from "vitest";
 
-import { nextPollIntervalSeconds, reconcilePlaybackModel, shouldRegenerate } from "../src/playback/reconcile.js";
+import { nextPollIntervalSeconds, playbackOwnership, reconcilePlaybackModel, shouldRegenerate } from "../src/playback/reconcile.js";
+
+describe("playbackOwnership", () => {
+  const dev = "tesla-web-device";
+
+  it("hands over when a podcast/episode is playing", () => {
+    expect(
+      playbackOwnership({ isPlaying: true, currentlyPlayingType: "episode", activeDeviceId: dev, journeyDeviceId: dev }),
+    ).toBe("handed-over");
+  });
+
+  it("hands over when playback is on a different device", () => {
+    expect(
+      playbackOwnership({ isPlaying: true, currentlyPlayingType: "track", activeDeviceId: "phone-xyz", journeyDeviceId: dev }),
+    ).toBe("handed-over");
+  });
+
+  it("hands over on an off-journey (external) track", () => {
+    expect(
+      playbackOwnership({ isPlaying: true, currentlyPlayingType: "track", activeDeviceId: dev, journeyDeviceId: dev, reconcileKind: "external" }),
+    ).toBe("handed-over");
+  });
+
+  it("stays owned for a journey track on the journey device", () => {
+    expect(
+      playbackOwnership({ isPlaying: true, currentlyPlayingType: "track", activeDeviceId: dev, journeyDeviceId: dev, reconcileKind: "same" }),
+    ).toBe("owned");
+  });
+
+  it("stays owned when nothing is playing (idle, not a takeover)", () => {
+    expect(playbackOwnership({ isPlaying: false, currentlyPlayingType: "episode", activeDeviceId: "phone" })).toBe("owned");
+  });
+
+  it("stays owned on ads (neutral, don't hand over)", () => {
+    expect(
+      playbackOwnership({ isPlaying: true, currentlyPlayingType: "ad", activeDeviceId: dev, journeyDeviceId: dev }),
+    ).toBe("owned");
+  });
+
+  it("does not hand over on device mismatch when the journey device is unknown", () => {
+    expect(
+      playbackOwnership({ isPlaying: true, currentlyPlayingType: "track", activeDeviceId: "phone" }),
+    ).toBe("owned");
+  });
+});
 
 describe("reconcilePlaybackModel", () => {
   const model = ["t-active", "t-q1", "t-q2", "t-q3"];

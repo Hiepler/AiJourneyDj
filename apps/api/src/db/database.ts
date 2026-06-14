@@ -275,6 +275,8 @@ export function migrate(db: Db): void {
   tryAddColumn(db, "journeys", "planned_duration_minutes", "INTEGER");
   tryAddColumn(db, "journeys", "planned_duration_set_at", "TEXT");
   tryAddColumn(db, "journeys", "kids_mode", "INTEGER NOT NULL DEFAULT 0");
+  // Last meaningful activity timestamp, for inactivity auto-stop (car off overnight, etc.).
+  tryAddColumn(db, "journeys", "last_active_at", "TEXT");
   // Last-known location fallback (seeded from destination, refreshed by browser geo / telemetry fixes).
   tryAddColumn(db, "journeys", "last_geo_country_name", "TEXT");
   tryAddColumn(db, "journeys", "last_geo_country_code", "TEXT");
