@@ -183,6 +183,8 @@ export function App() {
   const shownMomentAtRef = useRef<string | undefined>(undefined);
   // The currently-sung karaoke line, kept scrolled into view.
   const activeLineRef = useRef<HTMLParagraphElement | null>(null);
+  // Journey id for which we've already attempted the one-shot browser-geolocation fallback.
+  const geoFallbackTriedRef = useRef<string | undefined>(undefined);
   // Latest playback-position sample for synced karaoke; the rAF loop interpolates from it with a local
   // clock so highlighting stays smooth between (infrequent) re-syncs. durationRef feeds lyrics matching.
   const lyricsSyncRef = useRef<{ positionMs: number; isPlaying: boolean; atMs: number } | undefined>(
@@ -269,6 +271,29 @@ export function App() {
     liveAutoFetchedRef.current = true;
     refreshLiveTelemetry();
   }, [activeJourneyId, health?.teslaConnected]);
+
+  // Browser-geolocation fallback for the "local touch": when a journey is active but we have no real
+  // GPS fix (only the destination seed or nothing), ask the device once for its position and hand the
+  // coordinates to the API. Works on phones and on Teslas whose firmware exposes geolocation; silently
+  // does nothing when unavailable or denied. Live Tesla GPS, when present, always takes precedence.
+  useEffect(() => {
+    if (!activeJourneyId || !navigator.geolocation) return;
+    const source = detail?.context?.geoSource;
+    if (source === "reverse-geocode" || source === "browser-gps" || source === "manual") return;
+    if (geoFallbackTriedRef.current === activeJourneyId) return;
+    geoFallbackTriedRef.current = activeJourneyId;
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        void api
+          .setGeo(activeJourneyId, position.coords.latitude, position.coords.longitude)
+          .then(() => api.journey(activeJourneyId))
+          .then(setDetail)
+          .catch(() => undefined);
+      },
+      () => undefined,
+      { enableHighAccuracy: false, timeout: 10_000, maximumAge: 600_000 },
+    );
+  }, [activeJourneyId, detail?.context?.geoSource]);
 
   // Celebrate a freshly-fired journey moment as a brief, auto-dismissing family-event banner.
   useEffect(() => {

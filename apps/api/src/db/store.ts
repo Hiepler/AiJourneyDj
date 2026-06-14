@@ -149,6 +149,59 @@ export class Store {
     ]);
   }
 
+  /**
+   * Persists the last-known location used as the geo fallback. Higher-confidence sources win, and any
+   * source may refresh a stale fix — so a real GPS/telemetry reading always updates, browser geo
+   * replaces a destination seed (or a stale GPS fix), and the destination seed only fills an empty slot.
+   */
+  setLastGeo(
+    journeyId: string,
+    geo: {
+      countryName?: string;
+      countryCode?: string;
+      coarseRegion?: string;
+      source: "reverse-geocode" | "manual" | "browser-gps" | "destination";
+    },
+  ): void {
+    if (!geo.countryName && !geo.countryCode && !geo.coarseRegion) return;
+    const rank: Record<string, number> = {
+      destination: 1,
+      "browser-gps": 2,
+      manual: 3,
+      "reverse-geocode": 3,
+    };
+    const STALE_MS = 10 * 60 * 1000;
+    const current = this.db.get<{
+      last_geo_source: string | null;
+      last_geo_updated_at: string | null;
+    }>(
+      "SELECT last_geo_source, last_geo_updated_at FROM journeys WHERE id = ?",
+      [journeyId],
+    );
+    if (current?.last_geo_source) {
+      const incoming = rank[geo.source] ?? 0;
+      const existing = rank[current.last_geo_source] ?? 0;
+      const ageMs = current.last_geo_updated_at
+        ? Date.now() - new Date(current.last_geo_updated_at).getTime()
+        : Number.POSITIVE_INFINITY;
+      if (incoming < existing && ageMs < STALE_MS) return;
+    }
+    this.db.run(
+      `UPDATE journeys
+       SET last_geo_country_name = ?, last_geo_country_code = ?,
+           last_geo_coarse_region = ?, last_geo_source = ?, last_geo_updated_at = ?
+       WHERE id = ?`,
+      [
+        geo.countryName ?? null,
+        geo.countryCode ?? null,
+        geo.coarseRegion ?? null,
+        geo.source,
+        new Date().toISOString(),
+        journeyId,
+      ],
+    );
+  }
+
   /** Snapshot the planned trip duration once; subsequent calls are no-ops. */
   setPlannedDurationMinutes(journeyId: string, minutes: number): void {
     if (!Number.isFinite(minutes) || minutes <= 0) return;
@@ -922,6 +975,18 @@ function mapJourney(row: any): JourneyRecord {
         : row.adaptive_mode_enabled !== 0,
     plannedDurationMinutes: row.planned_duration_minutes ?? undefined,
     kidsMode: row.kids_mode === 1,
+    lastGeo:
+      row.last_geo_country_name ||
+      row.last_geo_country_code ||
+      row.last_geo_coarse_region
+        ? {
+            countryName: row.last_geo_country_name ?? undefined,
+            countryCode: row.last_geo_country_code ?? undefined,
+            coarseRegion: row.last_geo_coarse_region ?? undefined,
+            source: row.last_geo_source ?? undefined,
+            updatedAtIso: row.last_geo_updated_at ?? undefined,
+          }
+        : undefined,
     createdAtIso: row.created_at,
     stoppedAtIso: row.stopped_at,
   };
@@ -1015,12 +1080,15 @@ export function contextFromJourney(
   const speed = telemetry?.speedBucket ?? speedBucket(telemetry?.speedKph);
   const temp =
     telemetry?.temperatureBucket ?? temperatureBucket(telemetry?.outsideTempC);
+  // Live telemetry geo wins; otherwise fall back to the journey's last-known location (browser geo,
+  // a prior GPS fix, or the destination seed) so the "local touch" works without active GPS.
+  const geo = journey.lastGeo;
   return {
     destination: telemetry?.destination ?? journey.destination,
-    coarseRegion: telemetry?.coarseRegion,
-    countryName: telemetry?.countryName,
-    countryCode: telemetry?.countryCode,
-    geoSource: telemetry?.geoSource,
+    coarseRegion: telemetry?.coarseRegion ?? geo?.coarseRegion,
+    countryName: telemetry?.countryName ?? geo?.countryName,
+    countryCode: telemetry?.countryCode ?? geo?.countryCode,
+    geoSource: telemetry?.geoSource ?? geo?.source,
     localTimeIso: telemetry?.timestampIso ?? new Date().toISOString(),
     etaMinutes: telemetry?.etaMinutes,
     speedBucket: speed,

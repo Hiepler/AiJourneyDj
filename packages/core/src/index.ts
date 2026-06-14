@@ -56,7 +56,12 @@ export interface JourneyContext {
   coarseRegion?: string;
   countryName?: string;
   countryCode?: string;
-  geoSource?: "reverse-geocode" | "manual" | "simulated";
+  geoSource?:
+    | "reverse-geocode"
+    | "manual"
+    | "simulated"
+    | "browser-gps"
+    | "destination";
   localTimeIso: string;
   weatherFeel?: string;
   etaMinutes?: number;
@@ -305,6 +310,17 @@ export interface JourneyRecord {
   adaptiveModeEnabled?: boolean;
   /** "Kids am Steuer": bias toward Disney/film/animated singalongs kids love (still clean). */
   kidsMode?: boolean;
+  /**
+   * Last-known location for this journey, used as the geo fallback when no live GPS telemetry is
+   * present (seeded from the destination, refreshed by browser geolocation or telemetry fixes).
+   */
+  lastGeo?: {
+    countryName?: string;
+    countryCode?: string;
+    coarseRegion?: string;
+    source?: "reverse-geocode" | "manual" | "browser-gps" | "destination";
+    updatedAtIso?: string;
+  };
   createdAtIso: string;
   stoppedAtIso?: string;
   /** Planned total trip duration in minutes, snapshotted from the first ETA. */
