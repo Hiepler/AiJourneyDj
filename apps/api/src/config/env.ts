@@ -173,6 +173,8 @@ const schema = z.object({
   GENRE_SPREAD_ENABLED: envBoolean(true),
   // Drive-Story-Akte (Erzählbogen) + Ankunfts-/Moment-Fenster in Minuten.
   DRIVE_STORY_ENABLED: envBoolean(true),
+  // Sequence the upcoming buffer along the energy curve so the set plays as a shaped arc.
+  ENERGY_ARC_SEQUENCING_ENABLED: envBoolean(true),
   ARRIVAL_MOMENT_MINUTES: z.coerce.number().int().min(2).default(10),
   // Journey-Momente (Verkehr, Grenze, Golden Hour, Ankunft …).
   MOMENTS_ENABLED: envBoolean(true),

@@ -96,6 +96,8 @@ export interface JourneyContext {
   varietyAngle?: string;
   /** Recently surfaced artists across journeys to de-prioritize (variety engine). */
   recentlyPlayedArtists?: string[];
+  /** Mood tags the listener has been skipping this session — surfaced so the scout avoids them. */
+  skippedMoodTags?: string[];
   /** Live-Verkehrsverzögerung der Route in Minuten (Telemetrie). */
   trafficDelayMinutes?: number;
   /** Fahrstil aus Beschleunigungs-Varianz (nur Streaming-Telemetrie). */
@@ -182,6 +184,10 @@ export interface SongCandidate {
   isrc?: string;
   /** Coarse genre label used for diversity balancing across the candidate set. */
   genre?: string;
+  /** Estimated recording energy, 0=calm … 1=high. Drives per-slot curve fit and flow sequencing. */
+  energy?: number;
+  /** Estimated emotional valence, -1=dark … +1=bright. Smooths tonal transitions between tracks. */
+  valence?: number;
   /** Generation lens this candidate came from (e.g. "current", "classics") — diagnostics/balancing. */
   lens?: string;
   /** Role in the next five-track cinematic journey set. */
@@ -230,6 +236,10 @@ export interface ResolvedTrack {
   chartCountry?: string;
   chartSource?: string;
   moodTags?: string[];
+  /** Estimated recording energy (0…1), propagated from the candidate — sequences the played arc. */
+  energy?: number;
+  /** Estimated emotional valence (-1…+1), propagated from the candidate — smooths transitions. */
+  valence?: number;
   matchConfidence: number;
   matchReason: string;
 }
