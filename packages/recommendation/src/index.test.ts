@@ -31,6 +31,7 @@ import {
   rankResolvedTracksForPolicy,
   repairJsonString,
   moodTagsForContext,
+  orderByEnergyArc,
   resolveXaiModel,
   salvageCandidatesFromText,
   selectJourneyLenses,
@@ -779,6 +780,178 @@ describe("recommendation", () => {
     ).toBe(true);
   });
 
+  it("orderByEnergyArc follows the curve, keeps the opener, and smooths transitions", () => {
+    type Item = { id: string; energy: number; valence: number };
+    const energyOf = (item: Item) => item.energy;
+    const valenceOf = (item: Item) => item.valence;
+    // A rising curve; deliberately shuffle items so a naive pass would whiplash.
+    const curve = [0.2, 0.4, 0.6, 0.8, 0.95];
+    const items: Item[] = [
+      { id: "open", energy: 0.2, valence: 0.5 },
+      { id: "hi", energy: 0.95, valence: 0.5 },
+      { id: "lo", energy: 0.35, valence: 0.5 },
+      { id: "mid", energy: 0.6, valence: 0.5 },
+      { id: "peak", energy: 0.85, valence: 0.5 },
+    ];
+
+    const ordered = orderByEnergyArc(items, curve, energyOf, valenceOf, {
+      keepFirst: true,
+    });
+
+    // Opener is pinned; the rest climb with the curve rather than jumping around.
+    expect(ordered.map((item) => item.id)).toEqual([
+      "open",
+      "lo",
+      "mid",
+      "peak",
+      "hi",
+    ]);
+    // No adjacent whiplash: every step is a gentle climb, never a big drop.
+    for (let i = 1; i < ordered.length; i += 1) {
+      expect(ordered[i].energy).toBeGreaterThanOrEqual(ordered[i - 1].energy);
+    }
+  });
+
+  it("buildJourneySet keeps the LLM energy estimates on the sequenced set", () => {
+    const brief = buildMusicalBrief(context);
+    const cands: SongCandidate[] = [
+      {
+        artist: "A",
+        title: "1",
+        genre: "ambient",
+        energy: 0.2,
+        valence: 0.4,
+        reason: "",
+        source: "gemini",
+        confidence: 0.9,
+      },
+      {
+        artist: "B",
+        title: "2",
+        genre: "electronic",
+        energy: 0.9,
+        valence: 0.6,
+        reason: "",
+        source: "gemini",
+        confidence: 0.88,
+      },
+      {
+        artist: "C",
+        title: "3",
+        genre: "indie",
+        energy: 0.55,
+        valence: 0.5,
+        reason: "",
+        source: "gemini",
+        confidence: 0.85,
+      },
+      {
+        artist: "D",
+        title: "4",
+        genre: "soul",
+        energy: 0.45,
+        valence: 0.5,
+        reason: "",
+        source: "gemini",
+        confidence: 0.83,
+      },
+      {
+        artist: "E",
+        title: "5",
+        genre: "rock",
+        energy: 0.8,
+        valence: 0.5,
+        reason: "",
+        source: "gemini",
+        confidence: 0.8,
+      },
+    ];
+
+    const set = buildJourneySet(cands, brief, 5);
+    expect(set).toHaveLength(5);
+    expect(set.map((candidate) => candidate.role)).toEqual([
+      "anchor",
+      "momentum",
+      "bridge",
+      "surprise",
+      "resolution",
+    ]);
+    // Sequencing is a permutation: every per-track energy estimate survives intact for downstream
+    // curve-fit and flow, and the set is still five distinct songs.
+    expect(set.every((candidate) => typeof candidate.energy === "number")).toBe(
+      true,
+    );
+    expect(new Set(set.map((candidate) => candidate.energy)).size).toBe(5);
+  });
+
+  it("buildRecommendationPolicy sets the discovery dial from the trip archetype", () => {
+    const errand = buildRecommendationPolicy({
+      ...context,
+      etaMinutes: undefined,
+      plannedDurationMinutes: 15,
+    });
+    const longHaul = buildRecommendationPolicy({
+      ...context,
+      etaMinutes: undefined,
+      plannedDurationMinutes: 300,
+    });
+    expect(errand.targetDiscoveryRatio as number).toBeLessThan(
+      longHaul.targetDiscoveryRatio as number,
+    );
+    // Errands stay familiar; long hauls open up to discovery.
+    expect(errand.targetDiscoveryRatio as number).toBeLessThanOrEqual(0.2);
+    expect(longHaul.targetDiscoveryRatio as number).toBeGreaterThanOrEqual(0.5);
+  });
+
+  it("selectJourneyLenses keeps errands familiar — no slow regional or leftfield discovery", () => {
+    const brief = buildMusicalBrief({
+      ...context,
+      etaMinutes: undefined,
+      plannedDurationMinutes: 15,
+    });
+    expect(brief.tripArchetype).toBe("errand");
+    const lenses = selectJourneyLenses(brief).map((lens) => lens.key);
+    expect(lenses).toContain("taste_anchor");
+    expect(lenses).not.toContain("regional_texture");
+    expect(lenses).not.toContain("leftfield_bridge");
+    expect(lenses.length).toBeLessThanOrEqual(5);
+  });
+
+  it("targetDiscoveryRatio shifts ranking between hits and lesser-known cuts", () => {
+    const mk = (
+      id: string,
+      artist: string,
+      title: string,
+      pop: number,
+    ): ResolvedTrack => ({
+      provider: "spotify",
+      providerTrackId: id,
+      providerUri: `spotify:track:${id}`,
+      artist,
+      title,
+      explicit: false,
+      popularity: pop,
+      matchConfidence: 0.9,
+      matchReason: "artist and title match",
+    });
+    const tracks: ResolvedTrack[] = [
+      mk("hit", "Hit Artist", "Hit Song", 95),
+      mk("cut", "Cut Artist", "Deep Cut", 35),
+    ];
+    const hitsRanked = rankResolvedTracksForPolicy(
+      tracks,
+      { ...buildRecommendationPolicy(context), targetDiscoveryRatio: 0 },
+      { now: new Date("2026-06-03") },
+    );
+    const discoverRanked = rankResolvedTracksForPolicy(
+      tracks,
+      { ...buildRecommendationPolicy(context), targetDiscoveryRatio: 0.9 },
+      { now: new Date("2026-06-03") },
+    );
+    expect(hitsRanked[0].providerTrackId).toBe("hit");
+    expect(discoverRanked[0].providerTrackId).toBe("cut");
+  });
+
   it("balanceCandidates dedupes and spreads across decades/genres/artists", () => {
     const brief = buildMusicalBrief(context);
     const cands: SongCandidate[] = [
@@ -1143,6 +1316,24 @@ describe("buildLensPrompt — valence", () => {
     const prompt = buildLensPrompt(DEFAULT_LENSES[0], brief, 5);
     expect(prompt.toLowerCase()).toContain("valence");
   });
+
+  it("surfaces skipped moods so the scout steers away from them", () => {
+    const brief = buildMusicalBrief({
+      destination: "Lake",
+      localTimeIso: "2026-06-04T12:00:00",
+      speedBucket: "highway",
+      phase: "cruise",
+      userPrompt: "road trip",
+      passengerMode: "solo",
+      elapsedMinutes: 10,
+      etaMinutes: 30,
+      skippedMoodTags: ["melancholic", "ambient"],
+    } as JourneyContext);
+    const prompt = buildLensPrompt(DEFAULT_LENSES[0], brief, 5).toLowerCase();
+    expect(prompt).toContain("skipping these moods");
+    expect(prompt).toContain("melancholic");
+    expect(prompt).toContain("ambient");
+  });
 });
 
 describe("engine v2 lenses", () => {
@@ -1301,11 +1492,12 @@ describe("variety-aware ranking", () => {
 
   it("recent-fatigue penalizes recent songs/artists and exempts wish artists", () => {
     const policy = buildRecommendationPolicy(context);
-    // tired is at index=0 so its base score is fractionally higher (no index tiebreaker penalty);
-    // this lets a large recentSongPenalty (0.5) flip the result, and removal of the penalty restores it.
+    // Equal popularity so the discovery dial can't differentiate them: tired is at index=0 so its
+    // base score is fractionally higher (no index tiebreaker penalty); this lets a large
+    // recentSongPenalty (0.5) flip the result, and removal of the penalty restores it.
     const tracks: ResolvedTrack[] = [
       trackOf("tired", "Tired Artist", "Tired Song", 88),
-      trackOf("fresh", "Fresh Artist", "Fresh Song", 70),
+      trackOf("fresh", "Fresh Artist", "Fresh Song", 88),
     ];
     const ranked = rankResolvedTracksForPolicy(tracks, policy, {
       now: new Date("2026-06-03"),

@@ -47,8 +47,12 @@ import {
   fallbackCandidates,
   lastfmTracksToCandidates,
   driveStoryAct,
+  energyCurveForContext,
   makeVarietyContext,
   momentumRadioCandidates,
+  orderByEnergyArc,
+  resolvedTrackEnergy,
+  resolvedTrackValence01,
   parseMusicWish,
   rankResolvedTracksForPolicy,
   rotateWindow,
@@ -63,6 +67,12 @@ import {
 export const DEFAULT_TASTE_WEIGHT = 0.4;
 /** Hard cap on the top-artists fetch so taste loading can never block a journey. */
 const TASTE_FETCH_TIMEOUT_MS = 8_000;
+/** Best-fit taste anchor: how many leading favorite artists to consider as opener candidates. */
+const ANCHOR_ARTIST_FANOUT = 3;
+/** Signature tracks to pull per favorite artist (kept low so we stay on iconic, not deep, cuts). */
+const ANCHOR_TRACKS_PER_ARTIST = 2;
+/** Overall cap on anchor options so the familiar shortlist never floods the candidate pool. */
+const ANCHOR_OPTIONS_MAX = 4;
 /**
  * Analyze reasons triggered by an explicit user action — these may push to the device even if the
  * user has "taken over". Anything not listed here is a background/automated pass that the
@@ -1595,6 +1605,15 @@ export class JourneyService {
           .sort((a, b) => b[1] - a[1])
           .map(([artist]) => artist),
       ].slice(0, this.config.ARTIST_AVOID_PROMPT_LIMIT),
+      // Session learning at *generation* time: once a mood has been skipped enough to build a
+      // clear signal (≥2 skips), tell the scout to steer away from it — not just the ranker.
+      skippedMoodTags: this.config.SKIP_FEEDBACK_ENABLED
+        ? [...skipEntry.moodTags.entries()]
+            .filter(([, penalty]) => penalty >= 0.3)
+            .sort((a, b) => b[1] - a[1])
+            .map(([tag]) => tag)
+            .slice(0, 6)
+        : [],
       nowPlaying:
         priorSession?.activeTrack?.provider === "spotify" &&
         priorSession.activeTrack.artist &&
@@ -1729,14 +1748,14 @@ export class JourneyService {
         consumedSongKeys,
       );
       if (isFirstPass && story?.act === "opening") {
-        const anchor = await this.tasteAnchorCandidate(
+        const anchors = await this.tasteAnchorCandidates(
           "opening",
           scoutContext.tasteProfile?.representativeArtists ?? [],
           variety.seed,
         );
-        if (anchor) {
+        if (anchors.length > 0) {
           candidates = [
-            ...(await this.enrichAndStoreCandidates(journeyId, [anchor])),
+            ...(await this.enrichAndStoreCandidates(journeyId, anchors)),
             ...candidates,
           ];
         }
@@ -1755,13 +1774,11 @@ export class JourneyService {
             .slice(0, 3)
             .map((candidate) => ({ ...candidate, lens: `moment:${moment.type}` }));
         } else if (moment.candidateRequest.kind === "taste-anchor") {
-          const anchor = await this.tasteAnchorCandidate(
+          momentCandidates = await this.tasteAnchorCandidates(
             "arrival",
             scoutContext.tasteProfile?.representativeArtists ?? [],
             variety.seed,
           );
-          if (anchor)
-            momentCandidates = [{ ...anchor, lens: "taste-anchor:arrival" }];
         }
         if (momentCandidates.length > 0) {
           candidates = [
@@ -2017,6 +2034,23 @@ export class JourneyService {
     selected.length = 0;
     selected.push(...quotaSelected);
 
+    // Sequence the freshly added tracks along the energy curve so the upcoming buffer plays as a
+    // shaped arc rather than a score-sorted list. The first new pick (a priority/anchor/wish slot)
+    // is pinned; the already-queued tracks are left in place — Spotify's queue is FIFO and cannot
+    // be reordered — and the tail continues their arc via baseIndex.
+    if (this.config.ENERGY_ARC_SEQUENCING_ENABLED && selected.length > 2) {
+      const arcCurve = energyCurveForContext(scoutContext);
+      const arranged = orderByEnergyArc(
+        selected,
+        arcCurve,
+        (track) => resolvedTrackEnergy(track),
+        (track) => resolvedTrackValence01(track),
+        { keepFirst: true, baseIndex: preservedQueued.length },
+      );
+      selected.length = 0;
+      selected.push(...arranged);
+    }
+
     session = this.store.getPlaybackSession(journeyId);
     const deviceId = journey.spotifyDeviceId ?? session?.deviceId;
     // The visible model decides what reaches the device: Spotify must never be sent a
@@ -2209,21 +2243,12 @@ export class JourneyService {
   }
 
   /** Taste-Anchor-Kandidat (Opening/Arrival): realer Top-Track via Last.fm, sonst Radio-Fallback. */
-  private async tasteAnchorCandidate(
+  /** Shape one familiar anchor option from a favorite artist + (optionally) a signature title. */
+  private anchorCandidateOf(
+    artist: string,
+    title: string,
     kind: "opening" | "arrival",
-    tasteArtists: string[],
-    seed: number,
-  ): Promise<SongCandidate | undefined> {
-    const artist = tasteArtists[seed % Math.max(1, tasteArtists.length)];
-    if (!artist) return undefined;
-    let title = `${artist} radio`;
-    if (this.lastfmCharts) {
-      const top = await this.lastfmCharts
-        .getArtistTopTracks(artist, 6)
-        .catch(() => []);
-      const pick = top[seed % Math.max(1, top.length)];
-      if (pick?.title) title = pick.title;
-    }
+  ): SongCandidate {
     return {
       artist,
       title,
@@ -2231,12 +2256,64 @@ export class JourneyService {
       role: "anchor",
       reason:
         kind === "opening"
-          ? "Opening title: vertrauter Einstieg passend zur Ziel-Stimmung"
-          : "Arrival anthem: vertrautes Finale vor der Ankunft",
+          ? `Vertrauter Einstieg: ein Signature-Track von ${artist}, passend zur Ziel-Stimmung`
+          : `Arrival anthem: ein vertrautes ${artist}-Finale vor der Ankunft`,
       source: "fallback",
       confidence: 0.9,
       moodTags: ["anchor"],
     };
+  }
+
+  /**
+   * Best-fit taste anchor: instead of one arbitrary top track, surface a small shortlist of
+   * signature songs across the listener's leading favorite artists (seed-rotated for cross-journey
+   * variety). They flow through the normal resolve+rank pipeline, so the policy ranker picks the
+   * single best fit for *this* drive — recognizability (popularity), era fit (recencyBias:
+   * nostalgic→older classics, fresh→recent), mood and skip feedback all already weigh in. The
+   * caller's anchor selector then pins the top-ranked option as the opener.
+   */
+  private async tasteAnchorCandidates(
+    kind: "opening" | "arrival",
+    tasteArtists: string[],
+    seed: number,
+  ): Promise<SongCandidate[]> {
+    const cleaned = tasteArtists.map((a) => a.trim()).filter(Boolean);
+    if (cleaned.length === 0) return [];
+    // Rotate which favorites lead so the opener varies across drives, but consider several so the
+    // ranker has real choice rather than a fixed #1.
+    const offset = seed % cleaned.length;
+    const leadArtists = [
+      ...cleaned.slice(offset),
+      ...cleaned.slice(0, offset),
+    ].slice(0, ANCHOR_ARTIST_FANOUT);
+    const radioSeed = (): SongCandidate[] => [
+      this.anchorCandidateOf(leadArtists[0], `${leadArtists[0]} radio`, kind),
+    ];
+    if (!this.lastfmCharts) {
+      // No catalog source: fall back to a single radio seed for the leading favorite.
+      return radioSeed();
+    }
+    const perArtist = await Promise.all(
+      leadArtists.map((artist) =>
+        this.lastfmCharts!.getArtistTopTracks(
+          artist,
+          ANCHOR_TRACKS_PER_ARTIST,
+        ).catch(() => []),
+      ),
+    );
+    const options: SongCandidate[] = [];
+    leadArtists.forEach((artist, index) => {
+      // The most iconic few per artist — an opener should be a signature song, not a deep cut.
+      const top = (perArtist[index] ?? []).slice(0, ANCHOR_TRACKS_PER_ARTIST);
+      for (const track of top) {
+        if (track.title) {
+          options.push(this.anchorCandidateOf(artist, track.title, kind));
+        }
+      }
+    });
+    return options.length > 0
+      ? options.slice(0, ANCHOR_OPTIONS_MAX)
+      : radioSeed();
   }
 
   private pickSpotifyPlaybackTracks(
