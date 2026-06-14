@@ -69,6 +69,33 @@ function buildService() {
     fetchImpl: async (input) => {
       const url = new URL(String(input));
       const method = url.searchParams.get("method");
+      if (method === "artist.getTopTracks") {
+        const artist = url.searchParams.get("artist") ?? "Artist";
+        return new Response(
+          JSON.stringify({
+            toptracks: {
+              track: [
+                {
+                  name: `${artist} Signature`,
+                  "@attr": { rank: "1" },
+                  artist: { name: artist },
+                },
+                {
+                  name: `${artist} Second`,
+                  "@attr": { rank: "2" },
+                  artist: { name: artist },
+                },
+                {
+                  name: `${artist} Third`,
+                  "@attr": { rank: "3" },
+                  artist: { name: artist },
+                },
+              ],
+            },
+          }),
+          { status: 200 },
+        );
+      }
       if (method === "geo.getTopTracks") {
         return new Response(
           JSON.stringify({
@@ -180,5 +207,60 @@ describe("Last.fm chart-driven journey recommendations", () => {
           track.chartCountry === "Germany",
       ).length,
     ).toBeGreaterThanOrEqual(5);
+  });
+
+  it("opens with a best-fit taste anchor chosen across several favorite artists", async () => {
+    const { service, store } = buildService();
+    // Seed the listener's taste so the opening anchor fires with real favorites.
+    store.saveCachedTasteProfile("local", {
+      topGenres: ["pop", "indie"],
+      representativeArtists: ["Miley Cyrus", "Harry Styles", "Dua Lipa"],
+    });
+    const journey: JourneyRecord = {
+      id: "journey-anchor",
+      provider: "spotify",
+      destination: "Lago di Garda",
+      userPrompt: "evening drive",
+      passengerMode: "couple",
+      phase: "departure",
+      status: "active",
+      tasteWeight: 0.4,
+      createdAtIso: new Date().toISOString(),
+    };
+    store.createJourney(journey);
+    store.saveTelemetry(
+      journey.id,
+      {
+        timestampIso: "2026-06-03T18:00:00.000Z",
+        coarseRegion: "Bavaria",
+        destination: "Lago di Garda",
+        etaMinutes: 180,
+        speedKph: 92,
+        outsideTempC: 24,
+      },
+      "departure",
+    );
+
+    await service.analyzeJourney(journey.id, "initial");
+
+    // Several signature options were surfaced across distinct favorites — not one fixed #1 — so
+    // the ranker had a real best-fit choice for this drive.
+    const detailed = store.listResolvedTracksDetailed(journey.id);
+    const anchors = detailed.filter(
+      (track) => track.candidateLens === "taste-anchor:opening",
+    );
+    const anchorArtists = new Set(anchors.map((track) => track.artist));
+    expect(anchors.length).toBeGreaterThanOrEqual(2);
+    expect(anchorArtists.size).toBeGreaterThanOrEqual(2);
+    for (const artist of anchorArtists) {
+      expect(["Miley Cyrus", "Harry Styles", "Dua Lipa"]).toContain(artist);
+    }
+
+    // The opener that actually plays is one of the favorites' signature tracks.
+    const session = store.getPlaybackSession(journey.id);
+    expect(session?.activeTrack?.artist).toBeDefined();
+    expect(["Miley Cyrus", "Harry Styles", "Dua Lipa"]).toContain(
+      session?.activeTrack?.artist,
+    );
   });
 });
