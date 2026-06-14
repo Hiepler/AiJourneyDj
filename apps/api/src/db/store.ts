@@ -431,8 +431,8 @@ export class Store {
     const id = crypto.randomUUID();
     this.db.run(
       `INSERT OR IGNORE INTO resolved_tracks
-       (id, journey_id, candidate_id, provider, provider_track_id, provider_uri, external_url, is_playable, market, album_art_url, artist, title, isrc, popularity, explicit, release_date, chart_rank, chart_playcount, chart_country, chart_source, mood_tags_json, match_confidence, match_reason, added_to_playlist, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+       (id, journey_id, candidate_id, provider, provider_track_id, provider_uri, external_url, is_playable, market, album_art_url, artist, title, isrc, popularity, explicit, release_date, chart_rank, chart_playcount, chart_country, chart_source, mood_tags_json, energy, valence, match_confidence, match_reason, added_to_playlist, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
       [
         id,
         journeyId,
@@ -455,6 +455,8 @@ export class Store {
         track.chartCountry,
         track.chartSource,
         track.moodTags ? JSON.stringify(track.moodTags) : undefined,
+        typeof track.energy === "number" ? track.energy : undefined,
+        typeof track.valence === "number" ? track.valence : undefined,
         track.matchConfidence,
         track.matchReason,
         now(),
@@ -720,6 +722,14 @@ export class Store {
         moodTags: row.mood_tags_json
           ? (JSON.parse(row.mood_tags_json) as string[])
           : undefined,
+        energy:
+          row.energy === null || row.energy === undefined
+            ? undefined
+            : row.energy,
+        valence:
+          row.valence === null || row.valence === undefined
+            ? undefined
+            : row.valence,
         matchConfidence: row.match_confidence,
         matchReason: row.match_reason,
         addedToPlaylist: row.added_to_playlist === 1,

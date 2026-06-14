@@ -305,6 +305,9 @@ export function migrate(db: Db): void {
   tryAddColumn(db, "resolved_tracks", "chart_country", "TEXT");
   tryAddColumn(db, "resolved_tracks", "chart_source", "TEXT");
   tryAddColumn(db, "resolved_tracks", "mood_tags_json", "TEXT");
+  // Per-track feel estimates (0…1 energy, -1…+1 valence) used to sequence the played arc.
+  tryAddColumn(db, "resolved_tracks", "energy", "REAL");
+  tryAddColumn(db, "resolved_tracks", "valence", "REAL");
 
   db.run("INSERT OR IGNORE INTO users (id, created_at) VALUES (?, ?)", [
     "local",

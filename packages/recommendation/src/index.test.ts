@@ -31,6 +31,7 @@ import {
   rankResolvedTracksForPolicy,
   repairJsonString,
   moodTagsForContext,
+  orderByEnergyArc,
   resolveXaiModel,
   salvageCandidatesFromText,
   selectJourneyLenses,
@@ -777,6 +778,110 @@ describe("recommendation", () => {
     expect(
       set.every((candidate) => candidate.scores && candidate.scores.total > 0),
     ).toBe(true);
+  });
+
+  it("orderByEnergyArc follows the curve, keeps the opener, and smooths transitions", () => {
+    type Item = { id: string; energy: number; valence: number };
+    const energyOf = (item: Item) => item.energy;
+    const valenceOf = (item: Item) => item.valence;
+    // A rising curve; deliberately shuffle items so a naive pass would whiplash.
+    const curve = [0.2, 0.4, 0.6, 0.8, 0.95];
+    const items: Item[] = [
+      { id: "open", energy: 0.2, valence: 0.5 },
+      { id: "hi", energy: 0.95, valence: 0.5 },
+      { id: "lo", energy: 0.35, valence: 0.5 },
+      { id: "mid", energy: 0.6, valence: 0.5 },
+      { id: "peak", energy: 0.85, valence: 0.5 },
+    ];
+
+    const ordered = orderByEnergyArc(items, curve, energyOf, valenceOf, {
+      keepFirst: true,
+    });
+
+    // Opener is pinned; the rest climb with the curve rather than jumping around.
+    expect(ordered.map((item) => item.id)).toEqual([
+      "open",
+      "lo",
+      "mid",
+      "peak",
+      "hi",
+    ]);
+    // No adjacent whiplash: every step is a gentle climb, never a big drop.
+    for (let i = 1; i < ordered.length; i += 1) {
+      expect(ordered[i].energy).toBeGreaterThanOrEqual(ordered[i - 1].energy);
+    }
+  });
+
+  it("buildJourneySet keeps the LLM energy estimates on the sequenced set", () => {
+    const brief = buildMusicalBrief(context);
+    const cands: SongCandidate[] = [
+      {
+        artist: "A",
+        title: "1",
+        genre: "ambient",
+        energy: 0.2,
+        valence: 0.4,
+        reason: "",
+        source: "gemini",
+        confidence: 0.9,
+      },
+      {
+        artist: "B",
+        title: "2",
+        genre: "electronic",
+        energy: 0.9,
+        valence: 0.6,
+        reason: "",
+        source: "gemini",
+        confidence: 0.88,
+      },
+      {
+        artist: "C",
+        title: "3",
+        genre: "indie",
+        energy: 0.55,
+        valence: 0.5,
+        reason: "",
+        source: "gemini",
+        confidence: 0.85,
+      },
+      {
+        artist: "D",
+        title: "4",
+        genre: "soul",
+        energy: 0.45,
+        valence: 0.5,
+        reason: "",
+        source: "gemini",
+        confidence: 0.83,
+      },
+      {
+        artist: "E",
+        title: "5",
+        genre: "rock",
+        energy: 0.8,
+        valence: 0.5,
+        reason: "",
+        source: "gemini",
+        confidence: 0.8,
+      },
+    ];
+
+    const set = buildJourneySet(cands, brief, 5);
+    expect(set).toHaveLength(5);
+    expect(set.map((candidate) => candidate.role)).toEqual([
+      "anchor",
+      "momentum",
+      "bridge",
+      "surprise",
+      "resolution",
+    ]);
+    // Sequencing is a permutation: every per-track energy estimate survives intact for downstream
+    // curve-fit and flow, and the set is still five distinct songs.
+    expect(set.every((candidate) => typeof candidate.energy === "number")).toBe(
+      true,
+    );
+    expect(new Set(set.map((candidate) => candidate.energy)).size).toBe(5);
   });
 
   it("balanceCandidates dedupes and spreads across decades/genres/artists", () => {
