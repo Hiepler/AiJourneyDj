@@ -325,6 +325,8 @@ export interface JourneyRecord {
   stoppedAtIso?: string;
   /** Planned total trip duration in minutes, snapshotted from the first ETA. */
   plannedDurationMinutes?: number;
+  /** Last meaningful activity (telemetry / owned playback / user action) — drives inactivity auto-stop. */
+  lastActiveAtIso?: string;
 }
 
 export interface PlaybackSession {

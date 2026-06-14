@@ -19,6 +19,13 @@ describe("env", () => {
     expect(config.journeyRefreshMs).toBe(720_000);
   });
 
+  it("defaults the takeover guard on and inactivity auto-stop to 45 minutes", () => {
+    const config = loadConfig({});
+
+    expect(config.PLAYBACK_RESPECT_USER_TAKEOVER).toBe(true);
+    expect(config.JOURNEY_INACTIVITY_STOP_MINUTES).toBe(45);
+  });
+
   it("provides defaults for the Spotify playback-reconciliation poller", () => {
     const config = loadConfig({});
 

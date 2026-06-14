@@ -16,6 +16,7 @@ import type {
 import { normalizeText, songKey } from "@ai-journey-dj/core";
 import { derivePhase } from "@ai-journey-dj/telemetry";
 import {
+  playbackOwnership,
   reconcilePlaybackModel,
   shouldRegenerate,
 } from "../playback/reconcile.js";
@@ -62,6 +63,24 @@ import {
 export const DEFAULT_TASTE_WEIGHT = 0.4;
 /** Hard cap on the top-artists fetch so taste loading can never block a journey. */
 const TASTE_FETCH_TIMEOUT_MS = 8_000;
+/**
+ * Analyze reasons triggered by an explicit user action — these may push to the device even if the
+ * user has "taken over". Anything not listed here is a background/automated pass that the
+ * takeover guard can suppress (time-window, low-buffer, skip-refill, moment:*, phase-change, …).
+ */
+const USER_INITIATED_REASONS = new Set([
+  "initial",
+  "manual",
+  "device-ready",
+  "skip-next",
+  "skip-previous",
+  "music-wish",
+  "music-wish-undo",
+  "kids-mode",
+  "geo-manual",
+  "taste-override",
+  "tidal-fallback",
+]);
 const COUNTRY_NAME_BY_CODE: Record<string, string> = {
   AT: "Austria",
   CH: "Switzerland",
@@ -204,6 +223,8 @@ export class JourneyService {
       this.store.setPlannedDurationMinutes(journey.id, event.etaMinutes);
     }
     this.store.saveTelemetry(journey.id, event, phase);
+    // Telemetry arriving means the car is on / driving → keep the journey alive (inactivity auto-stop).
+    this.store.touchJourneyActivity(journey.id);
     if (event.countryName || event.countryCode || event.coarseRegion) {
       // Persist the last real GPS fix so the country survives telemetry gaps / app reloads.
       this.store.setLastGeo(journey.id, {
@@ -1066,6 +1087,7 @@ export class JourneyService {
       activeTrack,
       queueTracks,
       shouldStart: true,
+      automated: false, // device registration is a user action
     });
 
     const playedActiveTrack = playbackApplied.deviceReachable
@@ -1153,6 +1175,7 @@ export class JourneyService {
             activeTrack: picked.activeTrack,
             queueTracks: picked.queueTracks,
             shouldStart: true,
+            automated: false, // explicit skip is a user action
           });
         }
         return this.store.getPlaybackSession(journeyId) as PlaybackSession;
@@ -2004,6 +2027,7 @@ export class JourneyService {
             activeTrack?.providerUri &&
             (!session?.activeTrack || session.status !== "playing"),
           ),
+          automated: !USER_INITIATED_REASONS.has(reason),
         })
       : { deviceReachable: false };
 
@@ -2350,6 +2374,7 @@ export class JourneyService {
           activeTrack: args.activeTrack,
           queueTracks: args.queueTracks,
           shouldStart: true,
+          automated: false, // playExact is only reached via explicit skip/reclaim
         });
       }
       if (isSpotifyRateLimitError(error)) {
@@ -2458,7 +2483,42 @@ export class JourneyService {
     activeTrack?: ResolvedTrack;
     queueTracks: ResolvedTrack[];
     shouldStart: boolean;
+    /** True for background/automated passes — these are suppressed when the user has taken over. */
+    automated: boolean;
   }): Promise<{ deviceReachable: boolean; rateLimited?: boolean }> {
+    // Don't hijack the user: on automated passes, bail if they're playing a podcast or have moved
+    // playback to another device. (Foreign off-journey tracks are handled in reconcileSpotifyPlayback.)
+    if (args.automated && this.config.PLAYBACK_RESPECT_USER_TAKEOVER) {
+      const state = await this.spotifyAdapter
+        .getPlaybackState({
+          accessToken: args.accessToken,
+          market: this.config.SPOTIFY_MARKET,
+        })
+        .catch(() => undefined);
+      if (
+        state &&
+        playbackOwnership({
+          isPlaying: state.isPlaying,
+          currentlyPlayingType: state.currentlyPlayingType,
+          activeDeviceId: state.activeDeviceId,
+          journeyDeviceId: args.deviceId,
+        }) === "handed-over"
+      ) {
+        const session = this.store.getPlaybackSession(args.journeyId);
+        if (session && session.status !== "external") {
+          this.saveSession({
+            ...session,
+            status: "external",
+            lastHeartbeatAt: new Date().toISOString(),
+          });
+        }
+        this.logger.info(
+          { journeyId: args.journeyId, device: state.activeDeviceId },
+          "playback.suppressed_user_takeover",
+        );
+        return { deviceReachable: false };
+      }
+    }
     const deviceId = await this.spotifyAdapter.resolvePlaybackDeviceId({
       accessToken: args.accessToken,
       preferredDeviceId: args.deviceId,
@@ -2594,6 +2654,31 @@ export class JourneyService {
     }
 
     for (const journey of this.store.listActiveJourneys()) {
+      // Inactivity auto-stop: car off overnight (no telemetry / no owned playback for a long
+      // time) → end the journey so it stops curating and never silently resumes the next day.
+      const inactivityMs = this.config.JOURNEY_INACTIVITY_STOP_MINUTES * 60_000;
+      if (inactivityMs > 0) {
+        const lastActive = new Date(
+          journey.lastActiveAtIso ?? journey.createdAtIso,
+        ).getTime();
+        if (Date.now() - lastActive > inactivityMs) {
+          this.store.audit(
+            journey.id,
+            "journey.auto_stopped",
+            `Auto-stopped after ${this.config.JOURNEY_INACTIVITY_STOP_MINUTES} min of inactivity.`,
+            { reason: "inactivity" },
+          );
+          await this.stopJourney(journey.id);
+          continue;
+        }
+      }
+
+      const session = this.store.getPlaybackSession(journey.id);
+      // The user has taken over playback (podcast / another device) — don't re-curate or push.
+      if (session?.status === "external") {
+        continue;
+      }
+
       const latest = this.store.latestPlaylistUpdate(journey.id);
       if (!latest) {
         await this.analyzeJourney(journey.id, "recovery");
@@ -2601,7 +2686,6 @@ export class JourneyService {
       }
 
       const ageMs = Date.now() - new Date(latest.createdAtIso).getTime();
-      const session = this.store.getPlaybackSession(journey.id);
       const unresolvedBuffer =
         journey.provider === "spotify"
           ? (session?.queuedTrackIds.length ?? 0)
@@ -2700,6 +2784,23 @@ export class JourneyService {
       return "idle";
     }
 
+    // User took over: a podcast/episode is on air, or playback moved to another device. Don't
+    // reclaim or refill — mark the session external and back off until they return.
+    if (
+      this.config.PLAYBACK_RESPECT_USER_TAKEOVER &&
+      playbackOwnership({
+        isPlaying: state.isPlaying,
+        currentlyPlayingType: state.currentlyPlayingType,
+        activeDeviceId: state.activeDeviceId,
+        journeyDeviceId: journey.spotifyDeviceId ?? session.deviceId,
+      }) === "handed-over"
+    ) {
+      if (session.status !== "external") {
+        this.saveSession({ ...session, status: "external", lastHeartbeatAt: now });
+      }
+      return "external";
+    }
+
     const stored = this.store
       .listResolvedTracks(journeyId)
       .filter((track) => track.provider === "spotify");
@@ -2721,6 +2822,15 @@ export class JourneyService {
       state.activeProviderTrackId,
       new Set(stored.map((track) => track.providerTrackId)),
     );
+
+    // A journey track is genuinely on air → the journey is alive (feeds inactivity auto-stop).
+    if (
+      result.kind === "same" ||
+      result.kind === "skipped" ||
+      result.kind === "drifted"
+    ) {
+      this.store.touchJourneyActivity(journeyId);
+    }
 
     if (result.kind === "drifted") {
       // One of OUR journey tracks is on air, just not at a position the 6-slot model shows.
