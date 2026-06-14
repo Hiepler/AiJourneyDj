@@ -149,6 +149,12 @@ const schema = z.object({
   WISH_QUOTA_MAX_SLOTS: z.coerce.number().int().min(0).max(5).default(3),
   PLAYBACK_RECLAIM_ENABLED: envBoolean(true),
   PLAYBACK_RECLAIM_COOLDOWN_SECONDS: z.coerce.number().int().min(10).default(120),
+  // Don't hijack the user: suppress automated pushes when they've taken over playback
+  // (podcast/episode, a foreign device, or an off-journey track). Kill-switch, default on.
+  PLAYBACK_RESPECT_USER_TAKEOVER: envBoolean(true),
+  // Auto-stop a journey after N minutes with no playback/telemetry activity (e.g. car off
+  // overnight) so it stops curating and never silently resumes the next day. 0 disables.
+  JOURNEY_INACTIVITY_STOP_MINUTES: z.coerce.number().int().min(0).default(45),
   // Pre-warm threshold: keep at least this many unused resolved tracks per journey so
   // refills never wait on LLM generation mid-drive (0 disables pre-warming).
   CANDIDATE_POOL_FLOOR: z.coerce.number().int().min(0).max(50).default(6),

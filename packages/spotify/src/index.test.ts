@@ -900,3 +900,51 @@ describe("spotify playback helpers", () => {
     ).toBe(true);
   });
 });
+
+describe("getPlaybackState", () => {
+  it("captures currently_playing_type and the active device", async () => {
+    const fetchImpl: typeof fetch = async () =>
+      new Response(
+        JSON.stringify({
+          is_playing: true,
+          currently_playing_type: "episode",
+          device: { id: "phone-xyz", name: "Pixel" },
+          item: { id: "ep1", uri: "spotify:episode:ep1", duration_ms: 1800000 },
+          progress_ms: 1000,
+          queue: [],
+        }),
+        { status: 200 },
+      );
+    const adapter = new OfficialSpotifyAdapter({
+      baseUrl: "https://api.spotify.test/v1",
+      fetchImpl,
+      wait: async () => undefined,
+    });
+    const state = await adapter.getPlaybackState({ accessToken: "t", market: "DE" });
+    expect(state.currentlyPlayingType).toBe("episode");
+    expect(state.activeDeviceId).toBe("phone-xyz");
+    expect(state.activeDeviceName).toBe("Pixel");
+    expect(state.isPlaying).toBe(true);
+  });
+
+  it("leaves the new fields undefined when /me/player omits them (no crash)", async () => {
+    const fetchImpl: typeof fetch = async () =>
+      new Response(
+        JSON.stringify({
+          is_playing: true,
+          item: { id: "t1", uri: "spotify:track:t1", duration_ms: 200000 },
+          queue: [],
+        }),
+        { status: 200 },
+      );
+    const adapter = new OfficialSpotifyAdapter({
+      baseUrl: "https://api.spotify.test/v1",
+      fetchImpl,
+      wait: async () => undefined,
+    });
+    const state = await adapter.getPlaybackState({ accessToken: "t", market: "DE" });
+    expect(state.activeProviderTrackId).toBe("t1");
+    expect(state.currentlyPlayingType).toBeUndefined();
+    expect(state.activeDeviceId).toBeUndefined();
+  });
+});
