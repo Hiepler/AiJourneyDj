@@ -806,6 +806,8 @@ export class SpotifyResolver {
                 chartCountry: candidate.chartCountry,
                 chartSource: candidate.chartSource,
                 moodTags: candidate.moodTags,
+                energy: candidate.energy,
+                valence: candidate.valence,
                 matchConfidence: best.confidence,
                 matchReason: best.reason,
               }
@@ -852,6 +854,8 @@ export class SpotifyResolver {
               chartCountry: candidate.chartCountry,
               chartSource: candidate.chartSource,
               moodTags: candidate.moodTags,
+              energy: candidate.energy,
+              valence: candidate.valence,
               matchConfidence: 0.9,
               matchReason: "artist wish match",
             };
@@ -906,6 +910,8 @@ function withCandidateMetadata(
     chartCountry: track.chartCountry ?? candidate.chartCountry,
     chartSource: track.chartSource ?? candidate.chartSource,
     moodTags: track.moodTags ?? candidate.moodTags,
+    energy: track.energy ?? candidate.energy,
+    valence: track.valence ?? candidate.valence,
   };
 }
 

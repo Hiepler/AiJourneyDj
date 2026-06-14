@@ -47,8 +47,12 @@ import {
   fallbackCandidates,
   lastfmTracksToCandidates,
   driveStoryAct,
+  energyCurveForContext,
   makeVarietyContext,
   momentumRadioCandidates,
+  orderByEnergyArc,
+  resolvedTrackEnergy,
+  resolvedTrackValence01,
   parseMusicWish,
   rankResolvedTracksForPolicy,
   rotateWindow,
@@ -2016,6 +2020,23 @@ export class JourneyService {
     });
     selected.length = 0;
     selected.push(...quotaSelected);
+
+    // Sequence the freshly added tracks along the energy curve so the upcoming buffer plays as a
+    // shaped arc rather than a score-sorted list. The first new pick (a priority/anchor/wish slot)
+    // is pinned; the already-queued tracks are left in place — Spotify's queue is FIFO and cannot
+    // be reordered — and the tail continues their arc via baseIndex.
+    if (this.config.ENERGY_ARC_SEQUENCING_ENABLED && selected.length > 2) {
+      const arcCurve = energyCurveForContext(scoutContext);
+      const arranged = orderByEnergyArc(
+        selected,
+        arcCurve,
+        (track) => resolvedTrackEnergy(track),
+        (track) => resolvedTrackValence01(track),
+        { keepFirst: true, baseIndex: preservedQueued.length },
+      );
+      selected.length = 0;
+      selected.push(...arranged);
+    }
 
     session = this.store.getPlaybackSession(journeyId);
     const deviceId = journey.spotifyDeviceId ?? session?.deviceId;

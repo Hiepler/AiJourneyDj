@@ -753,6 +753,14 @@ function mapCandidateItems(
       year: typeof item.year === "number" ? item.year : undefined,
       isrc: typeof item.isrc === "string" ? item.isrc : undefined,
       genre: typeof item.genre === "string" ? item.genre : undefined,
+      energy:
+        typeof item.energy === "number" && Number.isFinite(item.energy)
+          ? clamp01(item.energy)
+          : undefined,
+      valence:
+        typeof item.valence === "number" && Number.isFinite(item.valence)
+          ? Math.max(-1, Math.min(1, item.valence))
+          : undefined,
       lens: typeof item.lens === "string" ? item.lens : undefined,
       role: parseCandidateRole(item.role),
       scores: parseCandidateScores(item.scores),
@@ -2110,7 +2118,8 @@ export function buildLensPrompt(
       : brief.passengerMode === "family"
         ? "Family mode: prefer clean/radio-friendly current pop, dance-pop, upbeat singalong tracks; avoid explicit, aggressive, gloomy, sleepy, or novelty children-song picks."
         : "",
-    `Return ONLY JSON {"songs":[{"artist","title","year","genre","reason","role"}]} with exactly ${count} real, released songs.`,
+    `For each song also give "energy" (0=calm … 1=high) and "valence" (-1=dark … +1=bright) — your honest read of how the recording actually feels. These sequence the set into a smooth arc, so be discerning rather than defaulting to the middle.`,
+    `Return ONLY JSON {"songs":[{"artist","title","year","genre","reason","role","energy","valence"}]} with exactly ${count} real, released songs.`,
     `If you include role, use one of: ${SET_ROLES.join(", ")}.`,
     "Vary artists; no duplicates. Keep 'reason' to one short clause tying the pick to the drive.",
     "Never include streaming-service data, raw GPS coordinates, VINs, or user-library references.",
@@ -2132,12 +2141,114 @@ const GENRE_ENERGY_HINTS: Array<[RegExp, number]> = [
   [/\b(electronic|house|techno|rock|hip-hop|hip hop)\b/i, 0.78],
 ];
 
-function inferredCandidateEnergy(candidate: SongCandidate): number {
-  const text = [candidate.genre, candidate.lens, candidate.reason]
-    .filter(Boolean)
-    .join(" ");
+/** Infer energy (0…1) from free text — genre/lens/reason — when no explicit estimate exists. */
+function inferEnergyFromText(text: string): number {
   const match = GENRE_ENERGY_HINTS.find(([pattern]) => pattern.test(text));
   return match?.[1] ?? 0.55;
+}
+
+/**
+ * Recording energy 0…1. Prefer the LLM's per-track estimate (a real read of the song) and fall
+ * back to genre/lens/reason keywords only when it's missing.
+ */
+function inferredCandidateEnergy(candidate: SongCandidate): number {
+  if (
+    typeof candidate.energy === "number" &&
+    Number.isFinite(candidate.energy)
+  ) {
+    return clamp01(candidate.energy);
+  }
+  return inferEnergyFromText(
+    [candidate.genre, candidate.lens, candidate.reason]
+      .filter(Boolean)
+      .join(" "),
+  );
+}
+
+/** Valence normalized to 0…1 (0=dark, 1=bright) for transition-distance math; 0.5 when unknown. */
+function candidateValence01(candidate: SongCandidate): number {
+  return typeof candidate.valence === "number" &&
+    Number.isFinite(candidate.valence)
+    ? clamp01((candidate.valence + 1) / 2)
+    : 0.5;
+}
+
+/**
+ * Order items into a listening arc: each position is pulled toward its target on the energy
+ * curve while large energy/valence jumps between neighbours are penalized, so the set plays as a
+ * shaped journey instead of a score-sorted list. Greedy and deterministic (O(n²); n is tiny).
+ *
+ * `keepFirst` pins the opener (a chosen anchor or priority slot); `baseIndex` offsets the curve
+ * lookup so an appended tail continues an already-queued arc instead of restarting it.
+ */
+export function orderByEnergyArc<T>(
+  items: T[],
+  curve: number[],
+  energyOf: (item: T) => number,
+  valenceOf: (item: T) => number,
+  options: { keepFirst?: boolean; baseIndex?: number } = {},
+): T[] {
+  if (items.length <= 2 || curve.length === 0) return [...items];
+  const remaining = [...items];
+  const ordered: T[] = [];
+  const base = options.baseIndex ?? 0;
+  if (options.keepFirst) {
+    ordered.push(remaining.shift() as T);
+  }
+  while (remaining.length > 0) {
+    const target =
+      curve[(base + ordered.length) % curve.length] ?? curve[curve.length - 1];
+    const prev = ordered[ordered.length - 1];
+    const hasPrev = prev !== undefined;
+    const prevEnergy = hasPrev ? energyOf(prev) : target;
+    const prevValence = hasPrev ? valenceOf(prev) : 0.5;
+    let bestIndex = 0;
+    let bestCost = Infinity;
+    for (let index = 0; index < remaining.length; index += 1) {
+      const energy = energyOf(remaining[index]);
+      const valence = valenceOf(remaining[index]);
+      const curveCost = Math.abs(energy - target);
+      const smoothCost = hasPrev
+        ? Math.abs(energy - prevEnergy) + 0.5 * Math.abs(valence - prevValence)
+        : 0;
+      const cost = curveCost * 0.6 + smoothCost * 0.4;
+      if (cost < bestCost) {
+        bestCost = cost;
+        bestIndex = index;
+      }
+    }
+    ordered.push(remaining.splice(bestIndex, 1)[0]);
+  }
+  return ordered;
+}
+
+/**
+ * Recording energy (0…1) for a resolved track — uses the estimate carried from the candidate,
+ * else infers from the match reason and mood tags so pooled tracks still place sensibly.
+ */
+export function resolvedTrackEnergy(
+  track: Pick<ResolvedTrack, "energy" | "matchReason" | "moodTags">,
+): number {
+  if (typeof track.energy === "number" && Number.isFinite(track.energy)) {
+    return clamp01(track.energy);
+  }
+  return inferEnergyFromText(
+    `${track.matchReason ?? ""} ${(track.moodTags ?? []).join(" ")}`,
+  );
+}
+
+/** Valence normalized to 0…1 for a resolved track; 0.5 when unknown. */
+export function resolvedTrackValence01(
+  track: Pick<ResolvedTrack, "valence">,
+): number {
+  return typeof track.valence === "number" && Number.isFinite(track.valence)
+    ? clamp01((track.valence + 1) / 2)
+    : 0.5;
+}
+
+/** The intended five-point energy arc for a drive context — exposed for downstream sequencing. */
+export function energyCurveForContext(context: JourneyContext): number[] {
+  return buildMusicalBrief(context).energyCurve;
 }
 
 function genreKey(candidate: SongCandidate): string {
@@ -2322,7 +2433,19 @@ export function buildJourneySet(
     usedDecades.set(decade, (usedDecades.get(decade) ?? 0) + 1);
   }
 
-  return selected;
+  // Sequence the chosen set along the energy curve so adjacent tracks flow (no whiplash), while
+  // keeping the opener (the anchor) fixed. Roles follow final position.
+  const sequenced = orderByEnergyArc(
+    selected,
+    brief.energyCurve,
+    (candidate) => inferredCandidateEnergy(candidate),
+    (candidate) => candidateValence01(candidate),
+    { keepFirst: true },
+  );
+  return sequenced.map((candidate, index) => ({
+    ...candidate,
+    role: SET_ROLES[index % SET_ROLES.length],
+  }));
 }
 
 /**
