@@ -275,6 +275,8 @@ export function migrate(db: Db): void {
   tryAddColumn(db, "journeys", "planned_duration_minutes", "INTEGER");
   tryAddColumn(db, "journeys", "planned_duration_set_at", "TEXT");
   tryAddColumn(db, "journeys", "kids_mode", "INTEGER NOT NULL DEFAULT 0");
+  // Journey leg counter — incremented when a charge stop is detected (multi-leg "chapters").
+  tryAddColumn(db, "journeys", "leg_index", "INTEGER NOT NULL DEFAULT 0");
   // Last meaningful activity timestamp, for inactivity auto-stop (car off overnight, etc.).
   tryAddColumn(db, "journeys", "last_active_at", "TEXT");
   // Last-known location fallback (seeded from destination, refreshed by browser geo / telemetry fixes).

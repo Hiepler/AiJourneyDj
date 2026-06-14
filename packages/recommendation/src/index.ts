@@ -12,8 +12,21 @@ import { clampConfidence, normalizeText, songKey } from "@ai-journey-dj/core";
 import { seededJitter } from "./variety.js";
 import { looksLikeSpokenWord } from "./spokenWord.js";
 import type { LastfmChartTrack } from "./lastfm.js";
-import type { TimeBand, TripSegment } from "./context-signals.js";
-import { timeOfDayBand, tripArc, alertnessFloor, ALERTNESS_FLOOR_BASE, ALERTNESS_FLOOR_SLOPE } from "./context-signals.js";
+import type {
+  TimeBand,
+  TripSegment,
+  TripArchetype,
+} from "./context-signals.js";
+import {
+  timeOfDayBand,
+  tripArc,
+  alertnessFloor,
+  ALERTNESS_FLOOR_BASE,
+  ALERTNESS_FLOOR_SLOPE,
+  archetypeStrategy,
+  dayContextFrom,
+  tripArchetype,
+} from "./context-signals.js";
 import type { MoodKey } from "./moods.js";
 import { MOODS, resolveMood } from "./moods.js";
 
@@ -22,11 +35,25 @@ export { LastfmChartClient, type LastfmChartTrack } from "./lastfm.js";
 export {
   timeOfDayBand,
   tripArc,
+  effectiveTripMinutes,
   alertnessFloor,
   ALERTNESS_FLOOR_BASE,
   ALERTNESS_FLOOR_SLOPE,
+  archetypeStrategy,
+  dayContextFrom,
+  tripArchetype,
+  weatherFeel,
 } from "./context-signals.js";
-export type { TimeBand, TripSegment, TripArc, PaceTrend } from "./context-signals.js";
+export type {
+  TimeBand,
+  TripSegment,
+  TripArc,
+  PaceTrend,
+  TripArchetype,
+  DayKind,
+  DayContext,
+  ArchetypeStrategy,
+} from "./context-signals.js";
 export { MOODS, resolveMood } from "./moods.js";
 export type { MoodKey, MoodDefinition, ResolvedMood } from "./moods.js";
 
@@ -1074,6 +1101,14 @@ export interface MusicalBrief {
   timeBand: TimeBand;
   /** Trip-arc segment used to shape the energy curve. */
   tripSegment: TripSegment;
+  /** Coarse trip archetype (errand/commute/day_trip/long_haul) shaping the macro strategy. */
+  tripArchetype: TripArchetype;
+  /** Day-of-week + daypart, e.g. "monday_morning" — for prompt phrasing. */
+  dayContext: string;
+  /** Journey leg (0 = first leg; >0 after charge stops) so each leg can open its own arc. */
+  legIndex?: number;
+  /** Currently-playing track, so the next picks can flow naturally from it. */
+  nowPlaying?: { artist: string; title: string };
   /** Resolved primary mood key. */
   moodKey: MoodKey;
   /** 0..1 fatigue-aware floor that was applied to target energy (0 = none). */
@@ -1533,6 +1568,10 @@ export function buildMusicalBrief(
     context.plannedDurationMinutes,
     context.etaMinutes,
   );
+  // Gestalt of the whole drive: a 20-min weekend errand vs a weekday commute vs a long haul.
+  const dayCtx = dayContextFrom(context.localTimeIso, band);
+  const archetype = tripArchetype(arc.effectiveTotalMin, band, dayCtx.dayKind);
+  const strategy = archetypeStrategy(archetype);
   const mood = resolveMood(context, { band, arc });
   const primaryMood = MOODS[mood.primary];
   const secondaryMood = mood.secondary ? MOODS[mood.secondary] : undefined;
@@ -1597,7 +1636,9 @@ export function buildMusicalBrief(
   // Adaptive Drive Mode override (comfort feature — biases selection only, never controls the car).
   // Calm takes energy down and leans familiar/instrumental; focus lifts energy to fight monotony.
   let intensityLabel = profile.intensity;
-  let tasteWeight = clamp01(context.tasteWeight ?? 0);
+  // Archetype familiarity bias first (errand/commute lean familiar); calm/family overrides below
+  // still win on top of it.
+  let tasteWeight = clamp01((context.tasteWeight ?? 0) + strategy.tasteWeightBias);
   const driveMode: DriveMode = assessment?.mode ?? "neutral";
   if (assessment?.mode === "calm") {
     targetEnergy = clamp01(targetEnergy - 0.2 * assessment.intensity);
@@ -1667,8 +1708,17 @@ export function buildMusicalBrief(
   // propagates across the whole five-track set, not just the target.
   const curvePoint = (delta: number): number =>
     Math.min(1, Math.max(energyFloor, targetEnergy + delta));
-  const energyCurve =
-    arc.segment === "closing"
+  const energyCurve = strategy.compressOpening
+    ? // Errand short-circuit: a short hop has no time for a slow build — stay near target the
+      // whole way and get straight to beloved songs.
+      [
+        curvePoint(0),
+        curvePoint(0.02),
+        curvePoint(0),
+        curvePoint(0.02),
+        curvePoint(0),
+      ]
+    : arc.segment === "closing"
       ? [
           curvePoint(0),
           curvePoint(0.05),
@@ -1760,6 +1810,10 @@ export function buildMusicalBrief(
     valence,
     timeBand: band,
     tripSegment: arc.segment,
+    tripArchetype: archetype,
+    dayContext: dayCtx.daypartKey,
+    legIndex: context.legIndex,
+    nowPlaying: context.nowPlaying,
     moodKey: mood.primary,
     fatigueRisk,
     weatherFeel: context.weatherFeel,
@@ -1990,6 +2044,20 @@ export function driveModePromptLine(brief: MusicalBrief): string {
   return "";
 }
 
+/** One-line macro-strategy hint per trip archetype for the LLM. */
+function archetypePromptHint(archetype: TripArchetype): string {
+  switch (archetype) {
+    case "errand":
+      return "Short hop — go straight to beloved, familiar songs; no slow build.";
+    case "commute":
+      return "Routine drive — comfortable, momentum-keeping picks that wear well.";
+    case "day_trip":
+      return "A proper outing — shape a satisfying arc with a little discovery.";
+    case "long_haul":
+      return "Long journey — room to wander into deeper cuts and discovery.";
+  }
+}
+
 export function buildLensPrompt(
   lens: SongLens,
   brief: MusicalBrief,
@@ -2013,6 +2081,13 @@ export function buildLensPrompt(
     `Target energy: ${brief.targetEnergy.toFixed(2)} (0=calm, 1=high). Five-track energy curve: ${brief.energyCurve.map((value) => value.toFixed(2)).join(" -> ")}.`,
     `Intensity: ${brief.intensity}. Focus level: ${brief.focusLevel.toFixed(2)}. Social energy: ${brief.socialEnergy}. Mood: ${brief.moodWords.join(", ")}.`,
     `Valence: ${brief.valence.toFixed(2)} (-1 dark … +1 bright). Mood profile: ${brief.moodKey} (${brief.timeBand}, ${brief.tripSegment}).`,
+    `Trip shape: ${brief.tripArchetype} on a ${brief.dayContext.replace(/_/g, " ")}. ${archetypePromptHint(brief.tripArchetype)}`,
+    typeof brief.legIndex === "number" && brief.legIndex > 0
+      ? `This is leg ${brief.legIndex + 1} of the journey (after a charge stop) — open a fresh chapter with its own arc.`
+      : "",
+    brief.nowPlaying
+      ? `Now playing: "${brief.nowPlaying.title}" by ${brief.nowPlaying.artist}. Make the next picks flow naturally from it — keep era/genre/energy continuity and avoid jarring transitions, but do NOT repeat this artist or song.`
+      : "",
     `Drive signals: ${brief.driveSignals.join(", ")}.`,
     driveModePromptLine(brief),
     `Span eras (${brief.eras}) and vary genres broadly (e.g. ${brief.genres.join(", ")}).`,
