@@ -187,6 +187,25 @@ export async function registerJourneyRoutes(
     return service.setKidsMode(id, enabled);
   });
 
+  // Browser-geolocation fallback: the web client posts device coordinates so the engine knows the
+  // country/region even without live Tesla GPS. Server reverse-geocodes; best-effort (always 202).
+  app.post("/journeys/:id/geo", async (request, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const { lat, lon } = z
+      .object({ lat: z.number().min(-90).max(90), lon: z.number().min(-180).max(180) })
+      .parse(request.body);
+    service.getJourneyOrThrow(id);
+    await service.setBrowserGeo(id, lat, lon);
+    return reply.code(202).send({ ok: true });
+  });
+
+  // Manual location override (driver types a place, or blank to revert to auto). Re-curates.
+  app.post("/journeys/:id/geo/manual", async (request) => {
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const { place } = z.object({ place: z.string() }).parse(request.body);
+    return service.setManualGeo(id, place);
+  });
+
   // Device-independent playback position for synced karaoke (works on car/phone Connect, not just
   // the browser SDK). The client interpolates between polls with a local clock for smooth highlighting.
   app.get("/journeys/:id/playback-progress", async (request) => {

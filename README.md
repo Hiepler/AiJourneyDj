@@ -73,9 +73,11 @@ if a data source is missing.
 
 The brief **selects the right generators for this drive** from a lens catalog — focused/low-
 distraction, cinematic warmth, steady momentum, a sharpened **geo-soundtrack lens** (artists and songs
-with a *real* connection to the route and destination, found via web search), a **deep-cut explorer
-lens** (B-sides, regional scenes, fresh releases — no superstars), a timeless anchor, a leftfield
-bridge — instead of always running the same four. Chosen lenses run as parallel Gemini calls
+with a *real* connection to the route and destination, found via web search), a **local-language lens**
+(when the country is known, a noticeable share of current songs in the local language by homegrown
+artists — French near Montpellier, Italian near Garda — so the drive feels like where you are), a
+**deep-cut explorer lens** (B-sides, regional scenes, fresh releases — no superstars), a timeless
+anchor, a leftfield bridge — instead of always running the same four. Chosen lenses run as parallel Gemini calls
 (current/regional/explorer lenses web-grounded via Google Search for real, recent tracks).
 
 ### 🔭 Momentum Radio — discovery without an echo chamber

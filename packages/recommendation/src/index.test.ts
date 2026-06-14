@@ -379,10 +379,10 @@ describe("recommendation", () => {
     const golden = buildMusicalBrief(context);
     expect(selectJourneyLenses(golden).map((lens) => lens.key)).toEqual([
       "cinematic_warmth",
+      "local_language_hits",
       "steady_momentum",
       "regional_texture",
       "timeless_anchor",
-      "leftfield_bridge",
     ]);
 
     const focus = buildMusicalBrief({
@@ -419,9 +419,9 @@ describe("recommendation", () => {
     expect(selectJourneyLenses(brief).map((lens) => lens.key)).toEqual([
       "current_pop_hits",
       "good_mood",
+      "local_language_hits",
       "singalong_classics",
       "regional_texture",
-      "taste_anchor",
     ]);
   });
 
@@ -449,6 +449,42 @@ describe("recommendation", () => {
     const prompt = buildLensPrompt(lenses[0], brief, 5);
     expect(prompt).toMatch(/Disney/i);
     expect(prompt).not.toMatch(/novelty children-song/i);
+  });
+
+  it("local touch: a mapped country names the language and seeds a local lens, geo lenses only", () => {
+    const franceBrief = buildMusicalBrief({
+      ...context,
+      countryName: "France",
+      countryCode: "FR",
+      coarseRegion: "Occitanie, France",
+    });
+    expect(franceBrief.localLanguage).toBe("French");
+    expect(franceBrief.localDemonym).toBe("French");
+
+    const lenses = selectJourneyLenses(franceBrief);
+    const localLens = lenses.find((lens) => lens.key === "local_language_hits");
+    const neutralLens = lenses.find(
+      (lens) => lens.key !== "local_language_hits" && lens.key !== "regional_texture",
+    );
+    expect(localLens).toBeDefined();
+    expect(neutralLens).toBeDefined();
+
+    // The local directive names the language and is scoped to the geo lenses only.
+    expect(buildLensPrompt(localLens!, franceBrief, 5)).toMatch(
+      /prioritize current, well-loved songs sung in French by homegrown French artists/i,
+    );
+    expect(buildLensPrompt(neutralLens!, franceBrief, 5)).not.toMatch(/Local touch/i);
+  });
+
+  it("local touch: unmapped country falls back to inferring the local language from the place", () => {
+    // context has coarseRegion "Northern Italy" but no countryCode → no language mapping.
+    const brief = buildMusicalBrief(context);
+    expect(brief.localLanguage).toBeUndefined();
+    const localLens = selectJourneyLenses(brief).find(
+      (lens) => lens.key === "local_language_hits",
+    );
+    expect(localLens).toBeDefined();
+    expect(buildLensPrompt(localLens!, brief, 5)).toMatch(/LOCAL LANGUAGE of Northern Italy/i);
   });
 
   it("lastfmTracksToCandidates maps geo/tag chart tracks into chart-aware candidates", () => {

@@ -212,6 +212,11 @@ const schema = z.object({
     .string()
     .url()
     .default("https://nominatim.openstreetmap.org/reverse"),
+  // Forward geocoder (destination text → country/region) for the no-GPS geo fallback.
+  GEOCODER_SEARCH_URL: z
+    .string()
+    .url()
+    .default("https://nominatim.openstreetmap.org/search"),
   TESLA_TELEMETRY_ENABLED: envBoolean(false),
   MQTT_URL: z.string().default("mqtt://localhost:1883"),
   MQTT_TOPIC: z.string().default("tesla/telemetry"),
