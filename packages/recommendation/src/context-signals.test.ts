@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import { alertnessFloor, timeOfDayBand, tripArc } from "./context-signals";
+import {
+  alertnessFloor,
+  archetypeStrategy,
+  dayContextFrom,
+  effectiveTripMinutes,
+  timeOfDayBand,
+  tripArc,
+  tripArchetype,
+  weatherFeel,
+} from "./context-signals";
 
 describe("timeOfDayBand", () => {
   it("maps hours to bands at the boundaries", () => {
@@ -58,6 +67,87 @@ describe("tripArc", () => {
   it("flags long-haul trips", () => {
     expect(tripArc(10, 240, 230).longHaul).toBe(true);
     expect(tripArc(10, 120, 110).longHaul).toBe(false);
+  });
+});
+
+describe("effectiveTripMinutes", () => {
+  it("uses the longer of planned vs elapsed+remaining", () => {
+    expect(effectiveTripMinutes(50, 60, 40)).toBe(90); // 50+40 > 60
+    expect(effectiveTripMinutes(10, 120, 30)).toBe(120); // planned wins
+    expect(effectiveTripMinutes(30, undefined, 30)).toBe(60);
+  });
+});
+
+describe("dayContextFrom", () => {
+  it("classifies weekend vs weekday and builds a daypart key", () => {
+    // 2026-06-14 is a Sunday, 2026-06-15 a Monday.
+    expect(dayContextFrom("2026-06-14T10:00:00", "morning")).toEqual({
+      dayKind: "weekend",
+      daypartKey: "sunday_morning",
+    });
+    expect(dayContextFrom("2026-06-15T08:00:00", "morning")).toEqual({
+      dayKind: "weekday",
+      daypartKey: "monday_morning",
+    });
+  });
+});
+
+describe("tripArchetype", () => {
+  it("classifies by effective length, daypart and weekday", () => {
+    expect(tripArchetype(20, "afternoon", "weekend")).toBe("errand");
+    expect(tripArchetype(45, "morning", "weekday")).toBe("commute");
+    expect(tripArchetype(120, "midday", "weekend")).toBe("day_trip");
+    expect(tripArchetype(300, "morning", "weekday")).toBe("long_haul");
+  });
+
+  it("treats a weekday-midday 45-min hop as a day_trip (not a commute band)", () => {
+    expect(tripArchetype(45, "midday", "weekday")).toBe("day_trip");
+  });
+
+  it("treats a 45-min weekend morning drive as a day_trip, not a commute", () => {
+    expect(tripArchetype(45, "morning", "weekend")).toBe("day_trip");
+  });
+
+  it("uses the boundaries: <25 errand, >180 long_haul", () => {
+    expect(tripArchetype(24, "midday", "weekend")).toBe("errand");
+    expect(tripArchetype(25, "midday", "weekend")).toBe("day_trip");
+    expect(tripArchetype(180, "midday", "weekend")).toBe("day_trip");
+    expect(tripArchetype(181, "midday", "weekend")).toBe("long_haul");
+  });
+});
+
+describe("archetypeStrategy", () => {
+  it("leans familiar + compresses the opening for errands", () => {
+    const s = archetypeStrategy("errand");
+    expect(s.compressOpening).toBe(true);
+    expect(s.tasteWeightBias).toBeGreaterThan(0);
+  });
+
+  it("opens up exploration for long hauls without compressing", () => {
+    const s = archetypeStrategy("long_haul");
+    expect(s.compressOpening).toBe(false);
+    expect(s.explorationBias).toBeGreaterThan(0);
+  });
+});
+
+describe("weatherFeel", () => {
+  it("returns undefined when temperature is unknown", () => {
+    expect(weatherFeel(undefined, "midday")).toBeUndefined();
+    expect(weatherFeel(Number.NaN, "midday")).toBeUndefined();
+  });
+
+  it("derives evocative phrasing from temp and band", () => {
+    expect(weatherFeel(2, "morning")).toBe("crisp, frosty morning");
+    expect(weatherFeel(25, "golden")).toBe("warm and golden");
+    expect(weatherFeel(33, "midday")).toBe("bright midday heat");
+    expect(weatherFeel(2, "night")).toBe("cold, clear night");
+  });
+
+  it("adds a soft seasonal adjective when a month is provided", () => {
+    // January (month 0), cold → wintry prefix.
+    expect(weatherFeel(2, "morning", 0)).toBe("wintry crisp, frosty morning");
+    // July (month 6), hot → high-summer prefix.
+    expect(weatherFeel(33, "midday", 6)).toBe("high-summer bright midday heat");
   });
 });
 

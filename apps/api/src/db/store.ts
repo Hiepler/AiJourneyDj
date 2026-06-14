@@ -17,7 +17,11 @@ import type {
 } from "@ai-journey-dj/core";
 import { normalizeText, songKey } from "@ai-journey-dj/core";
 import { speedBucket, temperatureBucket } from "@ai-journey-dj/telemetry";
-import { assessDriveState } from "@ai-journey-dj/recommendation";
+import {
+  assessDriveState,
+  timeOfDayBand,
+  weatherFeel,
+} from "@ai-journey-dj/recommendation";
 
 import type { Db } from "./database.js";
 
@@ -131,6 +135,13 @@ export class Store {
   updateJourneyDriveMode(journeyId: string, mode: DriveMode): void {
     this.db.run("UPDATE journeys SET drive_mode = ? WHERE id = ?", [
       mode,
+      journeyId,
+    ]);
+  }
+
+  updateJourneyLegIndex(journeyId: string, legIndex: number): void {
+    this.db.run("UPDATE journeys SET leg_index = ? WHERE id = ?", [
+      legIndex,
       journeyId,
     ]);
   }
@@ -1002,6 +1013,7 @@ function mapJourney(row: any): JourneyRecord {
         ? undefined
         : row.adaptive_mode_enabled !== 0,
     plannedDurationMinutes: row.planned_duration_minutes ?? undefined,
+    legIndex: row.leg_index ?? undefined,
     kidsMode: row.kids_mode === 1,
     lastGeo:
       row.last_geo_country_name ||
@@ -1122,13 +1134,21 @@ export function contextFromJourney(
           countryCode: telemetry?.countryCode ?? fallback?.countryCode,
           source: telemetry?.geoSource ?? fallback?.source,
         };
+  const localTimeIso = telemetry?.timestampIso ?? new Date().toISOString();
+  const localDate = new Date(localTimeIso);
+  const band = timeOfDayBand(localDate.getHours());
   return {
     destination: telemetry?.destination ?? journey.destination,
     coarseRegion: resolvedGeo.coarseRegion,
     countryName: resolvedGeo.countryName,
     countryCode: resolvedGeo.countryCode,
     geoSource: resolvedGeo.source,
-    localTimeIso: telemetry?.timestampIso ?? new Date().toISOString(),
+    localTimeIso,
+    weatherFeel: weatherFeel(
+      telemetry?.outsideTempC,
+      band,
+      localDate.getMonth(),
+    ),
     etaMinutes: telemetry?.etaMinutes,
     speedBucket: speed,
     temperatureBucket: temp,
@@ -1143,6 +1163,7 @@ export function contextFromJourney(
     driveState: driveStateForBrief(journey, recentTelemetry),
     telemetrySource,
     plannedDurationMinutes: journey.plannedDurationMinutes,
+    legIndex: journey.legIndex,
     elapsedMinutes: Math.max(
       0,
       (Date.now() - Date.parse(journey.createdAtIso)) / 60000,

@@ -86,6 +86,8 @@ export interface JourneyContext {
   plannedDurationMinutes?: number;
   /** Minutes elapsed since the journey started (now − createdAt). */
   elapsedMinutes?: number;
+  /** Journey leg (0 = first leg; incremented after each detected charge stop). */
+  legIndex?: number;
   /** Active music-wish layers steering this journey. */
   activeMusicWishes?: MusicWish[];
   /** Gerade gespielter Track — Seed für das Momentum-Radio. */
@@ -325,6 +327,8 @@ export interface JourneyRecord {
   stoppedAtIso?: string;
   /** Planned total trip duration in minutes, snapshotted from the first ETA. */
   plannedDurationMinutes?: number;
+  /** Journey leg index (0 = first leg; incremented when a charge stop is detected). */
+  legIndex?: number;
   /** Last meaningful activity (telemetry / owned playback / user action) — drives inactivity auto-stop. */
   lastActiveAtIso?: string;
 }
