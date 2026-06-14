@@ -884,6 +884,74 @@ describe("recommendation", () => {
     expect(new Set(set.map((candidate) => candidate.energy)).size).toBe(5);
   });
 
+  it("buildRecommendationPolicy sets the discovery dial from the trip archetype", () => {
+    const errand = buildRecommendationPolicy({
+      ...context,
+      etaMinutes: undefined,
+      plannedDurationMinutes: 15,
+    });
+    const longHaul = buildRecommendationPolicy({
+      ...context,
+      etaMinutes: undefined,
+      plannedDurationMinutes: 300,
+    });
+    expect(errand.targetDiscoveryRatio as number).toBeLessThan(
+      longHaul.targetDiscoveryRatio as number,
+    );
+    // Errands stay familiar; long hauls open up to discovery.
+    expect(errand.targetDiscoveryRatio as number).toBeLessThanOrEqual(0.2);
+    expect(longHaul.targetDiscoveryRatio as number).toBeGreaterThanOrEqual(0.5);
+  });
+
+  it("selectJourneyLenses keeps errands familiar — no slow regional or leftfield discovery", () => {
+    const brief = buildMusicalBrief({
+      ...context,
+      etaMinutes: undefined,
+      plannedDurationMinutes: 15,
+    });
+    expect(brief.tripArchetype).toBe("errand");
+    const lenses = selectJourneyLenses(brief).map((lens) => lens.key);
+    expect(lenses).toContain("taste_anchor");
+    expect(lenses).not.toContain("regional_texture");
+    expect(lenses).not.toContain("leftfield_bridge");
+    expect(lenses.length).toBeLessThanOrEqual(5);
+  });
+
+  it("targetDiscoveryRatio shifts ranking between hits and lesser-known cuts", () => {
+    const mk = (
+      id: string,
+      artist: string,
+      title: string,
+      pop: number,
+    ): ResolvedTrack => ({
+      provider: "spotify",
+      providerTrackId: id,
+      providerUri: `spotify:track:${id}`,
+      artist,
+      title,
+      explicit: false,
+      popularity: pop,
+      matchConfidence: 0.9,
+      matchReason: "artist and title match",
+    });
+    const tracks: ResolvedTrack[] = [
+      mk("hit", "Hit Artist", "Hit Song", 95),
+      mk("cut", "Cut Artist", "Deep Cut", 35),
+    ];
+    const hitsRanked = rankResolvedTracksForPolicy(
+      tracks,
+      { ...buildRecommendationPolicy(context), targetDiscoveryRatio: 0 },
+      { now: new Date("2026-06-03") },
+    );
+    const discoverRanked = rankResolvedTracksForPolicy(
+      tracks,
+      { ...buildRecommendationPolicy(context), targetDiscoveryRatio: 0.9 },
+      { now: new Date("2026-06-03") },
+    );
+    expect(hitsRanked[0].providerTrackId).toBe("hit");
+    expect(discoverRanked[0].providerTrackId).toBe("cut");
+  });
+
   it("balanceCandidates dedupes and spreads across decades/genres/artists", () => {
     const brief = buildMusicalBrief(context);
     const cands: SongCandidate[] = [
@@ -1406,11 +1474,12 @@ describe("variety-aware ranking", () => {
 
   it("recent-fatigue penalizes recent songs/artists and exempts wish artists", () => {
     const policy = buildRecommendationPolicy(context);
-    // tired is at index=0 so its base score is fractionally higher (no index tiebreaker penalty);
-    // this lets a large recentSongPenalty (0.5) flip the result, and removal of the penalty restores it.
+    // Equal popularity so the discovery dial can't differentiate them: tired is at index=0 so its
+    // base score is fractionally higher (no index tiebreaker penalty); this lets a large
+    // recentSongPenalty (0.5) flip the result, and removal of the penalty restores it.
     const tracks: ResolvedTrack[] = [
       trackOf("tired", "Tired Artist", "Tired Song", 88),
-      trackOf("fresh", "Fresh Artist", "Fresh Song", 70),
+      trackOf("fresh", "Fresh Artist", "Fresh Song", 88),
     ];
     const ranked = rankResolvedTracksForPolicy(tracks, policy, {
       now: new Date("2026-06-03"),

@@ -1229,6 +1229,12 @@ export interface RecommendationPolicy {
   avoidSongKeys: string[];
   preferDistinctArtists: boolean;
   familyMode: boolean;
+  /**
+   * Familiarity↔discovery dial, 0=all hits … 1=all deep cuts. Derived from the trip archetype
+   * (errands lean on the known; long hauls open up to discovery) and consumed at ranking time to
+   * balance how strongly popularity is rewarded against surfacing lesser-known cuts.
+   */
+  targetDiscoveryRatio?: number;
   artistBoosts?: Array<{ artist: string; strength: number }>;
   avoidMoodTags?: string[];
   allowArtistRepeats?: boolean;
@@ -1245,6 +1251,31 @@ function uniqueNormalizedTags(tags: string[]): string[] {
   }
   return out;
 }
+
+/** Trip archetype from raw context — the same derivation buildMusicalBrief uses, exposed for policy. */
+export function tripArchetypeForContext(
+  context: JourneyContext,
+): TripArchetype {
+  const hour = context.localTimeIso
+    ? new Date(context.localTimeIso).getHours()
+    : 12;
+  const band = timeOfDayBand(hour);
+  const arc = tripArc(
+    context.elapsedMinutes ?? 0,
+    context.plannedDurationMinutes,
+    context.etaMinutes,
+  );
+  const dayCtx = dayContextFrom(context.localTimeIso, band);
+  return tripArchetype(arc.effectiveTotalMin, band, dayCtx.dayKind);
+}
+
+/** Hits↔deep-cut dial by archetype: short hops stay familiar, long hauls open up to discovery. */
+const DISCOVERY_RATIO_BY_ARCHETYPE: Record<TripArchetype, number> = {
+  errand: 0.15,
+  commute: 0.3,
+  day_trip: 0.45,
+  long_haul: 0.6,
+};
 
 export function moodTagsForContext(context: JourneyContext): string[] {
   const band = timeOfDayBand(
@@ -1276,6 +1307,15 @@ export function buildRecommendationPolicy(
     context.passengerMode === "friends" ||
     prompt.includes("euphoric") ||
     prompt.includes("uplifting");
+  // Curation dial: shape the hits↔deep-cut balance by trip gestalt, then pull it toward the
+  // familiar for families/kids (a known catalog the whole car accepts) and nudge it toward
+  // discovery for explicitly exploratory prompts.
+  const archetype = tripArchetypeForContext(context);
+  let targetDiscoveryRatio = DISCOVERY_RATIO_BY_ARCHETYPE[archetype];
+  if (familyMode) targetDiscoveryRatio = Math.min(targetDiscoveryRatio, 0.2);
+  if (prompt.includes("discover") || prompt.includes("surprise")) {
+    targetDiscoveryRatio = Math.min(1, targetDiscoveryRatio + 0.2);
+  }
   return {
     cleanRequired: familyMode,
     targetPopularity: familyMode ? 72 : highAcceptance ? 66 : 58,
@@ -1286,6 +1326,7 @@ export function buildRecommendationPolicy(
     avoidSongKeys: [],
     preferDistinctArtists: familyMode || context.passengerMode === "friends",
     familyMode,
+    targetDiscoveryRatio,
     ...overrides,
   };
 }
@@ -1404,6 +1445,12 @@ export function rankResolvedTracksForPolicy<T extends ResolvedTrack>(
         1,
         popularity / Math.max(1, policy.targetPopularity),
       );
+      // Familiarity↔discovery dial: split the popularity budget between rewarding hits and
+      // rewarding lesser-known cuts, per the policy's discovery ratio (0=all hits, 1=all deep cuts).
+      const discovery = clamp01(policy.targetDiscoveryRatio ?? 0);
+      const obscurity = 1 - popularity / 100;
+      const familiarityComponent =
+        popularityScore * (1 - discovery) + obscurity * discovery;
       const artist = normalizeText(track.artist);
       const boost = artistBoosts.get(artist) ?? 0;
       const moodPenalty = (track.moodTags ?? []).some((tag) =>
@@ -1433,7 +1480,7 @@ export function rankResolvedTracksForPolicy<T extends ResolvedTrack>(
         moodPenalty;
       const score =
         track.matchConfidence * 0.24 +
-        popularityScore * 0.22 +
+        familiarityComponent * 0.22 +
         chartSignalScore(track) * 0.22 +
         releaseRecencyScore(track.releaseDate, options.now) *
           policy.recencyBias *
@@ -1983,6 +2030,18 @@ export function selectJourneyLenses(
     return picked.slice(0, 5);
   }
 
+  // Errand: a short hop wants beloved, familiar songs fast — no slow regional discovery or
+  // deliberate leftfield surprises. Lead with the situational primer, then anchor in known taste.
+  // Fewer lenses also means fewer parallel calls, so short-trip refills stay snappy.
+  if (brief.tripArchetype === "errand") {
+    if (brief.driveMode === "calm") add("cinematic_warmth");
+    else add("steady_momentum");
+    add("current_pop_hits");
+    add("timeless_anchor");
+    add("taste_anchor");
+    return picked.slice(0, 5);
+  }
+
   // Adaptive Drive Mode primes the first lens toward the situation.
   if (brief.driveMode === "calm") add("cinematic_warmth");
   else if (brief.driveMode === "focus") add("steady_momentum");
@@ -2008,6 +2067,11 @@ export function selectJourneyLenses(
 
   if (brief.targetEnergy >= 0.5) add("steady_momentum");
   if (brief.regionHint) add("regional_texture");
+  // Long hauls have room to wander: promote the discovery lens above the familiar anchor so it
+  // reliably survives the five-lens cap instead of being crowded out.
+  if (brief.tripArchetype === "long_haul" && brief.driveMode !== "calm") {
+    add("leftfield_bridge");
+  }
   add("timeless_anchor");
   // Calm drops the deliberate "surprise" lens — calmer situations want familiar, not leftfield.
   if (brief.driveMode !== "calm") add("leftfield_bridge");
@@ -2255,6 +2319,68 @@ function genreKey(candidate: SongCandidate): string {
   return normalizeText(candidate.genre ?? "unknown");
 }
 
+interface ScoreWeights {
+  confidence: number;
+  contextFit: number;
+  telemetryFit: number;
+  tasteFit: number;
+  diversityGain: number;
+  novelty: number;
+  fatiguePenalty: number;
+}
+
+const BASE_SCORE_WEIGHTS: ScoreWeights = {
+  confidence: 0.22,
+  contextFit: 0.22,
+  telemetryFit: 0.22,
+  tasteFit: 0.1,
+  diversityGain: 0.16,
+  novelty: 0.08,
+  fatiguePenalty: 0.18,
+};
+
+/**
+ * Curation is not one-size-fits-all: a calm, high-attention drive wants familiar and unsurprising
+ * picks, a focus stretch wants energy continuity, an errand wants beloved known songs, and a long
+ * haul has room to wander. Shift the scoring emphasis accordingly instead of using fixed weights.
+ */
+function scoringWeights(brief: MusicalBrief): ScoreWeights {
+  const w = { ...BASE_SCORE_WEIGHTS };
+  if (brief.driveMode === "calm") {
+    // Higher-attention situation: lean on fit/taste, dial down surprise.
+    w.contextFit += 0.04;
+    w.tasteFit += 0.04;
+    w.diversityGain -= 0.04;
+    w.novelty -= 0.04;
+  } else if (brief.driveMode === "focus") {
+    // Long monotonous stretch: prize energy continuity, ease off novelty churn.
+    w.telemetryFit += 0.05;
+    w.novelty -= 0.03;
+    w.diversityGain -= 0.02;
+  }
+  if (brief.tripArchetype === "errand") {
+    // Short hop: beloved and known, fast — not the moment for discovery.
+    w.tasteFit += 0.05;
+    w.confidence += 0.03;
+    w.novelty -= 0.05;
+    w.diversityGain -= 0.03;
+  } else if (brief.tripArchetype === "long_haul") {
+    // Room to roam: reward freshness and spread over playing it safe.
+    w.novelty += 0.05;
+    w.diversityGain += 0.05;
+    w.confidence -= 0.04;
+  }
+  if (brief.passengerMode === "family" || brief.kidsMode) {
+    // Whole-car appeal: minimize leftfield novelty, lean on broad fit.
+    w.novelty -= 0.05;
+    w.contextFit += 0.04;
+  }
+  for (const key of Object.keys(w) as Array<keyof ScoreWeights>) {
+    w[key] = Math.max(0, w[key]);
+  }
+  return w;
+}
+
 function candidateNovelty(
   candidate: SongCandidate,
   role: SongCandidateRole,
@@ -2319,14 +2445,15 @@ function scoreForRole(
         ? 0.08
         : 0),
   );
+  const w = scoringWeights(brief);
   const total = clamp01(
-    candidate.confidence * 0.22 +
-      contextFit * 0.22 +
-      telemetryFit * 0.22 +
-      tasteFit * 0.1 +
-      diversityGain * 0.16 +
-      novelty * 0.08 -
-      fatiguePenalty * 0.18,
+    candidate.confidence * w.confidence +
+      contextFit * w.contextFit +
+      telemetryFit * w.telemetryFit +
+      tasteFit * w.tasteFit +
+      diversityGain * w.diversityGain +
+      novelty * w.novelty -
+      fatiguePenalty * w.fatiguePenalty,
   );
   return {
     contextFit,
