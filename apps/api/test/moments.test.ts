@@ -130,4 +130,71 @@ describe("detectJourneyMoment", () => {
     });
     expect(moment?.type).toBe("temp_swing");
   });
+
+  it("charge approach fires when battery runs low", () => {
+    const moment = detectJourneyMoment({
+      context: { phase: "cruise" } as any,
+      history: [snap({ batteryPercent: 15 }), snap({ batteryPercent: 16 })],
+      previousPhase: "cruise",
+      act: "act_one",
+      lastMomentAt: new Map(),
+      nowMs: NOW,
+      config: cfg,
+    });
+    expect(moment?.type).toBe("charge_approach");
+    expect(moment!.energyBias).toBeLessThan(0);
+  });
+
+  it("charge approach also fires on low predicted energy at arrival", () => {
+    const moment = detectJourneyMoment({
+      context: { phase: "cruise" } as any,
+      history: [snap({ batteryPercent: 45, energyPercentAtArrival: 8 })],
+      previousPhase: "cruise",
+      act: "act_one",
+      lastMomentAt: new Map(),
+      nowMs: NOW,
+      config: cfg,
+    });
+    expect(moment?.type).toBe("charge_approach");
+  });
+
+  it("charge resume fires on a sustained battery jump and requests local charts", () => {
+    const moment = detectJourneyMoment({
+      context: { phase: "cruise" } as any,
+      history: [
+        snap({ batteryPercent: 82, countryName: "France", countryCode: "FR" }),
+        snap({ batteryPercent: 80, countryName: "France", countryCode: "FR" }),
+        snap({ batteryPercent: 20, countryName: "France", countryCode: "FR" }),
+        snap({ batteryPercent: 18, countryName: "France", countryCode: "FR" }),
+      ],
+      previousPhase: "cruise",
+      act: "act_one",
+      lastMomentAt: new Map(),
+      nowMs: NOW,
+      config: cfg,
+    });
+    expect(moment?.type).toBe("charge_resume");
+    expect(moment!.energyBias).toBeGreaterThan(0);
+    expect(moment!.candidateRequest).toEqual({
+      kind: "geo-charts",
+      country: "France",
+    });
+  });
+
+  it("does not fire charge resume on a single-sample SoC blip", () => {
+    const moment = detectJourneyMoment({
+      context: { phase: "cruise" } as any,
+      history: [
+        snap({ batteryPercent: 80 }),
+        snap({ batteryPercent: 20 }),
+        snap({ batteryPercent: 18 }),
+      ],
+      previousPhase: "cruise",
+      act: "act_one",
+      lastMomentAt: new Map(),
+      nowMs: NOW,
+      config: cfg,
+    });
+    expect(moment).toBeUndefined();
+  });
 });

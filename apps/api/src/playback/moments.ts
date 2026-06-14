@@ -11,7 +11,16 @@ export type MomentType =
   | "golden_hour"
   | "temp_swing"
   | "border_crossing"
+  | "charge_approach"
+  | "charge_resume"
   | "arrival";
+
+/** Battery at/under this (%) means a charge stop is near → wind down. */
+const CHARGE_LOW_BATTERY_PERCENT = 18;
+/** Predicted energy at arrival at/under this (%) also signals an imminent charge stop. */
+const CHARGE_LOW_ARRIVAL_PERCENT = 12;
+/** A sustained battery rise of at least this many points marks a completed charge → new leg. */
+const CHARGE_RESUME_JUMP_PERCENT = 15;
 
 export interface JourneyMoment {
   type: MomentType;
@@ -33,6 +42,8 @@ interface TelemetryLike {
   countryCode?: string;
   countryName?: string;
   etaMinutes?: number;
+  batteryPercent?: number;
+  energyPercentAtArrival?: number;
 }
 
 export interface MomentConfig {
@@ -44,9 +55,11 @@ export interface MomentConfig {
 
 const PRIORITY: MomentType[] = [
   "arrival",
+  "charge_resume",
   "border_crossing",
   "traffic_release",
   "traffic_jam",
+  "charge_approach",
   "golden_hour",
   "temp_swing",
 ];
@@ -96,6 +109,53 @@ export function detectJourneyMoment(args: {
         candidateRequest: { kind: "geo-charts", country: newest.countryName },
       });
     }
+  }
+
+  // charge resume: a sustained battery rise (both newest readings elevated vs the earlier window)
+  // marks a completed charge stop → open a fresh leg. Two-sample confirmation guards against a
+  // single noisy SoC reading near a charger.
+  if (history.length >= 3) {
+    const newestTwoMin = Math.min(
+      newest?.batteryPercent ?? Infinity,
+      history[1]?.batteryPercent ?? Infinity,
+    );
+    const earlierLevels = history
+      .slice(2)
+      .map((item) => item.batteryPercent)
+      .filter((value): value is number => typeof value === "number");
+    if (earlierLevels.length > 0 && Number.isFinite(newestTwoMin)) {
+      const earlierMin = Math.min(...earlierLevels);
+      if (newestTwoMin - earlierMin >= CHARGE_RESUME_JUMP_PERCENT) {
+        candidates.set("charge_resume", {
+          type: "charge_resume",
+          directive:
+            "Back on the road after a charge stop — open a fresh chapter: lift the energy and re-introduce some local flavor.",
+          energyBias: 0.12,
+          moodTagBias: ["fresh", "bright"],
+          candidateRequest: newest?.countryName
+            ? { kind: "geo-charts", country: newest.countryName }
+            : undefined,
+        });
+      }
+    }
+  }
+
+  // charge approach: battery (or predicted energy at arrival) running low → a charge stop is near;
+  // ease into calmer, settling textures before the break.
+  const battery = newest?.batteryPercent;
+  const arrivalEnergy = newest?.energyPercentAtArrival;
+  if (
+    (typeof battery === "number" && battery <= CHARGE_LOW_BATTERY_PERCENT) ||
+    (typeof arrivalEnergy === "number" &&
+      arrivalEnergy <= CHARGE_LOW_ARRIVAL_PERCENT)
+  ) {
+    candidates.set("charge_approach", {
+      type: "charge_approach",
+      directive:
+        "Winding down toward a charge stop — ease into calmer, settling textures.",
+      energyBias: -0.1,
+      moodTagBias: ["mellow", "settling"],
+    });
   }
 
   // traffic release / jam (Verlauf: Jam in der Historie, jetzt frei → Lift)

@@ -20,6 +20,7 @@ const arc = (segment: TripArc["segment"], longHaul = false): TripArc => ({
   progress: 0.5,
   segment,
   longHaul,
+  effectiveTotalMin: 120,
 });
 
 describe("MOODS taxonomy", () => {
