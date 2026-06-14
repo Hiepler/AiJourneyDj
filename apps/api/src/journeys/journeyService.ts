@@ -485,6 +485,17 @@ export class JourneyService {
         {},
       );
     }
+    if (moment.type === "charge_resume") {
+      // A completed charge stop starts a new leg — each leg opens its own arc.
+      const nextLeg = (journey.legIndex ?? 0) + 1;
+      this.store.updateJourneyLegIndex(journeyId, nextLeg);
+      this.store.audit(
+        journeyId,
+        "moment.charge_resume_leg",
+        `Charge stop done — starting leg ${nextLeg + 1}.`,
+        { legIndex: nextLeg },
+      );
+    }
     try {
       await this.analyzeJourney(journeyId, `moment:${moment.type}`);
     } catch (error) {

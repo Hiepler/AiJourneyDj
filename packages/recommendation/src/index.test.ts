@@ -1015,6 +1015,91 @@ describe("buildMusicalBrief — time/trip/mood", () => {
   });
 });
 
+describe("buildMusicalBrief — trip feeling (archetype/weather/nowPlaying/leg)", () => {
+  const base: JourneyContext = {
+    destination: "Lake",
+    localTimeIso: "2026-06-15T08:00:00", // Monday morning
+    speedBucket: "city",
+    phase: "departure",
+    userPrompt: "drive",
+    passengerMode: "solo",
+  } as JourneyContext;
+
+  it("classifies a short weekend hop as an errand and flattens the opening build", () => {
+    const brief = buildMusicalBrief({
+      ...base,
+      localTimeIso: "2026-06-14T10:00:00", // Sunday
+      plannedDurationMinutes: 20,
+      elapsedMinutes: 1,
+      etaMinutes: 18,
+      tasteWeight: 0.4,
+    });
+    expect(brief.tripArchetype).toBe("errand");
+    // familiarity bias raised the taste weight above the base
+    expect(brief.tasteWeight).toBeGreaterThan(0.4);
+    // no slow opening: the whole curve sits in a tight band around target (no build/dip)
+    const spread =
+      Math.max(...brief.energyCurve) - Math.min(...brief.energyCurve);
+    expect(spread).toBeLessThanOrEqual(0.03);
+  });
+
+  it("classifies a weekday morning 45-min drive as a commute", () => {
+    const brief = buildMusicalBrief({
+      ...base,
+      plannedDurationMinutes: 45,
+      elapsedMinutes: 5,
+      etaMinutes: 40,
+    });
+    expect(brief.tripArchetype).toBe("commute");
+    expect(brief.dayContext).toBe("monday_morning");
+  });
+
+  it("keeps a full opening build on a long haul", () => {
+    const brief = buildMusicalBrief({
+      ...base,
+      plannedDurationMinutes: 600,
+      elapsedMinutes: 10,
+      etaMinutes: 590,
+    });
+    expect(brief.tripArchetype).toBe("long_haul");
+    expect(brief.tripSegment).toBe("opening");
+  });
+
+  it("threads weatherFeel, nowPlaying and legIndex into the brief and prompt", () => {
+    const brief = buildMusicalBrief({
+      ...base,
+      weatherFeel: "warm and golden",
+      nowPlaying: { artist: "Khruangbin", title: "Maria Tambien" },
+      legIndex: 2,
+      plannedDurationMinutes: 600,
+      elapsedMinutes: 200,
+      etaMinutes: 400,
+    });
+    expect(brief.weatherFeel).toBe("warm and golden");
+    expect(brief.nowPlaying).toEqual({
+      artist: "Khruangbin",
+      title: "Maria Tambien",
+    });
+    expect(brief.legIndex).toBe(2);
+    const prompt = buildLensPrompt(selectJourneyLenses(brief)[0], brief, 5);
+    expect(prompt).toMatch(/Now playing: "Maria Tambien" by Khruangbin/);
+    expect(prompt).toMatch(/leg 3 of the journey/);
+    expect(prompt).toMatch(/Trip shape: long_haul/);
+  });
+
+  it("omits the nowPlaying and leg lines when absent", () => {
+    const brief = buildMusicalBrief({
+      ...base,
+      plannedDurationMinutes: 600,
+      elapsedMinutes: 10,
+      etaMinutes: 590,
+    });
+    const prompt = buildLensPrompt(selectJourneyLenses(brief)[0], brief, 5);
+    expect(prompt).not.toMatch(/Now playing:/);
+    expect(prompt).not.toMatch(/leg \d+ of the journey/);
+  });
+});
+
 describe("moodTagsForContext — mood-driven", () => {
   it("returns the night_cruise tags for a night drive", () => {
     const tags = moodTagsForContext({

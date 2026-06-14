@@ -13,7 +13,7 @@ import { SpotifyAuthService } from "../src/auth/spotifyAuth.js";
 import { TidalAuthService } from "../src/auth/tidalAuth.js";
 import { loadConfig } from "../src/config/env.js";
 import { migrate, openDatabase } from "../src/db/database.js";
-import { Store } from "../src/db/store.js";
+import { Store, contextFromJourney } from "../src/db/store.js";
 import { JourneyService } from "../src/journeys/journeyService.js";
 
 const tmpDirs: string[] = [];
@@ -613,6 +613,55 @@ describe("connect-mode queue sync", () => {
     expect(candidates.length).toBeGreaterThan(0);
     const audit = store.latestAuditEvent(journey.id, "moment.triggered");
     expect(audit).toBeDefined();
+  });
+
+  it("a charge stop opens a new leg (legIndex increments)", { timeout: 20_000 }, async () => {
+    const { service, store } = buildService({
+      SPOTIFY_REFILL_MIN_INTERVAL_SECONDS: "0",
+    });
+    const journey = await startSpotifyJourney(service);
+    expect(store.getJourney(journey.id)!.legIndex ?? 0).toBe(0);
+
+    // Telemetry: battery low for two readings, then a sustained jump after charging (oldest first).
+    const battery = [18, 20, 80, 82];
+    battery.forEach((batteryPercent, i) => {
+      store.saveTelemetry(
+        journey.id,
+        {
+          timestampIso: new Date(Date.now() - (battery.length - i) * 60_000).toISOString(),
+          countryCode: "FR",
+          countryName: "France",
+          batteryPercent,
+        } as any,
+        "cruise",
+      );
+    });
+
+    await service.evaluateJourneyMoments(journey.id);
+    const deadline = Date.now() + 15_000;
+    while (service.isAnalysisPending(journey.id)) {
+      if (Date.now() > deadline) throw new Error("moment analysis did not finish");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    expect(store.getJourney(journey.id)!.legIndex).toBe(1);
+    expect(store.latestAuditEvent(journey.id, "moment.charge_resume_leg")).toBeDefined();
+  });
+
+  it("derives weatherFeel for the journey context from on-board temperature", async () => {
+    const { service, store } = buildService();
+    const journey = await startSpotifyJourney(service);
+    store.saveTelemetry(
+      journey.id,
+      { timestampIso: "2026-07-15T13:00:00", outsideTempC: 31 } as any,
+      "cruise",
+    );
+    const context = contextFromJourney(
+      store.getJourney(journey.id)!,
+      store.latestTelemetry(journey.id),
+    );
+    expect(context.weatherFeel).toBeDefined();
+    expect(context.weatherFeel).toContain("heat");
   });
 
   it("learns from a native skip detected via progress heuristic", async () => {
