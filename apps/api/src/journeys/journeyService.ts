@@ -1599,6 +1599,15 @@ export class JourneyService {
           .sort((a, b) => b[1] - a[1])
           .map(([artist]) => artist),
       ].slice(0, this.config.ARTIST_AVOID_PROMPT_LIMIT),
+      // Session learning at *generation* time: once a mood has been skipped enough to build a
+      // clear signal (≥2 skips), tell the scout to steer away from it — not just the ranker.
+      skippedMoodTags: this.config.SKIP_FEEDBACK_ENABLED
+        ? [...skipEntry.moodTags.entries()]
+            .filter(([, penalty]) => penalty >= 0.3)
+            .sort((a, b) => b[1] - a[1])
+            .map(([tag]) => tag)
+            .slice(0, 6)
+        : [],
       nowPlaying:
         priorSession?.activeTrack?.provider === "spotify" &&
         priorSession.activeTrack.artist &&

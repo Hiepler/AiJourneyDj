@@ -1316,6 +1316,24 @@ describe("buildLensPrompt — valence", () => {
     const prompt = buildLensPrompt(DEFAULT_LENSES[0], brief, 5);
     expect(prompt.toLowerCase()).toContain("valence");
   });
+
+  it("surfaces skipped moods so the scout steers away from them", () => {
+    const brief = buildMusicalBrief({
+      destination: "Lake",
+      localTimeIso: "2026-06-04T12:00:00",
+      speedBucket: "highway",
+      phase: "cruise",
+      userPrompt: "road trip",
+      passengerMode: "solo",
+      elapsedMinutes: 10,
+      etaMinutes: 30,
+      skippedMoodTags: ["melancholic", "ambient"],
+    } as JourneyContext);
+    const prompt = buildLensPrompt(DEFAULT_LENSES[0], brief, 5).toLowerCase();
+    expect(prompt).toContain("skipping these moods");
+    expect(prompt).toContain("melancholic");
+    expect(prompt).toContain("ambient");
+  });
 });
 
 describe("engine v2 lenses", () => {
