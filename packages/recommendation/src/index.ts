@@ -1088,6 +1088,50 @@ export interface MusicalBrief {
   storyDirective?: string;
   /** Moment directive for the LLM (arrival/sunset/etc). */
   momentDirective?: string;
+  /** Local-music language for the journey country (e.g. "French"), when the country is mapped. */
+  localLanguage?: string;
+  /** Demonym for homegrown-artist phrasing (e.g. "French", "Italian"), paired with localLanguage. */
+  localDemonym?: string;
+}
+
+/**
+ * Country (ISO-3166 alpha-2) → primary local-music language + demonym, for the "local touch" geo bias.
+ * Covers the common European road-trip corridor plus a few majors; unmapped countries fall back to a
+ * region-text directive so the grounded LLM can still infer the local language from the place name.
+ */
+const COUNTRY_LOCAL_FLAVOR: Record<string, { language: string; demonym: string }> = {
+  FR: { language: "French", demonym: "French" },
+  DE: { language: "German", demonym: "German" },
+  AT: { language: "German", demonym: "Austrian" },
+  CH: { language: "German, French or Italian", demonym: "Swiss" },
+  IT: { language: "Italian", demonym: "Italian" },
+  ES: { language: "Spanish", demonym: "Spanish" },
+  PT: { language: "Portuguese", demonym: "Portuguese" },
+  NL: { language: "Dutch", demonym: "Dutch" },
+  BE: { language: "Dutch or French", demonym: "Belgian" },
+  PL: { language: "Polish", demonym: "Polish" },
+  CZ: { language: "Czech", demonym: "Czech" },
+  SE: { language: "Swedish", demonym: "Swedish" },
+  NO: { language: "Norwegian", demonym: "Norwegian" },
+  DK: { language: "Danish", demonym: "Danish" },
+  FI: { language: "Finnish", demonym: "Finnish" },
+  GR: { language: "Greek", demonym: "Greek" },
+  HR: { language: "Croatian", demonym: "Croatian" },
+  HU: { language: "Hungarian", demonym: "Hungarian" },
+  RO: { language: "Romanian", demonym: "Romanian" },
+  TR: { language: "Turkish", demonym: "Turkish" },
+  BR: { language: "Portuguese", demonym: "Brazilian" },
+  MX: { language: "Spanish", demonym: "Mexican" },
+  JP: { language: "Japanese", demonym: "Japanese" },
+  KR: { language: "Korean", demonym: "Korean" },
+};
+
+/** Resolves the local-music flavor for a country code (case-insensitive). Undefined when unmapped. */
+export function localMusicFlavor(
+  countryCode?: string,
+): { language: string; demonym: string } | undefined {
+  if (!countryCode) return undefined;
+  return COUNTRY_LOCAL_FLAVOR[countryCode.trim().toUpperCase()];
 }
 
 /**
@@ -1700,6 +1744,8 @@ export function buildMusicalBrief(
     driveSignals,
     destination: context.destination,
     countryName: context.countryName,
+    localLanguage: localMusicFlavor(context.countryCode)?.language,
+    localDemonym: localMusicFlavor(context.countryCode)?.demonym,
     userPrompt: context.userPrompt,
     passengerMode: context.passengerMode,
     kidsMode: context.kidsMode === true,
@@ -1776,6 +1822,12 @@ const CINEMATIC_LENSES: Record<string, SongLens> = {
     grounded: true,
     instruction:
       "Geo soundtrack lens: use web search to find music with a REAL connection to the journey's region, route and destination — artists born or based there, songs naming these places or landscapes, local scenes. The drive should sound like the geography it passes through. ONLY real music — never audio dramas, Hörspiele, audiobooks or spoken-word.",
+  },
+  local_language_hits: {
+    key: "local_language_hits",
+    grounded: true,
+    instruction:
+      "Local-language lens: use web search to find currently-loved, well-produced songs sung in the journey country's OWN language by homegrown artists from there — the kind locals actually play right now, across genres. Make the car feel like it belongs in this place. ONLY real music — never audio dramas, Hörspiele, audiobooks, spoken-word, anthems or tourist clichés.",
   },
   timeless_anchor: {
     key: "timeless_anchor",
@@ -1862,6 +1914,7 @@ export function selectJourneyLenses(
   if (brief.passengerMode === "family") {
     add("current_pop_hits");
     add("good_mood");
+    if (brief.regionHint || brief.countryName) add("local_language_hits");
     add("singalong_classics");
     if (brief.regionHint || brief.countryName) add("regional_texture");
     add("taste_anchor");
@@ -1886,6 +1939,10 @@ export function selectJourneyLenses(
   } else {
     add("steady_momentum");
   }
+
+  // Local touch: when we know where the drive is, guarantee a noticeable share of local-language /
+  // homegrown picks by seeding the local lens high (so it survives the 5-lens cap) plus geo texture.
+  if (brief.regionHint || brief.countryName) add("local_language_hits");
 
   if (brief.targetEnergy >= 0.5) add("steady_momentum");
   if (brief.regionHint) add("regional_texture");
@@ -1938,6 +1995,18 @@ export function buildLensPrompt(
   brief: MusicalBrief,
   count: number,
 ): string {
+  // Concentrate the "local touch" in the geo lenses so the overall set stays international while a
+  // noticeable share feels local. Names the language when the country is mapped, else lets the
+  // grounded LLM infer the local language from the place.
+  const isGeoLens =
+    lens.key === "local_language_hits" || lens.key === "regional_texture";
+  const localPlace = brief.countryName ?? brief.regionHint;
+  const localTouchLine =
+    isGeoLens && localPlace
+      ? brief.localLanguage
+        ? `Local touch: prioritize current, well-loved songs sung in ${brief.localLanguage} by homegrown ${brief.localDemonym} artists popular in ${localPlace} right now — make the set feel local without abandoning the listener's taste or sliding into tourist clichés.`
+        : `Local touch: prioritize current, well-loved songs in the LOCAL LANGUAGE of ${localPlace} by homegrown artists from there — make the set feel local without tourist clichés.`
+      : "";
   return [
     `You are AI Journey DJ curating the "${lens.key}" portion of a road-trip set.`,
     lens.instruction,
@@ -1951,6 +2020,7 @@ export function buildLensPrompt(
     brief.countryName
       ? `Current country chart context: ${brief.countryName}.`
       : "",
+    localTouchLine,
     brief.weatherFeel ? `Weather right now: ${brief.weatherFeel}.` : "",
     brief.explorationAngle ? `Freshness directive: ${brief.explorationAngle}.` : "",
     brief.storyDirective ? `Drive story: ${brief.storyDirective}` : "",
