@@ -1,6 +1,58 @@
 import { describe, expect, it } from "vitest";
 
-import { nextPollIntervalSeconds, reconcilePlaybackModel, shouldRegenerate } from "../src/playback/reconcile.js";
+import { nextPollIntervalSeconds, playbackOwnership, reconcilePlaybackModel, shouldRegenerate } from "../src/playback/reconcile.js";
+
+describe("playbackOwnership", () => {
+  const dev = "tesla-web-device";
+
+  it("hands over when a podcast/episode is playing", () => {
+    expect(
+      playbackOwnership({ isPlaying: true, currentlyPlayingType: "episode", activeDeviceId: dev, journeyDeviceId: dev }),
+    ).toBe("handed-over");
+  });
+
+  it("stays owned for a journey track on a different device (we follow Connect, not hand over)", () => {
+    // The user moved our journey to another Connect device (e.g. the native Tesla app). That is
+    // not a takeover — the backend follows the active device and keeps curating there.
+    expect(
+      playbackOwnership({ isPlaying: true, currentlyPlayingType: "track", activeDeviceId: "phone-xyz", journeyDeviceId: dev }),
+    ).toBe("owned");
+  });
+
+  it("still hands over to a podcast even on a different device", () => {
+    expect(
+      playbackOwnership({ isPlaying: true, currentlyPlayingType: "episode", activeDeviceId: "phone-xyz", journeyDeviceId: dev }),
+    ).toBe("handed-over");
+  });
+
+  it("hands over on an off-journey (external) track", () => {
+    expect(
+      playbackOwnership({ isPlaying: true, currentlyPlayingType: "track", activeDeviceId: dev, journeyDeviceId: dev, reconcileKind: "external" }),
+    ).toBe("handed-over");
+  });
+
+  it("stays owned for a journey track on the journey device", () => {
+    expect(
+      playbackOwnership({ isPlaying: true, currentlyPlayingType: "track", activeDeviceId: dev, journeyDeviceId: dev, reconcileKind: "same" }),
+    ).toBe("owned");
+  });
+
+  it("stays owned when nothing is playing (idle, not a takeover)", () => {
+    expect(playbackOwnership({ isPlaying: false, currentlyPlayingType: "episode", activeDeviceId: "phone" })).toBe("owned");
+  });
+
+  it("stays owned on ads (neutral, don't hand over)", () => {
+    expect(
+      playbackOwnership({ isPlaying: true, currentlyPlayingType: "ad", activeDeviceId: dev, journeyDeviceId: dev }),
+    ).toBe("owned");
+  });
+
+  it("does not hand over on device mismatch when the journey device is unknown", () => {
+    expect(
+      playbackOwnership({ isPlaying: true, currentlyPlayingType: "track", activeDeviceId: "phone" }),
+    ).toBe("owned");
+  });
+});
 
 describe("reconcilePlaybackModel", () => {
   const model = ["t-active", "t-q1", "t-q2", "t-q3"];

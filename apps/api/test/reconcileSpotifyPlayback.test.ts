@@ -104,7 +104,7 @@ function buildService(overrides: Record<string, string> = {}) {
     new XaiSongScout({ apiKey: config.XAI_API_KEY, baseUrl: config.XAI_BASE_URL, model: config.XAI_MODEL, mock: true }),
     new NoopOpenMusicClient()
   );
-  return { service, store, adapter };
+  return { service, store, adapter, db };
 }
 
 async function startSpotifyJourney(service: JourneyService) {
@@ -672,5 +672,151 @@ describe("connect-mode queue sync", () => {
     await service.reconcileSpotifyPlayback(journey.id);
 
     expect(service.skipFeedbackFor(journey.id).artists.size).toBe(0);
+  });
+});
+
+describe("respects user takeover (podcast / foreign device)", () => {
+  it("hands over to a podcast/episode instead of pushing music", async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+    adapter.startCalls.length = 0;
+
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: "some-episode",
+      currentlyPlayingType: "episode",
+      activeDeviceId: "tesla-web-device",
+      queuedProviderTrackIds: [],
+    };
+    const outcome = await service.reconcileSpotifyPlayback(journey.id);
+
+    expect(outcome).toBe("external");
+    expect(adapter.startCalls.length).toBe(0);
+    expect(store.getPlaybackSession(journey.id)!.status).toBe("external");
+  });
+
+  it("follows (does NOT hand over) when our track moves to a different device", async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+    const model = modelOf(store, journey.id);
+    adapter.startCalls.length = 0;
+    adapter.transferCalls.length = 0;
+
+    // A journey track id, but playing on the user's phone (foreign Connect device). This is the
+    // user moving our journey to another device — we follow it rather than treating it as a
+    // takeover, and never steal playback back.
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: model[0].providerTrackId,
+      currentlyPlayingType: "track",
+      activeDeviceId: "phone-xyz",
+      queuedProviderTrackIds: [],
+    };
+    const outcome = await service.reconcileSpotifyPlayback(journey.id);
+
+    expect(outcome).toBe("playing");
+    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("phone-xyz");
+    expect(adapter.startCalls.length).toBe(0);
+    expect(adapter.transferCalls.length).toBe(0);
+  });
+
+  it("auto-resumes when a journey track returns to the journey device", async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: "some-episode",
+      currentlyPlayingType: "episode",
+      activeDeviceId: "phone-xyz",
+      queuedProviderTrackIds: [],
+    };
+    await service.reconcileSpotifyPlayback(journey.id);
+    expect(store.getPlaybackSession(journey.id)!.status).toBe("external");
+
+    const model = modelOf(store, journey.id);
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: model[0].providerTrackId,
+      currentlyPlayingType: "track",
+      activeDeviceId: "tesla-web-device",
+      queuedProviderTrackIds: [],
+    };
+    const outcome = await service.reconcileSpotifyPlayback(journey.id);
+    expect(outcome).toBe("playing");
+    expect(store.getPlaybackSession(journey.id)!.status).toBe("playing");
+  });
+
+  it("kill-switch off → legacy behavior keeps the journey track on the foreign device", async () => {
+    const { service, store, adapter } = buildService({
+      PLAYBACK_RESPECT_USER_TAKEOVER: "false",
+    });
+    const journey = await startSpotifyJourney(service);
+    const model = modelOf(store, journey.id);
+    adapter.startCalls.length = 0;
+
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: model[0].providerTrackId,
+      currentlyPlayingType: "track",
+      activeDeviceId: "phone-xyz", // foreign device, but a journey track
+      queuedProviderTrackIds: [],
+    };
+    const outcome = await service.reconcileSpotifyPlayback(journey.id);
+    // With the guard disabled, the foreign device is ignored and the journey track counts as owned.
+    expect(outcome).toBe("playing");
+    expect(store.getPlaybackSession(journey.id)!.status).toBe("playing");
+  });
+});
+
+describe("inactivity auto-stop", () => {
+  function backdateActivity(db: ReturnType<typeof buildService>["db"], journeyId: string, minutesAgo: number) {
+    const iso = new Date(Date.now() - minutesAgo * 60_000).toISOString();
+    db.run("UPDATE journeys SET last_active_at = ? WHERE id = ?", [iso, journeyId]);
+  }
+
+  it("stops a journey with no activity past the threshold", async () => {
+    const { service, store, db } = buildService({ JOURNEY_INACTIVITY_STOP_MINUTES: "45" });
+    const journey = await startSpotifyJourney(service);
+    backdateActivity(db, journey.id, 60);
+
+    await service.maybeRefreshActiveJourneys();
+
+    expect(store.getJourney(journey.id)!.status).toBe("stopped");
+    expect(store.listActiveJourneys()).toHaveLength(0);
+  });
+
+  it("keeps a journey with recent activity active", async () => {
+    const { service, store, db } = buildService({ JOURNEY_INACTIVITY_STOP_MINUTES: "45" });
+    const journey = await startSpotifyJourney(service);
+    backdateActivity(db, journey.id, 5);
+
+    await service.maybeRefreshActiveJourneys();
+
+    expect(store.getJourney(journey.id)!.status).toBe("active");
+  });
+
+  it("never auto-stops when the threshold is 0 (disabled)", async () => {
+    const { service, store, db } = buildService({ JOURNEY_INACTIVITY_STOP_MINUTES: "0" });
+    const journey = await startSpotifyJourney(service);
+    backdateActivity(db, journey.id, 10_000);
+
+    await service.maybeRefreshActiveJourneys();
+
+    expect(store.getJourney(journey.id)!.status).toBe("active");
+  });
+
+  it("telemetry ingest refreshes last activity", async () => {
+    const { service, store, db } = buildService({ JOURNEY_INACTIVITY_STOP_MINUTES: "45" });
+    const journey = await startSpotifyJourney(service);
+    backdateActivity(db, journey.id, 60);
+
+    await service.ingestTelemetry({
+      timestampIso: new Date().toISOString(),
+      speedKph: 80,
+    } as never);
+
+    const refreshed = store.getJourney(journey.id)!;
+    expect(Date.now() - new Date(refreshed.lastActiveAtIso!).getTime()).toBeLessThan(10_000);
   });
 });

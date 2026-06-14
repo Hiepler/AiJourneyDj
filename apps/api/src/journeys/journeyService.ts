@@ -16,6 +16,7 @@ import type {
 import { normalizeText, songKey } from "@ai-journey-dj/core";
 import { derivePhase } from "@ai-journey-dj/telemetry";
 import {
+  playbackOwnership,
   reconcilePlaybackModel,
   shouldRegenerate,
 } from "../playback/reconcile.js";
@@ -62,6 +63,24 @@ import {
 export const DEFAULT_TASTE_WEIGHT = 0.4;
 /** Hard cap on the top-artists fetch so taste loading can never block a journey. */
 const TASTE_FETCH_TIMEOUT_MS = 8_000;
+/**
+ * Analyze reasons triggered by an explicit user action — these may push to the device even if the
+ * user has "taken over". Anything not listed here is a background/automated pass that the
+ * takeover guard can suppress (time-window, low-buffer, skip-refill, moment:*, phase-change, …).
+ */
+const USER_INITIATED_REASONS = new Set([
+  "initial",
+  "manual",
+  "device-ready",
+  "skip-next",
+  "skip-previous",
+  "music-wish",
+  "music-wish-undo",
+  "kids-mode",
+  "geo-manual",
+  "taste-override",
+  "tidal-fallback",
+]);
 const COUNTRY_NAME_BY_CODE: Record<string, string> = {
   AT: "Austria",
   CH: "Switzerland",
@@ -76,6 +95,7 @@ const COUNTRY_NAME_BY_CODE: Record<string, string> = {
 
 import type { AppConfig } from "../config/env.js";
 import { contextFromJourney, type Store } from "../db/store.js";
+import { forwardGeocodeFor, geocodeFor } from "../telemetry/geocoder.js";
 import type { TidalAuthService } from "../auth/tidalAuth.js";
 import type { SpotifyAuthService } from "../auth/spotifyAuth.js";
 import type { TeslaLiveReader } from "../telemetry/teslaFleetPoller.js";
@@ -203,10 +223,122 @@ export class JourneyService {
       this.store.setPlannedDurationMinutes(journey.id, event.etaMinutes);
     }
     this.store.saveTelemetry(journey.id, event, phase);
+    // Telemetry arriving means the car is on / driving → keep the journey alive (inactivity auto-stop).
+    this.store.touchJourneyActivity(journey.id);
+    if (event.countryName || event.countryCode || event.coarseRegion) {
+      // Persist the last real GPS fix so the country survives telemetry gaps / app reloads.
+      this.store.setLastGeo(journey.id, {
+        countryName: event.countryName,
+        countryCode: event.countryCode,
+        coarseRegion: event.coarseRegion,
+        source: event.geoSource === "manual" ? "manual" : "reverse-geocode",
+      });
+    }
     if (phase !== journey.phase) {
       this.store.updateJourneyPhase(journey.id, phase);
     }
     return phase;
+  }
+
+  /**
+   * Seeds the journey's geo fallback from its destination text (forward geocode) when no location is
+   * known yet. Runs at most once per journey (the persisted seed makes later calls cheap no-ops) and
+   * never overwrites a real GPS fix. Best-effort: any failure leaves the journey geo-less as before.
+   */
+  private async ensureBaselineGeo(journey: JourneyRecord): Promise<void> {
+    if (journey.lastGeo?.countryName || journey.lastGeo?.countryCode) return;
+    const latest = this.store.latestTelemetry(journey.id);
+    if (latest?.countryName || latest?.countryCode) return;
+    const result = await forwardGeocodeFor(journey.destination, {
+      baseUrl: this.config.GEOCODER_SEARCH_URL,
+    }).catch(() => undefined);
+    if (!result) return;
+    this.store.setLastGeo(journey.id, {
+      countryName: result.countryName,
+      countryCode: result.countryCode,
+      coarseRegion: result.coarseRegion,
+      source: "destination",
+    });
+    this.store.audit(
+      journey.id,
+      "geo.baseline_seeded",
+      `Seeded location from destination: ${result.coarseRegion ?? result.countryName ?? journey.destination}.`,
+      { source: "destination" },
+    );
+  }
+
+  /**
+   * Browser-geolocation fallback: reverse-geocodes coordinates the web client obtained from the
+   * device (Tesla browser / phone) and stores them as the last-known location. Higher-confidence than
+   * the destination seed; deferred to live telemetry when that's present (see store.setLastGeo).
+   */
+  async setBrowserGeo(
+    journeyId: string,
+    lat: number,
+    lon: number,
+  ): Promise<void> {
+    const journey = this.store.getJourney(journeyId);
+    if (!journey || journey.status !== "active") return;
+    const result = await geocodeFor(lat, lon, {
+      baseUrl: this.config.GEOCODER_URL,
+    }).catch(() => undefined);
+    if (!result) return;
+    this.store.setLastGeo(journeyId, {
+      countryName: result.countryName,
+      countryCode: result.countryCode,
+      coarseRegion: result.coarseRegion,
+      source: "browser-gps",
+    });
+    this.store.audit(
+      journeyId,
+      "geo.browser_fix",
+      `Browser location: ${result.coarseRegion ?? result.countryName ?? "unknown"}.`,
+      { source: "browser-gps" },
+    );
+  }
+
+  /**
+   * Manual location override: the driver types a place ("Marseille", "France"); we forward-geocode it
+   * and pin it as the highest-confidence geo (wins over auto-detection until they cross into a
+   * different country or revert). A blank place clears the override. Re-curates immediately.
+   */
+  async setManualGeo(journeyId: string, place: string): Promise<JourneyRecord> {
+    const journey = this.getJourneyOrThrow(journeyId);
+    if (journey.status !== "active") {
+      throw new Error("Cannot set the location of a stopped journey.");
+    }
+    const trimmed = place.trim();
+    if (!trimmed) {
+      this.store.clearLastGeo(journeyId);
+      this.store.audit(
+        journeyId,
+        "geo.manual_cleared",
+        "Manual location cleared — back to auto-detection.",
+        {},
+      );
+      await this.analyzeJourney(journeyId, "geo-manual");
+      return this.getJourneyOrThrow(journeyId);
+    }
+    const result = await forwardGeocodeFor(trimmed, {
+      baseUrl: this.config.GEOCODER_SEARCH_URL,
+    }).catch(() => undefined);
+    if (!result) {
+      throw new Error(`Couldn't find a place called "${trimmed}".`);
+    }
+    this.store.setLastGeo(journeyId, {
+      countryName: result.countryName,
+      countryCode: result.countryCode,
+      coarseRegion: result.coarseRegion,
+      source: "manual",
+    });
+    this.store.audit(
+      journeyId,
+      "geo.manual_set",
+      `Manual location: ${result.coarseRegion ?? result.countryName ?? trimmed}.`,
+      { source: "manual" },
+    );
+    await this.analyzeJourney(journeyId, "geo-manual");
+    return this.getJourneyOrThrow(journeyId);
   }
 
   async startJourney(input: StartJourneyInput): Promise<JourneyRecord> {
@@ -339,6 +471,11 @@ export class JourneyService {
     this.activeMoment.set(journeyId, moment);
     this.store.audit(journeyId, "moment.triggered", moment.directive, {
       type: moment.type,
+      // Surfaced to the cockpit family-event banner (e.g. "Welcome to Italy!").
+      country:
+        moment.candidateRequest?.kind === "geo-charts"
+          ? moment.candidateRequest.country
+          : undefined,
     });
     if (moment.type === "arrival") {
       this.store.audit(
@@ -678,6 +815,9 @@ export class JourneyService {
       throw new Error("Cannot analyze a stopped journey.");
     }
 
+    // Seed a geo baseline from the destination once, so "local touch" works before/without live GPS.
+    await this.ensureBaselineGeo(journey);
+
     const startedAt = Date.now();
     this.logger.info(
       { journeyId, reason, provider: journey.provider },
@@ -756,6 +896,62 @@ export class JourneyService {
     );
     await this.analyzeJourney(journeyId, "taste-override");
     return this.getJourneyOrThrow(journeyId);
+  }
+
+  /**
+   * "Kids am Steuer": toggle the kids bias and re-curate immediately so the change is felt at once.
+   * Lets Disney/film/animated singalongs in (which family mode otherwise avoids) while staying clean.
+   */
+  async setKidsMode(
+    journeyId: string,
+    enabled: boolean,
+  ): Promise<JourneyRecord> {
+    const journey = this.getJourneyOrThrow(journeyId);
+    if (journey.status !== "active") {
+      throw new Error("Cannot change kids mode of a stopped journey.");
+    }
+    this.store.setKidsMode(journeyId, enabled);
+    this.store.audit(
+      journeyId,
+      "kids_mode.toggled",
+      `Kids mode ${enabled ? "enabled" : "disabled"}.`,
+      { enabled },
+    );
+    await this.analyzeJourney(journeyId, "kids-mode");
+    return this.getJourneyOrThrow(journeyId);
+  }
+
+  /**
+   * Device-independent playback position for the karaoke view — works on the car's / phone's native
+   * Spotify (Connect) too, not just the in-browser SDK player. Best-effort: degrades to not-playing on
+   * any error so the cockpit simply shows static lyrics. `activeProviderTrackId`/`durationMs` let the
+   * client request a duration-matched lyrics version for the *actually playing* track.
+   */
+  async getPlaybackProgress(journeyId: string): Promise<{
+    progressMs?: number;
+    durationMs?: number;
+    isPlaying: boolean;
+    activeProviderTrackId?: string;
+  }> {
+    const journey = this.store.getJourney(journeyId);
+    if (!journey || journey.provider !== "spotify") {
+      return { isPlaying: false };
+    }
+    try {
+      const accessToken = await this.spotifyAuth.getAccessToken();
+      const state = await this.spotifyAdapter.getPlaybackState({
+        accessToken,
+        market: this.config.SPOTIFY_MARKET,
+      });
+      return {
+        progressMs: state.progressMs,
+        durationMs: state.durationMs,
+        isPlaying: state.isPlaying,
+        activeProviderTrackId: state.activeProviderTrackId,
+      };
+    } catch {
+      return { isPlaying: false };
+    }
   }
 
   /** Per-journey master switch for Adaptive Drive Mode. Disabling clears any engaged mode. */
@@ -891,6 +1087,7 @@ export class JourneyService {
       activeTrack,
       queueTracks,
       shouldStart: true,
+      automated: false, // device registration is a user action
     });
 
     const playedActiveTrack = playbackApplied.deviceReachable
@@ -978,6 +1175,7 @@ export class JourneyService {
             activeTrack: picked.activeTrack,
             queueTracks: picked.queueTracks,
             shouldStart: true,
+            automated: false, // explicit skip is a user action
           });
         }
         return this.store.getPlaybackSession(journeyId) as PlaybackSession;
@@ -1829,6 +2027,7 @@ export class JourneyService {
             activeTrack?.providerUri &&
             (!session?.activeTrack || session.status !== "playing"),
           ),
+          automated: !USER_INITIATED_REASONS.has(reason),
         })
       : { deviceReachable: false };
 
@@ -2175,6 +2374,7 @@ export class JourneyService {
           activeTrack: args.activeTrack,
           queueTracks: args.queueTracks,
           shouldStart: true,
+          automated: false, // playExact is only reached via explicit skip/reclaim
         });
       }
       if (isSpotifyRateLimitError(error)) {
@@ -2283,7 +2483,42 @@ export class JourneyService {
     activeTrack?: ResolvedTrack;
     queueTracks: ResolvedTrack[];
     shouldStart: boolean;
+    /** True for background/automated passes — these are suppressed when the user has taken over. */
+    automated: boolean;
   }): Promise<{ deviceReachable: boolean; rateLimited?: boolean }> {
+    // Don't hijack the user: on automated passes, bail if they're playing a podcast or have moved
+    // playback to another device. (Foreign off-journey tracks are handled in reconcileSpotifyPlayback.)
+    if (args.automated && this.config.PLAYBACK_RESPECT_USER_TAKEOVER) {
+      const state = await this.spotifyAdapter
+        .getPlaybackState({
+          accessToken: args.accessToken,
+          market: this.config.SPOTIFY_MARKET,
+        })
+        .catch(() => undefined);
+      if (
+        state &&
+        playbackOwnership({
+          isPlaying: state.isPlaying,
+          currentlyPlayingType: state.currentlyPlayingType,
+          activeDeviceId: state.activeDeviceId,
+          journeyDeviceId: args.deviceId,
+        }) === "handed-over"
+      ) {
+        const session = this.store.getPlaybackSession(args.journeyId);
+        if (session && session.status !== "external") {
+          this.saveSession({
+            ...session,
+            status: "external",
+            lastHeartbeatAt: new Date().toISOString(),
+          });
+        }
+        this.logger.info(
+          { journeyId: args.journeyId, device: state.activeDeviceId },
+          "playback.suppressed_user_takeover",
+        );
+        return { deviceReachable: false };
+      }
+    }
     const deviceId = await this.spotifyAdapter.resolvePlaybackDeviceId({
       accessToken: args.accessToken,
       preferredDeviceId: args.deviceId,
@@ -2425,6 +2660,31 @@ export class JourneyService {
     }
 
     for (const journey of this.store.listActiveJourneys()) {
+      // Inactivity auto-stop: car off overnight (no telemetry / no owned playback for a long
+      // time) → end the journey so it stops curating and never silently resumes the next day.
+      const inactivityMs = this.config.JOURNEY_INACTIVITY_STOP_MINUTES * 60_000;
+      if (inactivityMs > 0) {
+        const lastActive = new Date(
+          journey.lastActiveAtIso ?? journey.createdAtIso,
+        ).getTime();
+        if (Date.now() - lastActive > inactivityMs) {
+          this.store.audit(
+            journey.id,
+            "journey.auto_stopped",
+            `Auto-stopped after ${this.config.JOURNEY_INACTIVITY_STOP_MINUTES} min of inactivity.`,
+            { reason: "inactivity" },
+          );
+          await this.stopJourney(journey.id);
+          continue;
+        }
+      }
+
+      const session = this.store.getPlaybackSession(journey.id);
+      // The user has taken over playback (podcast / another device) — don't re-curate or push.
+      if (session?.status === "external") {
+        continue;
+      }
+
       const latest = this.store.latestPlaylistUpdate(journey.id);
       if (!latest) {
         await this.analyzeJourney(journey.id, "recovery");
@@ -2432,7 +2692,6 @@ export class JourneyService {
       }
 
       const ageMs = Date.now() - new Date(latest.createdAtIso).getTime();
-      const session = this.store.getPlaybackSession(journey.id);
       const unresolvedBuffer =
         journey.provider === "spotify"
           ? (session?.queuedTrackIds.length ?? 0)
@@ -2531,6 +2790,23 @@ export class JourneyService {
       return "idle";
     }
 
+    // User took over: a podcast/episode is on air, or playback moved to another device. Don't
+    // reclaim or refill — mark the session external and back off until they return.
+    if (
+      this.config.PLAYBACK_RESPECT_USER_TAKEOVER &&
+      playbackOwnership({
+        isPlaying: state.isPlaying,
+        currentlyPlayingType: state.currentlyPlayingType,
+        activeDeviceId: state.activeDeviceId,
+        journeyDeviceId: journey.spotifyDeviceId ?? session.deviceId,
+      }) === "handed-over"
+    ) {
+      if (session.status !== "external") {
+        this.saveSession({ ...session, status: "external", lastHeartbeatAt: now });
+      }
+      return "external";
+    }
+
     const stored = this.store
       .listResolvedTracks(journeyId)
       .filter((track) => track.provider === "spotify");
@@ -2553,28 +2829,30 @@ export class JourneyService {
       new Set(stored.map((track) => track.providerTrackId)),
     );
 
-    // Follow Spotify Connect: when one of OUR tracks is playing on a device other than the one
-    // we're bound to (the user moved playback to the native Tesla app via Connect), re-bind the
-    // journey + session to the active device so subsequent refills/curation target where the
-    // user is actually listening — instead of queueing to the now-idle browser player. This is
-    // passive: we never transfer or start, so we don't disrupt the playback we're following.
+    // A journey track is genuinely on air → the journey is alive (feeds inactivity auto-stop),
+    // and — when it's playing on a device other than the one we're bound to (the user moved
+    // playback to the native Tesla app via Connect) — we follow Spotify Connect by re-binding
+    // the journey + session to the active device so subsequent refills/curation target where
+    // the user is actually listening, instead of queueing to the now-idle browser player. The
+    // follow is passive: we never transfer or start, so we don't disrupt the playback we follow.
     if (
-      (result.kind === "same" ||
-        result.kind === "skipped" ||
-        result.kind === "drifted") &&
-      state.activeDeviceId &&
-      state.activeDeviceId !== session.deviceId
+      result.kind === "same" ||
+      result.kind === "skipped" ||
+      result.kind === "drifted"
     ) {
-      const previousDeviceId = session.deviceId;
-      this.store.updateJourneySpotifyDevice(journeyId, state.activeDeviceId);
-      session = { ...session, deviceId: state.activeDeviceId };
-      this.saveSession({ ...session, lastHeartbeatAt: now });
-      this.store.audit(
-        journeyId,
-        "spotify.device_followed",
-        "Followed Spotify Connect to the active playback device.",
-        { fromDeviceId: previousDeviceId, toDeviceId: state.activeDeviceId },
-      );
+      this.store.touchJourneyActivity(journeyId);
+      if (state.activeDeviceId && state.activeDeviceId !== session.deviceId) {
+        const previousDeviceId = session.deviceId;
+        this.store.updateJourneySpotifyDevice(journeyId, state.activeDeviceId);
+        session = { ...session, deviceId: state.activeDeviceId };
+        this.saveSession({ ...session, lastHeartbeatAt: now });
+        this.store.audit(
+          journeyId,
+          "spotify.device_followed",
+          "Followed Spotify Connect to the active playback device.",
+          { fromDeviceId: previousDeviceId, toDeviceId: state.activeDeviceId },
+        );
+      }
     }
 
     if (result.kind === "drifted") {

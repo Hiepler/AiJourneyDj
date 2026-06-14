@@ -10,6 +10,7 @@ export interface Journey {
   phase: string;
   status: "active" | "stopped";
   tasteWeight?: number;
+  kidsMode?: boolean;
   spotifyDeviceId?: string;
   spotifyPlaylistId?: string;
   spotifyPlaylistUrl?: string;
@@ -105,7 +106,7 @@ export interface JourneyDetail {
     coarseRegion?: string;
     countryName?: string;
     countryCode?: string;
-    geoSource?: "reverse-geocode" | "manual" | "simulated";
+    geoSource?: "reverse-geocode" | "manual" | "simulated" | "browser-gps" | "destination";
     localTimeIso?: string;
     lastTelemetryAt?: string;
     driveMode?: "calm" | "focus" | "neutral";
@@ -113,6 +114,12 @@ export interface JourneyDetail {
     driveModeSignals?: string[];
     adaptiveModeEnabled?: boolean;
     telemetrySource?: "streaming" | "polling";
+    /** Freshly-fired journey moment for the family-event banner. */
+    moment?: {
+      type: "traffic_jam" | "traffic_release" | "golden_hour" | "temp_swing" | "border_crossing" | "arrival";
+      country?: string;
+      atIso: string;
+    };
   };
   taste?: {
     topGenres: string[];
@@ -133,7 +140,7 @@ export interface LiveTelemetry {
     coarseRegion?: string;
     countryName?: string;
     countryCode?: string;
-    geoSource?: "reverse-geocode" | "manual" | "simulated";
+    geoSource?: "reverse-geocode" | "manual" | "simulated" | "browser-gps" | "destination";
     speedBucket?: string;
     temperatureBucket?: string;
     autopilotState?: "off" | "available" | "active" | "unknown";
@@ -243,6 +250,33 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   journey: (id: string) => request<JourneyDetail>(`/journeys/${id}`),
+  lyrics: (journeyId: string, trackId: string, durationSec?: number) =>
+    request<{
+      synced: { timeMs: number; text: string }[] | null;
+      plain: string | null;
+      reason?: string;
+    }>(
+      `/journeys/${journeyId}/tracks/${trackId}/lyrics${
+        durationSec ? `?durationSec=${Math.round(durationSec)}` : ""
+      }`,
+    ),
+  playbackProgress: (journeyId: string) =>
+    request<{
+      progressMs?: number;
+      durationMs?: number;
+      isPlaying: boolean;
+      activeProviderTrackId?: string;
+    }>(`/journeys/${journeyId}/playback-progress`),
+  setGeo: (journeyId: string, lat: number, lon: number) =>
+    request<{ ok: boolean }>(`/journeys/${journeyId}/geo`, {
+      method: "POST",
+      body: JSON.stringify({ lat, lon }),
+    }),
+  setManualGeo: (journeyId: string, place: string) =>
+    request<Journey>(`/journeys/${journeyId}/geo/manual`, {
+      method: "POST",
+      body: JSON.stringify({ place }),
+    }),
   analyze: (id: string) =>
     request<{ id: string; batchSize: number; status: string }>(
       `/journeys/${id}/analyze`,
@@ -266,6 +300,11 @@ export const api = {
     }),
   setAdaptiveMode: (id: string, enabled: boolean) =>
     request<Journey>(`/journeys/${id}/adaptive-mode`, {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    }),
+  setKidsMode: (id: string, enabled: boolean) =>
+    request<Journey>(`/journeys/${id}/kids-mode`, {
       method: "POST",
       body: JSON.stringify({ enabled }),
     }),

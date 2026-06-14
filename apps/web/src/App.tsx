@@ -51,6 +51,15 @@ import { activeDeviceLabel } from "./lib/devices.js";
 
 const passengerModes = ["solo", "couple", "family", "friends"];
 
+// Short German labels for where the journey's location came from (shown on the cockpit geo chip).
+const GEO_SOURCE_LABELS: Record<string, string> = {
+  "reverse-geocode": "GPS",
+  "browser-gps": "Browser",
+  destination: "Ziel",
+  manual: "manuell",
+  simulated: "Sim"
+};
+
 // German labels for the Adaptive Drive Mode reasons surfaced by the backend.
 const DRIVE_MODE_REASON_LABELS: Record<string, string> = {
   "heavy traffic": "zäher Verkehr",
@@ -58,6 +67,44 @@ const DRIVE_MODE_REASON_LABELS: Record<string, string> = {
   "wintry conditions": "winterlich",
   "long night drive": "Nachtfahrt"
 };
+
+// Synced-karaoke tuning. Lines light up slightly early so they're easy to follow; we re-sync the
+// playback position only every few seconds and interpolate in between (smooth + low API load).
+const LYRICS_LOOKAHEAD_MS = 250;
+const LYRICS_SYNC_INTERVAL_MS = 2500;
+
+/** Index of the line that should be highlighted at a given (interpolated) playback position. */
+function lyricLineIndex(synced: { timeMs: number }[], positionMs: number): number {
+  let index = -1;
+  for (let i = 0; i < synced.length; i += 1) {
+    if (synced[i].timeMs <= positionMs + LYRICS_LOOKAHEAD_MS) index = i;
+    else break;
+  }
+  return index;
+}
+
+// Celebratory family-event copy for a freshly-fired journey moment (shown briefly in the cockpit).
+function momentEventLabel(moment: {
+  type: string;
+  country?: string;
+}): { emoji: string; text: string } {
+  switch (moment.type) {
+    case "border_crossing":
+      return { emoji: "🎉", text: moment.country ? `Willkommen in ${moment.country}!` : "Neues Land!" };
+    case "traffic_release":
+      return { emoji: "🚀", text: "Freie Fahrt — der Stau ist durch!" };
+    case "traffic_jam":
+      return { emoji: "🧘", text: "Stau — wir bleiben entspannt" };
+    case "golden_hour":
+      return { emoji: "🌇", text: "Golden Hour" };
+    case "temp_swing":
+      return { emoji: "🌡️", text: "Das Wetter dreht" };
+    case "arrival":
+      return { emoji: "🏁", text: "Gleich da!" };
+    default:
+      return { emoji: "✨", text: "Neuer Moment" };
+  }
+}
 
 const PHASES: { key: string; label: string; Icon: typeof Navigation }[] = [
   { key: "departure", label: "Departure", Icon: Navigation },
@@ -104,6 +151,15 @@ export function App() {
   const [destination, setDestination] = useState("Lago di Garda");
   const [liveTelemetry, setLiveTelemetry] = useState<LiveTelemetry>();
   const [liveLoading, setLiveLoading] = useState(false);
+  const [momentBanner, setMomentBanner] = useState<{ type: string; country?: string; atIso: string }>();
+  const [karaokeOn, setKaraokeOn] = useState(false);
+  const [lyrics, setLyrics] = useState<{
+    trackId: string;
+    synced: { timeMs: number; text: string }[] | null;
+    plain: string | null;
+  }>();
+  const [lyricsLoading, setLyricsLoading] = useState(false);
+  const [activeLyricIndex, setActiveLyricIndex] = useState(-1);
   const [selectedMood, setSelectedMood] = useState(MOOD_PRESETS[0].key);
   const [passengerMode, setPassengerMode] = useState("couple");
   const [spotifyStatus, setSpotifyStatus] = useState<SpotifySdkStatus>("idle");
@@ -116,6 +172,10 @@ export function App() {
   const [wishText, setWishText] = useState("");
   const [wishDrawerOpen, setWishDrawerOpen] = useState(false);
   const [wishLoading, setWishLoading] = useState(false);
+  const [kidsBusy, setKidsBusy] = useState(false);
+  const [geoEditing, setGeoEditing] = useState(false);
+  const [geoInput, setGeoInput] = useState("");
+  const [geoBusy, setGeoBusy] = useState(false);
   const [listening, setListening] = useState(false);
   const speechSupported = typeof window !== "undefined" && isSpeechRecognitionSupported();
   const [loading, setLoading] = useState(false);
@@ -131,6 +191,18 @@ export function App() {
   // Guards the start-screen auto-pull to one Tesla read per session (reset when a journey starts), so
   // a health re-fetch toggling teslaConnected can't re-trigger billed reads.
   const liveAutoFetchedRef = useRef(false);
+  // Last journey moment shown as a banner — so the same fired moment isn't celebrated twice.
+  const shownMomentAtRef = useRef<string | undefined>(undefined);
+  // The currently-sung karaoke line, kept scrolled into view.
+  const activeLineRef = useRef<HTMLParagraphElement | null>(null);
+  // Journey id for which we've already attempted the one-shot browser-geolocation fallback.
+  const geoFallbackTriedRef = useRef<string | undefined>(undefined);
+  // Latest playback-position sample for synced karaoke; the rAF loop interpolates from it with a local
+  // clock so highlighting stays smooth between (infrequent) re-syncs. durationRef feeds lyrics matching.
+  const lyricsSyncRef = useRef<{ positionMs: number; isPlaying: boolean; atMs: number } | undefined>(
+    undefined,
+  );
+  const lyricsDurationRef = useRef<number | undefined>(undefined);
   // Holds the latest playback actions so MediaSession / visibility handlers never call stale closures.
   const playbackActionsRef = useRef({
     next: () => {},
@@ -215,6 +287,39 @@ export function App() {
     liveAutoFetchedRef.current = true;
     refreshLiveTelemetry();
   }, [activeJourneyId, health?.teslaConnected]);
+
+  // Browser-geolocation fallback for the "local touch": when a journey is active but we have no real
+  // GPS fix (only the destination seed or nothing), ask the device once for its position and hand the
+  // coordinates to the API. Works on phones and on Teslas whose firmware exposes geolocation; silently
+  // does nothing when unavailable or denied. Live Tesla GPS, when present, always takes precedence.
+  useEffect(() => {
+    if (!activeJourneyId || !navigator.geolocation) return;
+    const source = detail?.context?.geoSource;
+    if (source === "reverse-geocode" || source === "browser-gps" || source === "manual") return;
+    if (geoFallbackTriedRef.current === activeJourneyId) return;
+    geoFallbackTriedRef.current = activeJourneyId;
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        void api
+          .setGeo(activeJourneyId, position.coords.latitude, position.coords.longitude)
+          .then(() => api.journey(activeJourneyId))
+          .then(setDetail)
+          .catch(() => undefined);
+      },
+      () => undefined,
+      { enableHighAccuracy: false, timeout: 10_000, maximumAge: 600_000 },
+    );
+  }, [activeJourneyId, detail?.context?.geoSource]);
+
+  // Celebrate a freshly-fired journey moment as a brief, auto-dismissing family-event banner.
+  useEffect(() => {
+    const moment = detail?.context?.moment;
+    if (!moment || shownMomentAtRef.current === moment.atIso) return;
+    shownMomentAtRef.current = moment.atIso;
+    setMomentBanner(moment);
+    const timer = setTimeout(() => setMomentBanner(undefined), 7000);
+    return () => clearTimeout(timer);
+  }, [detail?.context?.moment?.atIso]);
 
   const queuedIds = detail?.playbackSession?.queuedTrackIds ?? [];
   const bufferTracks = useMemo(() => {
@@ -513,6 +618,36 @@ export function App() {
     }
   }
 
+  async function applyManualGeo(place: string) {
+    if (!activeJourneyId || geoBusy) return;
+    setGeoBusy(true);
+    setError(undefined);
+    try {
+      await api.setManualGeo(activeJourneyId, place);
+      setDetail(await api.journey(activeJourneyId));
+      setGeoEditing(false);
+      setGeoInput("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGeoBusy(false);
+    }
+  }
+
+  async function toggleKidsMode() {
+    if (!activeJourneyId || kidsBusy) return;
+    setKidsBusy(true);
+    setError(undefined);
+    try {
+      await api.setKidsMode(activeJourneyId, !detail?.journey.kidsMode);
+      setDetail(await api.journey(activeJourneyId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setKidsBusy(false);
+    }
+  }
+
   function startWishSpeech() {
     const Ctor = getSpeechRecognitionCtor();
     if (!Ctor) return;
@@ -730,7 +865,109 @@ export function App() {
       : "Start Journey";
 
   const heroTrack = activeTrack ?? displayTracks[0];
+  const heroTrackId = heroTrack?.id;
   const upcoming = displayTracks.filter((track) => track.id !== heroTrack?.id).slice(0, 5);
+
+  // Fetch lyrics for the current track when karaoke is open (cached server-side; once per track). Pass
+  // the playing track's duration so the server matches the right recording (live/remix/edit drift).
+  useEffect(() => {
+    if (!karaokeOn || !activeJourneyId || !heroTrackId) return;
+    if (lyrics?.trackId === heroTrackId) return;
+    let cancelled = false;
+    setLyricsLoading(true);
+    const durationSec = lyricsDurationRef.current
+      ? lyricsDurationRef.current / 1000
+      : undefined;
+    api
+      .lyrics(activeJourneyId, heroTrackId, durationSec)
+      .then((res) => {
+        if (!cancelled) setLyrics({ trackId: heroTrackId, synced: res.synced, plain: res.plain });
+      })
+      .catch(() => {
+        if (!cancelled) setLyrics({ trackId: heroTrackId, synced: null, plain: null });
+      })
+      .finally(() => {
+        if (!cancelled) setLyricsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [karaokeOn, activeJourneyId, heroTrackId, lyrics?.trackId]);
+
+  // Re-sync the playback position periodically. Prefers the in-browser SDK (free, no API call); falls
+  // back to the device-independent server endpoint so synced karaoke works on the car's/phone's native
+  // Spotify (Connect) too. Resets on track change so a stale position can't highlight the wrong line.
+  useEffect(() => {
+    setActiveLyricIndex(-1);
+    lyricsSyncRef.current = undefined;
+    if (!karaokeOn || !lyrics?.synced || lyrics.synced.length === 0 || !activeJourneyId) return;
+    let active = true;
+    const syncTick = async () => {
+      try {
+        const sdkState = await playerRef.current?.getCurrentState?.();
+        if (active && sdkState && typeof sdkState.position === "number") {
+          lyricsSyncRef.current = {
+            positionMs: sdkState.position,
+            isPlaying: !sdkState.paused,
+            atMs: performance.now(),
+          };
+          if (typeof sdkState.duration === "number") lyricsDurationRef.current = sdkState.duration;
+          return;
+        }
+      } catch {
+        // fall through to the server source
+      }
+      try {
+        const progress = await api.playbackProgress(activeJourneyId);
+        if (active && typeof progress.progressMs === "number") {
+          lyricsSyncRef.current = {
+            positionMs: progress.progressMs,
+            isPlaying: progress.isPlaying,
+            atMs: performance.now(),
+          };
+          if (typeof progress.durationMs === "number") lyricsDurationRef.current = progress.durationMs;
+        }
+      } catch {
+        // best-effort: leave the last sample, the panel just shows static lyrics
+      }
+    };
+    void syncTick();
+    const timer = setInterval(() => void syncTick(), LYRICS_SYNC_INTERVAL_MS);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [karaokeOn, activeJourneyId, lyrics?.synced, lyrics?.trackId]);
+
+  // Interpolate between re-syncs with a local clock and only re-render when the highlighted line
+  // actually changes — smooth highlighting without per-frame React churn.
+  useEffect(() => {
+    const synced = lyrics?.synced;
+    if (!karaokeOn || !synced || synced.length === 0) return;
+    let raf = 0;
+    const loop = () => {
+      const sample = lyricsSyncRef.current;
+      if (sample) {
+        const estimated = sample.isPlaying
+          ? sample.positionMs + (performance.now() - sample.atMs)
+          : sample.positionMs;
+        const index = lyricLineIndex(synced, estimated);
+        setActiveLyricIndex((prev) => (prev === index ? prev : index));
+      }
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, [karaokeOn, lyrics?.synced, lyrics?.trackId]);
+
+  useEffect(() => {
+    if (activeLyricIndex < 0) return;
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    activeLineRef.current?.scrollIntoView({
+      behavior: reduceMotion ? "auto" : "smooth",
+      block: "center",
+    });
+  }, [activeLyricIndex]);
   const currentPhase = phaseMeta(detail?.journey.phase);
   const PhaseIcon = currentPhase.Icon;
   const activeVibe = nearestVibe(detail?.journey.tasteWeight);
@@ -1066,6 +1303,14 @@ export function App() {
           </section>
         ) : (
           <section className="cockpit">
+            {momentBanner ? (
+              <div className={`moment-banner moment-${momentBanner.type}`} role="status">
+                <span className="moment-emoji" aria-hidden="true">
+                  {momentEventLabel(momentBanner).emoji}
+                </span>
+                <span className="moment-text">{momentEventLabel(momentBanner).text}</span>
+              </div>
+            ) : null}
             <div className="stage glass">
               <div className="stage-head">
                 <span className="now-label">{nowLabel}</span>
@@ -1076,12 +1321,82 @@ export function App() {
 
               {contextPills.length > 0 ? (
                 <div className="context-strip" aria-label="Live drive context">
-                  {contextPills.map((pill) => (
-                    <span className="ctx-pill" key={pill.key}>
-                      <span className="ctx-label">{pill.label}</span>
-                      <span className="ctx-value">{pill.value}</span>
-                    </span>
-                  ))}
+                  {/* "region" is rendered by the editable geo chip below, so skip it here. */}
+                  {contextPills
+                    .filter((pill) => pill.key !== "region")
+                    .map((pill) => (
+                      <span className="ctx-pill" key={pill.key}>
+                        <span className="ctx-label">{pill.label}</span>
+                        <span className="ctx-value">{pill.value}</span>
+                      </span>
+                    ))}
+                </div>
+              ) : null}
+
+              {activeJourneyId ? (
+                <div className="geo-control">
+                  {geoEditing ? (
+                    <form
+                      className="geo-edit"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        void applyManualGeo(geoInput);
+                      }}
+                    >
+                      <input
+                        autoFocus
+                        className="geo-input"
+                        disabled={geoBusy}
+                        onChange={(event) => setGeoInput(event.target.value)}
+                        placeholder="Ort/Land, z.B. Marseille"
+                        value={geoInput}
+                      />
+                      <button className="geo-btn" disabled={geoBusy || !geoInput.trim()} type="submit">
+                        OK
+                      </button>
+                      {detail?.context?.geoSource === "manual" ? (
+                        <button
+                          className="geo-btn ghost"
+                          disabled={geoBusy}
+                          onClick={() => void applyManualGeo("")}
+                          type="button"
+                        >
+                          Auto
+                        </button>
+                      ) : null}
+                      <button
+                        className="geo-btn ghost"
+                        disabled={geoBusy}
+                        onClick={() => {
+                          setGeoEditing(false);
+                          setGeoInput("");
+                        }}
+                        type="button"
+                      >
+                        ✕
+                      </button>
+                    </form>
+                  ) : (
+                    <button
+                      className="geo-chip"
+                      onClick={() => {
+                        setGeoInput(detail?.context?.coarseRegion ?? detail?.context?.countryName ?? "");
+                        setGeoEditing(true);
+                      }}
+                      title="Standort korrigieren — bestimmt den lokalen Musik-Touch"
+                      type="button"
+                    >
+                      <MapPin size={13} />
+                      <span className="geo-place">
+                        {detail?.context?.coarseRegion ?? detail?.context?.countryName ?? "Standort setzen"}
+                      </span>
+                      {detail?.context?.geoSource ? (
+                        <span className="geo-src">
+                          {GEO_SOURCE_LABELS[detail.context.geoSource] ?? detail.context.geoSource}
+                        </span>
+                      ) : null}
+                    </button>
+                  )}
                 </div>
               ) : null}
 
@@ -1099,6 +1414,13 @@ export function App() {
                       )?.whyLine;
                       return why ? <p className="why-line">{why}</p> : null;
                     })()}
+                    <button
+                      className={`lyrics-toggle${karaokeOn ? " on" : ""}`}
+                      onClick={() => setKaraokeOn((on) => !on)}
+                      type="button"
+                    >
+                      <Mic size={14} /> {karaokeOn ? "Lyrics aus" : "Mitsingen"}
+                    </button>
                   </div>
                 </div>
               ) : tracksFailed ? (
@@ -1116,6 +1438,35 @@ export function App() {
               ) : (
                 <p className="muted big">{loading || tracksPending ? "Finding songs for your journey…" : "No tracks yet."}</p>
               )}
+
+              {karaokeOn && heroTrack ? (
+                <div className="karaoke" aria-label="Songtext zum Mitsingen">
+                  {lyricsLoading && lyrics?.trackId !== heroTrack.id ? (
+                    <p className="karaoke-empty">
+                      <Loader2 className="spin" size={16} /> Songtext wird geladen…
+                    </p>
+                  ) : lyrics?.synced && lyrics.synced.length > 0 ? (
+                    <div className="karaoke-lines">
+                      <span className="sr-only" aria-live="polite">
+                        {activeLyricIndex >= 0 ? lyrics.synced[activeLyricIndex]?.text : ""}
+                      </span>
+                      {lyrics.synced.map((line, index) => (
+                        <p
+                          className={`karaoke-line${index === activeLyricIndex ? " active" : ""}`}
+                          key={`${line.timeMs}-${index}`}
+                          ref={index === activeLyricIndex ? activeLineRef : undefined}
+                        >
+                          {line.text || "♪"}
+                        </p>
+                      ))}
+                    </div>
+                  ) : lyrics?.plain ? (
+                    <pre className="karaoke-plain">{lyrics.plain}</pre>
+                  ) : (
+                    <p className="karaoke-empty">Kein Songtext gefunden — einfach mitsummen 🎶</p>
+                  )}
+                </div>
+              ) : null}
 
               <div className="transport">
                 {demo ? (
@@ -1236,6 +1587,15 @@ export function App() {
                     </button>
                   );
                 })}
+                <button
+                  className={`vibe-toggle${detail?.journey.kidsMode ? " on" : ""}`}
+                  disabled={kidsBusy || !activeJourneyId}
+                  onClick={toggleKidsMode}
+                  title="Kids am Steuer — Disney- & Film-Singalongs für die Kleinen"
+                  type="button"
+                >
+                  🧸 Kids
+                </button>
               </div>
 
               <div className="wish-bar">
