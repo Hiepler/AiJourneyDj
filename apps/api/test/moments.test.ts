@@ -197,4 +197,43 @@ describe("detectJourneyMoment", () => {
     });
     expect(moment).toBeUndefined();
   });
+
+  it("charge resume fires on a real charging→complete transition (even a tiny SoC delta)", () => {
+    const moment = detectJourneyMoment({
+      context: { phase: "cruise" } as any,
+      history: [
+        snap({
+          chargingState: "complete",
+          batteryPercent: 38,
+          countryName: "Italy",
+          countryCode: "IT",
+        }),
+        snap({ chargingState: "charging", batteryPercent: 36 }),
+        snap({ chargingState: "charging", batteryPercent: 35 }),
+      ],
+      previousPhase: "cruise",
+      act: "act_one",
+      lastMomentAt: new Map(),
+      nowMs: NOW,
+      config: cfg,
+    });
+    expect(moment?.type).toBe("charge_resume");
+    expect(moment!.candidateRequest).toEqual({
+      kind: "geo-charts",
+      country: "Italy",
+    });
+  });
+
+  it("does not fire charge approach while the car is actively charging", () => {
+    const moment = detectJourneyMoment({
+      context: { phase: "cruise" } as any,
+      history: [snap({ chargingState: "charging", batteryPercent: 15 })],
+      previousPhase: "cruise",
+      act: "act_one",
+      lastMomentAt: new Map(),
+      nowMs: NOW,
+      config: cfg,
+    });
+    expect(moment?.type).not.toBe("charge_approach");
+  });
 });

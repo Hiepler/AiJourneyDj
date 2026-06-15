@@ -1620,14 +1620,28 @@ export function buildMusicalBrief(
     ? new Date(context.localTimeIso).getHours()
     : 12;
   const band = timeOfDayBand(hour);
-  const arc = tripArc(
+  const globalArc = tripArc(
     context.elapsedMinutes ?? 0,
     context.plannedDurationMinutes,
     context.etaMinutes,
   );
+  // After a charge stop (legIndex > 0) the energy curve reopens per leg: recompute the arc from
+  // leg-local elapsed time (no per-leg planned duration; remaining ETA is the rest of this leg) so a
+  // fresh leg starts in "opening" instead of riding the global "deep/closing" tail. The whole-trip
+  // shape (archetype, long-haul exploration) still comes from the global arc.
+  const arc =
+    typeof context.legIndex === "number" &&
+    context.legIndex > 0 &&
+    typeof context.legElapsedMinutes === "number"
+      ? tripArc(context.legElapsedMinutes, undefined, context.etaMinutes)
+      : globalArc;
   // Gestalt of the whole drive: a 20-min weekend errand vs a weekday commute vs a long haul.
   const dayCtx = dayContextFrom(context.localTimeIso, band);
-  const archetype = tripArchetype(arc.effectiveTotalMin, band, dayCtx.dayKind);
+  const archetype = tripArchetype(
+    globalArc.effectiveTotalMin,
+    band,
+    dayCtx.dayKind,
+  );
   const strategy = archetypeStrategy(archetype);
   const mood = resolveMood(context, { band, arc });
   const primaryMood = MOODS[mood.primary];

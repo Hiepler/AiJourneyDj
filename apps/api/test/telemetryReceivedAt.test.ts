@@ -191,4 +191,42 @@ describe("telemetry received_at (store)", () => {
     const ctx = contextFromJourney(journey, undefined, [], "streaming");
     expect(ctx.telemetrySource).toBe("streaming");
   });
+
+  it("round-trips the normalized charging state", () => {
+    const store = freshStore();
+    store.createJourney(makeJourney());
+    store.saveTelemetry(
+      "journey-1",
+      event({ batteryPercent: 41, chargingState: "charging" }),
+      "cruise",
+    );
+    expect(store.latestTelemetry("journey-1")).toMatchObject({
+      chargingState: "charging",
+    });
+  });
+
+  it("persists a leg start and derives leg-local elapsed minutes", () => {
+    const store = freshStore();
+    const journey = {
+      ...makeJourney(),
+      createdAtIso: new Date(Date.now() - 60 * 60_000).toISOString(),
+    };
+    store.createJourney(journey);
+
+    // Leg 0: no leg start yet → leg-elapsed mirrors whole-journey elapsed (~60 min).
+    const leg0 = contextFromJourney(store.getJourney("journey-1")!);
+    expect(leg0.legElapsedMinutes).toBeGreaterThan(55);
+
+    // A charge stop stamps a fresh leg start ~2 min ago.
+    store.updateJourneyLegIndex(
+      "journey-1",
+      1,
+      new Date(Date.now() - 2 * 60_000).toISOString(),
+    );
+    const leg1 = contextFromJourney(store.getJourney("journey-1")!);
+    expect(leg1.legIndex).toBe(1);
+    expect(leg1.legElapsedMinutes).toBeLessThan(5);
+    // Whole-journey elapsed keeps counting from journey start.
+    expect(leg1.elapsedMinutes).toBeGreaterThan(55);
+  });
 });
