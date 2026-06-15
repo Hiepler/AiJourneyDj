@@ -869,3 +869,147 @@ describe("inactivity auto-stop", () => {
     expect(Date.now() - new Date(refreshed.lastActiveAtIso!).getTime()).toBeLessThan(10_000);
   });
 });
+
+describe("device pin (explicit choice defended)", () => {
+  /** Explicitly pick a device (pin:true), like the driver tapping it in the picker. */
+  async function pickDevice(service: JourneyService, journeyId: string, deviceId: string) {
+    await service.registerSpotifyDevice(journeyId, deviceId, "ready", {
+      syncOnly: true,
+      transfer: true,
+      pin: true,
+    });
+  }
+
+  it("does not follow away from an explicitly pinned device to a transient one", async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+    await pickDevice(service, journey.id, "native-tesla-app");
+    const model = modelOf(store, journey.id);
+    store.clearAuditEvents(journey.id, "spotify.device_follow_suppressed");
+
+    // A lingering web player momentarily becomes the active device, still holding our track.
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: model[0].providerTrackId,
+      queuedProviderTrackIds: [],
+      activeDeviceId: "this-browser",
+    };
+    const outcome = await service.reconcileSpotifyPlayback(journey.id);
+
+    expect(outcome).toBe("playing");
+    // The explicit pick is defended — NOT rebound to the browser.
+    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("native-tesla-app");
+    expect(store.getPlaybackSession(journey.id)!.deviceId).toBe("native-tesla-app");
+    expect(
+      store.latestAuditEvent(journey.id, "spotify.device_follow_suppressed"),
+    ).toBeDefined();
+  });
+
+  it("clears the pin once the chosen device is active, then follows a genuine later move", async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+    await pickDevice(service, journey.id, "native-tesla-app");
+    const model = modelOf(store, journey.id);
+
+    // The chosen device becomes the active one → pin fulfilled.
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: model[0].providerTrackId,
+      queuedProviderTrackIds: [],
+      activeDeviceId: "native-tesla-app",
+    };
+    await service.reconcileSpotifyPlayback(journey.id);
+
+    // Later the driver genuinely moves playback to their phone in the Spotify app — we follow it
+    // (the pin no longer suppresses, proving it's a short grace window, not a permanent lock).
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: model[0].providerTrackId,
+      queuedProviderTrackIds: [],
+      activeDeviceId: "pixel-phone",
+    };
+    const outcome = await service.reconcileSpotifyPlayback(journey.id);
+
+    expect(outcome).toBe("playing");
+    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("pixel-phone");
+    expect(store.getPlaybackSession(journey.id)!.deviceId).toBe("pixel-phone");
+  });
+
+  it("follows immediately when the pin window is disabled (0s)", async () => {
+    const { service, store, adapter } = buildService({
+      PLAYBACK_DEVICE_PIN_SECONDS: "0",
+    });
+    const journey = await startSpotifyJourney(service);
+    await pickDevice(service, journey.id, "native-tesla-app");
+    const model = modelOf(store, journey.id);
+
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: model[0].providerTrackId,
+      queuedProviderTrackIds: [],
+      activeDeviceId: "this-browser",
+    };
+    await service.reconcileSpotifyPlayback(journey.id);
+
+    // No pin set (feature disabled) → legacy passive follow rebinds to the active device.
+    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("this-browser");
+  });
+
+  it("reclaims onto the pinned device, not the foreign active device", async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+    await pickDevice(service, journey.id, "native-tesla-app");
+
+    // Drain the queue so a foreign track is read as autoplay takeover.
+    const session = store.getPlaybackSession(journey.id)!;
+    store.savePlaybackSession({
+      ...session,
+      queuedTrackIds: [],
+      playedTrackIds: [...(session.playedTrackIds ?? []), ...session.queuedTrackIds],
+    });
+    adapter.startCalls.length = 0;
+
+    // Autoplay put a foreign track on air on a lingering browser device.
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: "spotify-autoplay-foreign",
+      queuedProviderTrackIds: [],
+      activeDeviceId: "this-browser",
+    };
+    const outcome = await service.reconcileSpotifyPlayback(journey.id);
+
+    expect(outcome).toBe("playing");
+    expect(adapter.startCalls.length).toBe(1);
+    // Reclaim (re)starts our track on the pinned Tesla, never the foreign browser device.
+    expect(adapter.startCalls[0].deviceId).toBe("native-tesla-app");
+
+    const deadline = Date.now() + 20_000;
+    while (service.isAnalysisPending(journey.id)) {
+      if (Date.now() > deadline) throw new Error("reclaim analysis did not finish");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  });
+
+  it("auto-adopt (pin:false) does not pin — a later follow is not suppressed", async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+    // Opportunistic auto-adopt path: transfer but NO pin.
+    await service.registerSpotifyDevice(journey.id, "native-tesla-app", "ready", {
+      syncOnly: true,
+      transfer: true,
+      pin: false,
+    });
+    const model = modelOf(store, journey.id);
+
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: model[0].providerTrackId,
+      queuedProviderTrackIds: [],
+      activeDeviceId: "this-browser",
+    };
+    await service.reconcileSpotifyPlayback(journey.id);
+
+    // No pin → the follow is free to track the active device (auto-adopt never locks a choice).
+    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("this-browser");
+  });
+});
