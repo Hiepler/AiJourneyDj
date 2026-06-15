@@ -37,16 +37,9 @@ import {
 import { api, type Health, type Journey, type JourneyDetail, type LiveTelemetry, type MusicWish, type SpotifyDevice } from "./lib/api.js";
 import { queueTracksInPlaybackOrder } from "./lib/queue.js";
 import { getSpeechRecognitionCtor, isSpeechRecognitionSupported } from "./lib/speech.js";
-import {
-  connectSpotifyWebPlayer,
-  spotifySdkStatusLabel,
-  startSpotifyBrowserPlayback,
-  type SpotifyPlayerInstance,
-  type SpotifySdkStatus
-} from "./spotifyPlayer.js";
 import { MOOD_PRESETS, moodPromptFor } from "./lib/moods.js";
 import { buildContextPills, telemetryLiveness } from "./lib/driveContext.js";
-import { applyMediaSession, buildMediaMetadata, createSilentKeepAlive, type SilentKeepAlive } from "./backgroundAudio.js";
+import { applyMediaSession, buildMediaMetadata } from "./backgroundAudio.js";
 import { activeDeviceLabel } from "./lib/devices.js";
 
 const passengerModes = ["solo", "couple", "family", "friends"];
@@ -162,8 +155,9 @@ export function App() {
   const [activeLyricIndex, setActiveLyricIndex] = useState(-1);
   const [selectedMood, setSelectedMood] = useState(MOOD_PRESETS[0].key);
   const [passengerMode, setPassengerMode] = useState("couple");
-  const [spotifyStatus, setSpotifyStatus] = useState<SpotifySdkStatus>("idle");
-  const [spotifyDeviceId, setSpotifyDeviceId] = useState<string>();
+  // Connect-only: the web app is a remote control + cockpit. Playback always runs on the active
+  // Spotify Connect device (the native Tesla app) — we never create a browser Web Playback player,
+  // which previously stole playback whenever the Tesla browser was in the foreground.
   const [isPaused, setIsPaused] = useState<boolean | undefined>();
   const [retuningPhase, setRetuningPhase] = useState<string>();
   const [vibeTuning, setVibeTuning] = useState<string>();
@@ -182,9 +176,10 @@ export function App() {
   const [error, setError] = useState<string>();
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
-  const playerRef = useRef<SpotifyPlayerInstance | null>(null);
   const recoveryAttemptedFor = useRef<string | undefined>(undefined);
-  const keepAliveRef = useRef<SilentKeepAlive | null>(null);
+  // Device id we've already auto-taken-over for, so a newly-active Connect device is bound + started
+  // exactly once (not on every devices poll). Reset when the journey changes.
+  const autoTakeoverForRef = useRef<string | undefined>(undefined);
   // Did the driver type/pick a destination themselves? A ref (not state) so the in-flight live
   // pre-fill reads the *latest* value at apply-time and never clobbers a destination typed mid-fetch.
   const destinationTouchedRef = useRef(false);
@@ -210,19 +205,6 @@ export function App() {
     toggle: () => {},
     resume: () => {}
   });
-  // Mirrors `remoteDeviceActive` for background handlers: when a remote Connect device (e.g. the
-  // native Tesla app) is playing the journey, the visibility handler must not re-assert browser
-  // playback and steal it back.
-  const remoteDeviceActiveRef = useRef(false);
-
-  function armKeepAlive() {
-    // Must be created inside a user gesture (button click) so autoplay permits the silent element.
-    if (!keepAliveRef.current) {
-      keepAliveRef.current = createSilentKeepAlive();
-    }
-    keepAliveRef.current.play();
-  }
-
   useEffect(() => {
     refreshShell().catch((err) =>
       setError(err instanceof Error ? err.message : "API unreachable. Run npm run dev and ensure port 3000 is free.")
@@ -256,8 +238,13 @@ export function App() {
     return () => clearInterval(timer);
   }, [activeJourneyId]);
 
+  // Poll Connect devices while the device menu is open OR a Spotify journey is active — the latter
+  // lets us follow/auto-adopt the active device (native Tesla app) for Connect-only playback.
   useEffect(() => {
-    if (!showDevices) return;
+    const shouldPoll =
+      showDevices ||
+      Boolean(activeJourneyId && detail?.journey.provider === "spotify" && !health?.spotifyMock);
+    if (!shouldPoll) return;
     let cancelled = false;
     const load = () =>
       api
@@ -272,7 +259,7 @@ export function App() {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [showDevices]);
+  }, [showDevices, activeJourneyId, detail?.journey.provider, health?.spotifyMock]);
 
   // On the start screen, pull one live reading as soon as the car is connected so the destination/ETA
   // can pre-fill — instead of waiting for the journey's first background poll. Strictly one-shot per
@@ -341,17 +328,23 @@ export function App() {
   const displayTracks = bufferTracks.length > 0 ? bufferTracks : (detail?.tracks ?? []).slice(0, 8);
   const bufferCount = queuedIds.length > 0 ? queuedIds.length : displayTracks.length;
   const activeTrack = detail?.playbackSession?.activeTrack;
-  const playbackStatus = detail?.playbackSession?.status;
-  const isPlayingInBrowser = playbackStatus === "playing";
+  const sessionStatus = detail?.playbackSession?.status;
   const isSpotifyJourney = detail?.journey.provider === "spotify";
-  const needsPlayAudio =
+  const boundDeviceId = detail?.journey.spotifyDeviceId;
+  const activeConnectDevice = devices.find((device) => device.isActive);
+  // Connect-only: nothing plays in the browser. The driver starts playback on a Spotify Connect
+  // device (the native Tesla app); we surface that when no device is playing/paused yet.
+  const needsConnectStart =
     !health?.spotifyMock &&
     isSpotifyJourney &&
-    Boolean(activeJourneyId && displayTracks.length > 0 && (!isPlayingInBrowser || spotifyStatus === "autoplay_failed"));
+    Boolean(activeJourneyId && displayTracks.length > 0) &&
+    sessionStatus !== "playing" &&
+    sessionStatus !== "paused";
+  // No Connect device available at all → guide the driver to open Spotify on the Tesla once.
+  const needsConnectDevice = needsConnectStart && !activeConnectDevice && !boundDeviceId;
   const tracksPending = Boolean(activeJourneyId && detail && detail.tracks.length === 0 && !detail.analysisError);
   const tracksFailed = Boolean(detail?.analysisError || detail?.latestUpdate?.status === "failed");
   const spotifyConnected = Boolean(health?.spotifyConnected);
-  const spotifyReady = health?.spotifyMock || spotifyStatus === "ready";
 
   const liveReading = liveTelemetry?.reading ?? undefined;
   // Freshness badge for the start screen: a real timestamp when we have a reading, "no live data"
@@ -373,15 +366,17 @@ export function App() {
     if (!health.spotifyPremium) return "Spotify Premium is required for playback.";
     if (health.spotifyMock) return "Demo mode — playback is simulated.";
     if (activeJourneyId && detail) {
-      if (needsPlayAudio) {
-        return "Tracks ready — tap Play audio to hear them in this browser.";
+      if (needsConnectDevice) {
+        return "Starte Spotify einmal auf dem Tesla-Display — die Wiedergabe wird dann automatisch übernommen.";
+      }
+      if (needsConnectStart) {
+        return "Tracks ready — tap “Im Auto starten” to play on your Spotify Connect device.";
       }
       const queueHint = detail.journey.provider === "spotify" ? `Queue ${bufferCount}/5` : "TIDAL playlist";
       return `${queueHint} · ${detail.journey.phase}`;
     }
-    if (!spotifyReady) return spotifySdkStatusLabel(spotifyStatus);
     return "Ready — press Start Journey.";
-  }, [activeJourneyId, bufferCount, detail, health, needsPlayAudio, spotifyConnected, spotifyReady, spotifyStatus]);
+  }, [activeJourneyId, bufferCount, detail, health, needsConnectDevice, needsConnectStart, spotifyConnected]);
 
   async function refreshShell(options: { autoResume?: boolean } = {}) {
     const { autoResume = true } = options;
@@ -413,33 +408,19 @@ export function App() {
     }
   }
 
-  async function ensureSpotifyDevice(): Promise<string | undefined> {
-    if (health?.spotifyMock) {
-      return "mock-webplayer";
+  // Connect-only device resolver: the id of the active Spotify Connect device (native Tesla app),
+  // the device already bound to the journey, or — when exactly one device is visible — that one.
+  // No browser Web Playback player is ever created, so we can never steal playback from the car.
+  async function resolveConnectDeviceId(): Promise<string | undefined> {
+    if (boundDeviceId) return boundDeviceId;
+    try {
+      const { devices: list } = await api.spotifyDevices();
+      setDevices(list);
+      const active = list.find((device) => device.isActive);
+      return active?.id ?? (list.length === 1 ? list[0]?.id : undefined);
+    } catch {
+      return activeConnectDevice?.id;
     }
-    if (spotifyDeviceId && spotifyStatus === "ready") {
-      return spotifyDeviceId;
-    }
-
-    const token = await api.spotifyToken();
-    if (!token.premium) {
-      setSpotifyStatus("account_error");
-      throw new Error("Spotify Premium is required.");
-    }
-
-    const { deviceId, player } = await connectSpotifyWebPlayer({
-      accessToken: token.accessToken,
-      existingPlayer: playerRef.current,
-      onStatus: setSpotifyStatus,
-      onDeviceLost: () => {
-        setSpotifyDeviceId(undefined);
-        setSpotifyStatus("not_ready");
-      },
-      onPlaybackChange: (snapshot) => setIsPaused(snapshot.paused)
-    });
-    playerRef.current = player;
-    setSpotifyDeviceId(deviceId);
-    return deviceId;
   }
 
   function connectSpotify() {
@@ -455,7 +436,17 @@ export function App() {
     setLoading(true);
     setError(undefined);
     try {
-      const deviceId = await ensureSpotifyDevice();
+      if (!health?.spotifyMock) {
+        const token = await api.spotifyToken();
+        if (!token.premium) {
+          throw new Error("Spotify Premium is required for playback.");
+        }
+      }
+      // Connect-only: start on the active Connect device (native Tesla app). Passing the deviceId to
+      // startJourney lets the initial analysis transfer + start playback there directly. If no device
+      // is active yet, the journey/queue is still built and the auto-adopt effect binds + starts it
+      // once Spotify is opened on the car.
+      const deviceId = await resolveConnectDeviceId();
       const journey = await api.startJourney({
         destination,
         userPrompt: moodPromptFor(selectedMood),
@@ -464,14 +455,8 @@ export function App() {
         deviceId
       });
       setActiveJourneyId(journey.id);
-      if (deviceId) {
-        await api.registerSpotifyDevice(journey.id, { deviceId, status: "ready", syncOnly: true });
-      }
+      autoTakeoverForRef.current = deviceId;
       setDetail(await api.journey(journey.id));
-      if (playerRef.current) {
-        await startSpotifyBrowserPlayback(playerRef.current);
-        armKeepAlive();
-      }
       await refreshShell();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -480,35 +465,14 @@ export function App() {
     }
   }
 
-  async function loadTracks(syncPlayback: boolean) {
+  async function loadTracks() {
     if (!activeJourneyId) return;
     setLoading(true);
     setError(undefined);
     try {
+      // The backend is the single playback authority: analyze (re)builds the queue and, on the
+      // bound Connect device, transfers/queues onto it. We never assert playback from the browser.
       await api.analyze(activeJourneyId);
-      // Never hijack a device that is actively playing (e.g. the Tesla via Connect):
-      // a refresh then only re-analyzes and reloads the view.
-      const playingElsewhere =
-        detail?.playbackSession?.status === "playing" &&
-        Boolean(detail.journey.spotifyDeviceId) &&
-        detail.journey.spotifyDeviceId !== spotifyDeviceId;
-      if (syncPlayback && !playingElsewhere && spotifyConnected && !health?.spotifyMock && isSpotifyJourney) {
-        try {
-          const deviceId = await ensureSpotifyDevice();
-          if (deviceId) {
-            await api.registerSpotifyDevice(activeJourneyId, { deviceId, status: "ready", syncOnly: true });
-          }
-          if (playerRef.current) {
-            await startSpotifyBrowserPlayback(playerRef.current);
-          }
-        } catch (playbackError) {
-          setError(
-            playbackError instanceof Error
-              ? `Tracks loaded, but playback is not ready: ${playbackError.message}`
-              : "Tracks loaded, but playback is not ready."
-          );
-        }
-      }
       setDetail(await api.journey(activeJourneyId));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -519,7 +483,7 @@ export function App() {
   }
 
   async function refreshQueue() {
-    await loadTracks(true);
+    await loadTracks();
   }
 
   async function submitMusicWish(text: string, source: "text" | "voice" | "chip" = "text") {
@@ -667,26 +631,26 @@ export function App() {
   }
 
   async function retryAnalysis() {
-    await loadTracks(false);
+    await loadTracks();
   }
 
-  async function playAudio() {
+  async function playOnCar() {
     if (!activeJourneyId || health?.spotifyMock || !isSpotifyJourney) return;
     setLoading(true);
     setError(undefined);
     try {
-      const deviceId = await ensureSpotifyDevice();
-      if (deviceId) {
-        await new Promise((resolve) => setTimeout(resolve, 400));
-        // Explicit user intent: "play here in the browser" may take over playback.
-        await api.registerSpotifyDevice(activeJourneyId, { deviceId, status: "ready", syncOnly: true, transfer: true });
+      const deviceId = await resolveConnectDeviceId();
+      if (!deviceId) {
+        setError(
+          "Kein aktives Spotify-Gerät gefunden. Starte Spotify einmal auf dem Tesla-Display — die Wiedergabe wird dann automatisch übernommen."
+        );
+        return;
       }
+      // Explicit user start on the chosen Connect device. The backend transfers + starts there.
+      await api.registerSpotifyDevice(activeJourneyId, { deviceId, status: "ready", transfer: true });
+      autoTakeoverForRef.current = deviceId;
+      setIsPaused(false);
       setDetail(await api.journey(activeJourneyId));
-      if (playerRef.current) {
-        await startSpotifyBrowserPlayback(playerRef.current);
-        armKeepAlive();
-        setSpotifyStatus("ready");
-      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -703,8 +667,7 @@ export function App() {
       // exact selected track (+ our queue) on the device. We must NOT skip via the Web Playback SDK
       // here — the SDK only skips *relatively*, walking Spotify's own (drifting) queue, which is
       // what made the played track differ from the one shown.
-      const deviceId =
-        detail?.journey.spotifyDeviceId ?? spotifyDeviceId ?? (await ensureSpotifyDevice().catch(() => undefined));
+      const deviceId = boundDeviceId ?? (await resolveConnectDeviceId().catch(() => undefined));
       await api.skipTrack(activeJourneyId, { direction, deviceId });
       setDetail(await api.journey(activeJourneyId));
       setIsPaused(false);
@@ -716,28 +679,17 @@ export function App() {
   }
 
   async function togglePlayPause() {
-    const activeId = detail?.journey.spotifyDeviceId;
-    const onBrowser = !activeId || activeId === spotifyDeviceId;
-    if (!onBrowser && activeJourneyId) {
-      // External device: control it through the Web API instead of the in-browser SDK.
-      const willPause = playing;
-      setIsPaused(willPause);
-      try {
-        await api.setTransport(activeJourneyId, willPause ? "pause" : "resume");
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      }
+    if (!activeJourneyId) return;
+    // Nothing playing yet → this is really a "start on the car" action.
+    if (needsConnectStart) {
+      await playOnCar();
       return;
     }
-    const player = playerRef.current;
-    if (!player?.togglePlay) {
-      await playAudio();
-      return;
-    }
-    setIsPaused((previous) => (previous === undefined ? false : !previous));
-    armKeepAlive();
+    // Connect-only: control the active device through the Web API (never the in-browser SDK).
+    const willPause = playing;
+    setIsPaused(willPause);
     try {
-      await player.togglePlay();
+      await api.setTransport(activeJourneyId, willPause ? "pause" : "resume");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -748,8 +700,10 @@ export function App() {
     setShowDevices(false);
     setError(undefined);
     try {
-      // Explicit device choice from the menu may take over playback.
-      await api.registerSpotifyDevice(activeJourneyId, { deviceId: device.id, status: "ready", syncOnly: true, transfer: true });
+      // Explicit device choice from the menu takes over playback on that Connect device.
+      await api.registerSpotifyDevice(activeJourneyId, { deviceId: device.id, status: "ready", transfer: true });
+      autoTakeoverForRef.current = device.id;
+      setIsPaused(false);
       setDetail(await api.journey(activeJourneyId));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -811,7 +765,7 @@ export function App() {
     if (!shouldRecover) return;
     if (recoveryAttemptedFor.current === activeJourneyId) return;
     recoveryAttemptedFor.current = activeJourneyId;
-    void loadTracks(false);
+    void loadTracks();
   }, [activeJourneyId, detail?.needsAnalysis, detail?.analysisError, detail?.tracks.length, loading]);
 
   async function startTidalJourney() {
@@ -842,12 +796,7 @@ export function App() {
     if (!activeJourneyId) return;
     setLoading(true);
     try {
-      playerRef.current?.disconnect();
-      playerRef.current = null;
-      keepAliveRef.current?.dispose();
-      keepAliveRef.current = null;
-      setSpotifyDeviceId(undefined);
-      setSpotifyStatus("idle");
+      autoTakeoverForRef.current = undefined;
       setIsPaused(undefined);
       await api.stop(activeJourneyId);
       setActiveJourneyId(undefined);
@@ -894,29 +843,17 @@ export function App() {
     };
   }, [karaokeOn, activeJourneyId, heroTrackId, lyrics?.trackId]);
 
-  // Re-sync the playback position periodically. Prefers the in-browser SDK (free, no API call); falls
-  // back to the device-independent server endpoint so synced karaoke works on the car's/phone's native
-  // Spotify (Connect) too. Resets on track change so a stale position can't highlight the wrong line.
+  // Re-sync the playback position periodically from the device-independent server endpoint so synced
+  // karaoke works on the car's/phone's native Spotify (Connect). Resets on track change so a stale
+  // position can't highlight the wrong line.
   useEffect(() => {
     setActiveLyricIndex(-1);
     lyricsSyncRef.current = undefined;
     if (!karaokeOn || !lyrics?.synced || lyrics.synced.length === 0 || !activeJourneyId) return;
     let active = true;
     const syncTick = async () => {
-      try {
-        const sdkState = await playerRef.current?.getCurrentState?.();
-        if (active && sdkState && typeof sdkState.position === "number") {
-          lyricsSyncRef.current = {
-            positionMs: sdkState.position,
-            isPlaying: !sdkState.paused,
-            atMs: performance.now(),
-          };
-          if (typeof sdkState.duration === "number") lyricsDurationRef.current = sdkState.duration;
-          return;
-        }
-      } catch {
-        // fall through to the server source
-      }
+      // Connect-only: position comes from the device-independent server endpoint (works for the
+      // car's native Spotify Connect playback; there is no in-browser SDK to read from).
       try {
         const progress = await api.playbackProgress(activeJourneyId);
         if (active && typeof progress.progressMs === "number") {
@@ -976,19 +913,10 @@ export function App() {
   const driveMode = detail?.context?.driveMode;
   const driveModeLabel = DRIVE_MODE_REASON_LABELS[detail?.context?.driveModeReason ?? ""] ?? detail?.context?.driveModeReason;
   const demo = Boolean(health?.spotifyMock);
-  // Connect mode: the truth about a remote device (Tesla native app) lives in the server
-  // session (kept fresh by the backend poller) — the local SDK only knows the browser player.
-  const remoteDeviceActive = Boolean(
-    detail?.journey.spotifyDeviceId &&
-      detail.journey.spotifyDeviceId !== spotifyDeviceId,
-  );
-  remoteDeviceActiveRef.current = remoteDeviceActive;
-  const sessionStatus = detail?.playbackSession?.status;
-  const playing = remoteDeviceActive
-    ? sessionStatus === "playing"
-    : isPaused === undefined
-      ? isPlayingInBrowser
-      : !isPaused;
+  // Connect-only: the playback truth lives in the server session (kept fresh by the backend poller
+  // that follows the active Connect device). `isPaused` is a short-lived optimistic override for the
+  // toggle button; it is cleared whenever a fresh session status arrives.
+  const playing = isPaused === undefined ? sessionStatus === "playing" : !isPaused;
   const nowLabel = activeTrack ? (playing ? "Now playing" : "Paused") : "Up next";
   const canSkipBack = (detail?.playbackSession?.playedTrackIds?.length ?? 0) > 0;
   const canSkipForward = upcoming.length > 0 || displayTracks.length > 1;
@@ -1000,13 +928,11 @@ export function App() {
     return () => clearInterval(timer);
   }, [activeJourneyId]);
 
-  // Mirror the silent keepalive element to the player's play/pause state.
+  // Once the backend reports a fresh playback status (or track), drop the optimistic pause override
+  // so the cockpit reflects the real Connect-device state.
   useEffect(() => {
-    const keepAlive = keepAliveRef.current;
-    if (!keepAlive) return;
-    if (playing) keepAlive.play();
-    else keepAlive.pause();
-  }, [playing]);
+    setIsPaused(undefined);
+  }, [sessionStatus, activeTrack?.id]);
 
   // Keep the latest playback actions in a ref so background/OS handlers never call stale closures.
   useEffect(() => {
@@ -1014,7 +940,7 @@ export function App() {
       next: () => void skipTrack("next"),
       prev: () => void skipTrack("previous"),
       toggle: () => void togglePlayPause(),
-      resume: () => void playAudio()
+      resume: () => void togglePlayPause()
     };
   });
 
@@ -1037,19 +963,30 @@ export function App() {
     });
   }, [heroTrack?.id, heroTrack?.title, playing]);
 
-  // After the embedded browser un-freezes a backgrounded page, re-assert playback.
+  // Connect-only auto-adopt: when no device is playing yet and a Spotify Connect device becomes
+  // active (the driver opened Spotify on the Tesla), bind + start playback on it — exactly once per
+  // device. There is deliberately no browser-playback fallback, so the foreground tab never steals
+  // playback from the car.
   useEffect(() => {
-    const onVisible = () => {
-      if (document.visibilityState !== "visible") return;
-      if (!activeJourneyId || !isSpotifyJourney || health?.spotifyMock) return;
-      // A remote Connect device (e.g. the native Tesla app) is playing the journey — re-asserting
-      // browser playback here would steal it back. Leave it; the backend follows that device.
-      if (remoteDeviceActiveRef.current) return;
-      playbackActionsRef.current.resume();
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
-  }, [activeJourneyId, isSpotifyJourney, health?.spotifyMock]);
+    if (!activeJourneyId || !isSpotifyJourney || health?.spotifyMock) return;
+    if (sessionStatus === "playing" || sessionStatus === "paused") return;
+    const active = devices.find((device) => device.isActive);
+    if (!active || autoTakeoverForRef.current === active.id) return;
+    autoTakeoverForRef.current = active.id;
+    void api
+      .registerSpotifyDevice(activeJourneyId, { deviceId: active.id, status: "ready", transfer: true })
+      .then(() => api.journey(activeJourneyId))
+      .then(setDetail)
+      .catch(() => {
+        // Allow a retry on the next poll if binding failed.
+        autoTakeoverForRef.current = undefined;
+      });
+  }, [devices, activeJourneyId, isSpotifyJourney, health?.spotifyMock, sessionStatus]);
+
+  // A new journey re-arms auto-adopt.
+  useEffect(() => {
+    autoTakeoverForRef.current = undefined;
+  }, [activeJourneyId]);
 
   return (
     <div className="app">
@@ -1480,10 +1417,14 @@ export function App() {
                   ) : (
                     <span className="transport-note">Playing on TIDAL.</span>
                   )
-                ) : needsPlayAudio ? (
-                  <button className="ctrl primary big" disabled={loading} onClick={playAudio} type="button">
+                ) : needsConnectDevice ? (
+                  <span className="transport-note">
+                    Starte Spotify einmal auf dem Tesla-Display — die Wiedergabe wird dann automatisch übernommen.
+                  </span>
+                ) : needsConnectStart ? (
+                  <button className="ctrl primary big" disabled={loading} onClick={playOnCar} type="button">
                     {loading ? <Loader2 className="spin" size={22} /> : <Play size={22} />}
-                    <span>Play audio</span>
+                    <span>Im Auto starten</span>
                   </button>
                 ) : (
                   <>
@@ -1513,10 +1454,10 @@ export function App() {
                     </button>
                   </>
                 )}
-                {remoteDeviceActive && (sessionStatus === "playing" || sessionStatus === "paused") ? (
+                {boundDeviceId && (sessionStatus === "playing" || sessionStatus === "paused") ? (
                   <span className="transport-note">
                     {sessionStatus === "playing" ? "Spielt" : "Pausiert"} auf{" "}
-                    {activeDeviceLabel(devices, detail?.journey.spotifyDeviceId)}
+                    {activeDeviceLabel(devices, boundDeviceId)}
                   </span>
                 ) : null}
                 <button className="ctrl" disabled={loading} onClick={refreshQueue} title="Refresh queue" type="button">
