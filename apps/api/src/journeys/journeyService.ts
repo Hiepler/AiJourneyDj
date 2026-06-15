@@ -496,9 +496,14 @@ export class JourneyService {
       );
     }
     if (moment.type === "charge_resume") {
-      // A completed charge stop starts a new leg — each leg opens its own arc.
+      // A completed charge stop starts a new leg — each leg opens its own arc. Stamp the leg start
+      // so the brief can reset trip progress per leg (fresh opening → build).
       const nextLeg = (journey.legIndex ?? 0) + 1;
-      this.store.updateJourneyLegIndex(journeyId, nextLeg);
+      this.store.updateJourneyLegIndex(
+        journeyId,
+        nextLeg,
+        new Date().toISOString(),
+      );
       this.store.audit(
         journeyId,
         "moment.charge_resume_leg",

@@ -2,7 +2,7 @@
  * Pure Momente-Erkennung — kein I/O (Muster: reconcile.ts). Die Historie kommt aus
  * recentTelemetry und ist NEUESTE ZUERST sortiert (history[0] = aktuellster Snapshot).
  */
-import type { JourneyContext, JourneyPhase } from "@ai-journey-dj/core";
+import type { ChargingState, JourneyContext, JourneyPhase } from "@ai-journey-dj/core";
 import type { StoryAct } from "@ai-journey-dj/recommendation";
 
 export type MomentType =
@@ -44,6 +44,7 @@ interface TelemetryLike {
   etaMinutes?: number;
   batteryPercent?: number;
   energyPercentAtArrival?: number;
+  chargingState?: ChargingState;
 }
 
 export interface MomentConfig {
@@ -111,32 +112,48 @@ export function detectJourneyMoment(args: {
     }
   }
 
-  // charge resume: a sustained battery rise (both newest readings elevated vs the earlier window)
-  // marks a completed charge stop → open a fresh leg. Two-sample confirmation guards against a
-  // single noisy SoC reading near a charger.
-  if (history.length >= 3) {
-    const newestTwoMin = Math.min(
-      newest?.batteryPercent ?? Infinity,
-      history[1]?.batteryPercent ?? Infinity,
+  // charge resume → open a fresh leg. Preferred path: the real charging state shows we were charging
+  // and have now finished/unplugged (definitive). Fallback (no charging signal at all — simulator,
+  // mock, older data): a sustained battery rise of 15+ points, two-sample-confirmed against noise.
+  if (history.length >= 2) {
+    const hasChargeSignal = history.some((item) => Boolean(item.chargingState));
+    const wasCharging = history.some(
+      (item) => item.chargingState === "charging",
     );
-    const earlierLevels = history
-      .slice(2)
-      .map((item) => item.batteryPercent)
-      .filter((value): value is number => typeof value === "number");
-    if (earlierLevels.length > 0 && Number.isFinite(newestTwoMin)) {
-      const earlierMin = Math.min(...earlierLevels);
-      if (newestTwoMin - earlierMin >= CHARGE_RESUME_JUMP_PERCENT) {
-        candidates.set("charge_resume", {
-          type: "charge_resume",
-          directive:
-            "Back on the road after a charge stop — open a fresh chapter: lift the energy and re-introduce some local flavor.",
-          energyBias: 0.12,
-          moodTagBias: ["fresh", "bright"],
-          candidateRequest: newest?.countryName
-            ? { kind: "geo-charts", country: newest.countryName }
-            : undefined,
-        });
+    const newestState = newest?.chargingState;
+    const endedCharging =
+      wasCharging &&
+      (newestState === "complete" ||
+        newestState === "disconnected" ||
+        newestState === "stopped");
+
+    let resume = endedCharging;
+    if (!hasChargeSignal && history.length >= 3) {
+      const newestTwoMin = Math.min(
+        newest?.batteryPercent ?? Infinity,
+        history[1]?.batteryPercent ?? Infinity,
+      );
+      const earlierLevels = history
+        .slice(2)
+        .map((item) => item.batteryPercent)
+        .filter((value): value is number => typeof value === "number");
+      if (earlierLevels.length > 0 && Number.isFinite(newestTwoMin)) {
+        const earlierMin = Math.min(...earlierLevels);
+        resume = newestTwoMin - earlierMin >= CHARGE_RESUME_JUMP_PERCENT;
       }
+    }
+
+    if (resume) {
+      candidates.set("charge_resume", {
+        type: "charge_resume",
+        directive:
+          "Back on the road after a charge stop — open a fresh chapter: lift the energy and re-introduce some local flavor.",
+        energyBias: 0.12,
+        moodTagBias: ["fresh", "bright"],
+        candidateRequest: newest?.countryName
+          ? { kind: "geo-charts", country: newest.countryName }
+          : undefined,
+      });
     }
   }
 
@@ -145,9 +162,11 @@ export function detectJourneyMoment(args: {
   const battery = newest?.batteryPercent;
   const arrivalEnergy = newest?.energyPercentAtArrival;
   if (
-    (typeof battery === "number" && battery <= CHARGE_LOW_BATTERY_PERCENT) ||
-    (typeof arrivalEnergy === "number" &&
-      arrivalEnergy <= CHARGE_LOW_ARRIVAL_PERCENT)
+    // Don't "approach" a charge while already charging/stopped at the charger.
+    newest?.chargingState !== "charging" &&
+    ((typeof battery === "number" && battery <= CHARGE_LOW_BATTERY_PERCENT) ||
+      (typeof arrivalEnergy === "number" &&
+        arrivalEnergy <= CHARGE_LOW_ARRIVAL_PERCENT))
   ) {
     candidates.set("charge_approach", {
       type: "charge_approach",

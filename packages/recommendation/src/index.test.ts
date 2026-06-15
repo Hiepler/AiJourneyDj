@@ -1271,6 +1271,32 @@ describe("buildMusicalBrief — trip feeling (archetype/weather/nowPlaying/leg)"
     expect(prompt).not.toMatch(/Now playing:/);
     expect(prompt).not.toMatch(/leg \d+ of the journey/);
   });
+
+  it("reopens the arc per leg after a charge stop (global 'deep' → leg 'opening')", () => {
+    // 500 min into a 600 min haul → global progress ~0.83 = "deep".
+    const deepInTrip = {
+      ...base,
+      plannedDurationMinutes: 600,
+      elapsedMinutes: 500,
+      etaMinutes: 100,
+    } as JourneyContext;
+
+    const beforeStop = buildMusicalBrief(deepInTrip);
+    expect(beforeStop.tripArchetype).toBe("long_haul");
+    expect(beforeStop.tripSegment).toBe("deep");
+
+    // Just resumed from a charge stop: leg-local elapsed is tiny → the leg opens fresh, while the
+    // whole-trip archetype stays long_haul (more exploration).
+    const afterStop = buildMusicalBrief({
+      ...deepInTrip,
+      legIndex: 1,
+      legElapsedMinutes: 3,
+    });
+    expect(afterStop.tripArchetype).toBe("long_haul");
+    expect(afterStop.tripSegment).toBe("opening");
+    // Opening shape: starts below its own build (first point is the lowest of the curve).
+    expect(afterStop.energyCurve[0]).toBe(Math.min(...afterStop.energyCurve));
+  });
 });
 
 describe("moodTagsForContext — mood-driven", () => {
