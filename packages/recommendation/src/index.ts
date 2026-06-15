@@ -1315,6 +1315,10 @@ export function buildRecommendationPolicy(
   const archetype = tripArchetypeForContext(context);
   let targetDiscoveryRatio = DISCOVERY_RATIO_BY_ARCHETYPE[archetype];
   if (familyMode) targetDiscoveryRatio = Math.min(targetDiscoveryRatio, 0.2);
+  // A couple shares the drive: a touch more room for discovery than a solo baseline.
+  else if (context.passengerMode === "couple") {
+    targetDiscoveryRatio = Math.min(1, targetDiscoveryRatio + 0.05);
+  }
   if (prompt.includes("discover") || prompt.includes("surprise")) {
     targetDiscoveryRatio = Math.min(1, targetDiscoveryRatio + 0.2);
   }
@@ -1726,6 +1730,17 @@ export function buildMusicalBrief(
     intensityLabel = "bright";
     tasteWeight = clamp01(Math.min(tasteWeight, 0.45));
     moodWords.push("clean", "upbeat", "singalong", "good-mood", "current-pop");
+  } else if (context.passengerMode === "friends") {
+    // A car full of adults: crowd-pleasing and singalong-friendly, a touch more upbeat. Lean toward
+    // broadly-known so everyone recognizes enough, but looser than family (still room for taste).
+    targetEnergy = clamp01(targetEnergy + 0.05);
+    tasteWeight = clamp01(Math.min(tasteWeight, 0.6));
+    moodWords.push("upbeat", "singalong", "crowd-pleasing");
+  } else if (context.passengerMode === "couple") {
+    // Two people: warmer and more intimate, a touch calmer, with room for shared discovery (no
+    // taste cap) — the opposite social texture from a friends carful.
+    targetEnergy = clamp01(targetEnergy - 0.04);
+    moodWords.push("warm", "intimate");
   }
 
   // "Kids am Steuer": lean into Disney/film/animated singalongs kids adore (still clean), independent
@@ -2063,6 +2078,12 @@ export function selectJourneyLenses(
   if (brief.driveMode === "calm") add("cinematic_warmth");
   else if (brief.driveMode === "focus") add("steady_momentum");
 
+  // Social texture of the cabin (non-family/kids): a friends carful leans on crowd-pleasing good-mood
+  // picks, a couple on warm/intimate ones. Seeded high so it survives the five-lens cap, but after any
+  // Adaptive Drive Mode primer so safety/comfort still leads.
+  if (brief.passengerMode === "friends") add("good_mood");
+  else if (brief.passengerMode === "couple") add("cinematic_warmth");
+
   if (brief.focusLevel >= 0.7 || brief.moodWords.includes("low-distraction")) {
     add("low_distraction");
   } else if (
@@ -2394,6 +2415,13 @@ function scoringWeights(brief: MusicalBrief): ScoreWeights {
     // Whole-car appeal: minimize leftfield novelty, lean on broad fit.
     w.novelty -= 0.05;
     w.contextFit += 0.04;
+  } else if (brief.passengerMode === "friends") {
+    // Group of adults: nudge toward broadly-fitting crowd-pleasers.
+    w.contextFit += 0.02;
+  } else if (brief.passengerMode === "couple") {
+    // Two people: lean on shared taste with a gentle dose of variety.
+    w.tasteFit += 0.03;
+    w.diversityGain += 0.02;
   }
   for (const key of Object.keys(w) as Array<keyof ScoreWeights>) {
     w[key] = Math.max(0, w[key]);
@@ -2843,10 +2871,13 @@ export function fallbackCandidates(
       .split("")
       .reduce((acc, char) => acc + char.charCodeAt(0), 0),
   );
-  const fallbackPool =
-    context.passengerMode === "family"
-      ? FAMILY_FALLBACK_CANDIDATES
-      : FALLBACK_CANDIDATES;
+  // Kids inherits family's all-ages pool (same familyMode logic as buildRecommendationPolicy) so a
+  // solo-with-kids drive that falls back still gets curated all-ages picks, not the generic pool.
+  const familyMode =
+    context.passengerMode === "family" || context.kidsMode === true;
+  const fallbackPool = familyMode
+    ? FAMILY_FALLBACK_CANDIDATES
+    : FALLBACK_CANDIDATES;
   const candidates = [...fallbackPool]
     .slice(phaseOffset % 3)
     .concat(fallbackPool)

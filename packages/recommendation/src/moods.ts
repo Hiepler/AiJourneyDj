@@ -119,7 +119,9 @@ export function resolveMood(
   context: JourneyContext,
   signals: { band: TimeBand; arc: TripArc },
 ): ResolvedMood {
-  if (context.passengerMode === "family") {
+  // Family and Kids share the all-ages mood profile so moodKey/valence/energy band stay coherent
+  // with the kids energy lift + Disney lens set (kids was previously left on the time-of-day mood).
+  if (context.passengerMode === "family" || context.kidsMode) {
     return { primary: "family_singalong", blendWeight: 0.2 };
   }
 
