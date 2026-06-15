@@ -224,25 +224,22 @@ export class OfficialSpotifyAdapter implements SpotifyAdapter {
       }>;
     }>(url, args.accessToken);
     const devices = payload?.devices ?? [];
+    // Connect-only targeting: honor an explicit choice first, then follow wherever Spotify is
+    // actually active (the native Tesla app), then any single available device. We deliberately do
+    // NOT prefer a browser "AI Journey" web player or a Computer device — that used to pull playback
+    // off the car and into the browser.
     const preferred = devices.find(
       (device) => device.id === args.preferredDeviceId,
     );
     if (preferred) {
       return preferred.id;
     }
-    const journeyPlayer = devices.find((device) =>
-      device.name?.includes("AI Journey"),
-    );
-    if (journeyPlayer) {
-      return journeyPlayer.id;
-    }
-    const computer = devices.find((device) => device.type === "Computer");
-    if (computer) {
-      return computer.id;
-    }
     const active = devices.find((device) => device.is_active);
     if (active) {
       return active.id;
+    }
+    if (devices.length === 1) {
+      return devices[0].id;
     }
     return args.preferredDeviceId;
   }
