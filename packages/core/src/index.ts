@@ -88,6 +88,11 @@ export interface JourneyContext {
   elapsedMinutes?: number;
   /** Journey leg (0 = first leg; incremented after each detected charge stop). */
   legIndex?: number;
+  /**
+   * Minutes elapsed within the current leg (now − legStartedAt). Equals elapsedMinutes on leg 0.
+   * Drives a per-leg arc reset so each post-charge-stop leg opens with its own build.
+   */
+  legElapsedMinutes?: number;
   /** Active music-wish layers steering this journey. */
   activeMusicWishes?: MusicWish[];
   /** Gerade gespielter Track — Seed für das Momentum-Radio. */
@@ -256,6 +261,14 @@ export interface PlaylistUpdate {
   createdAtIso: string;
 }
 
+/** Normalized vehicle charging state, mapped from the provider's raw charge state. */
+export type ChargingState =
+  | "charging"
+  | "complete"
+  | "disconnected"
+  | "stopped"
+  | "other";
+
 export interface NormalizedTelemetryEvent {
   vehicleIdHash?: string;
   journeyId?: string;
@@ -270,6 +283,8 @@ export interface NormalizedTelemetryEvent {
   outsideTempC?: number;
   autopilotState?: "off" | "available" | "active" | "unknown";
   batteryPercent?: number;
+  /** Normalized charging state (Tesla charge_state.charging_state). Used to detect charge stops reliably. */
+  chargingState?: ChargingState;
   /** Live traffic delay on the active navigation route, in minutes (drive_state.active_route_traffic_minutes_delay). */
   trafficDelayMinutes?: number;
   /** Predicted battery % at the navigation destination (drive_state.active_route_energy_at_arrival). */
@@ -339,6 +354,8 @@ export interface JourneyRecord {
   plannedDurationMinutes?: number;
   /** Journey leg index (0 = first leg; incremented when a charge stop is detected). */
   legIndex?: number;
+  /** ISO timestamp when the current leg started (set on each detected charge stop). Drives per-leg arc. */
+  legStartedAtIso?: string;
   /** Last meaningful activity (telemetry / owned playback / user action) — drives inactivity auto-stop. */
   lastActiveAtIso?: string;
 }

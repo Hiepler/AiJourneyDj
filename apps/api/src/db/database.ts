@@ -265,6 +265,8 @@ export function migrate(db: Db): void {
   tryAddColumn(db, "telemetry_snapshots", "longitudinal_accel_mps2", "REAL");
   tryAddColumn(db, "telemetry_snapshots", "brake_pedal", "INTEGER");
   tryAddColumn(db, "telemetry_snapshots", "hazards_active", "INTEGER");
+  // Normalized vehicle charging state — drives reliable charge-stop detection.
+  tryAddColumn(db, "telemetry_snapshots", "charging_state", "TEXT");
   tryAddColumn(db, "journeys", "drive_mode", "TEXT");
   tryAddColumn(
     db,
@@ -277,6 +279,8 @@ export function migrate(db: Db): void {
   tryAddColumn(db, "journeys", "kids_mode", "INTEGER NOT NULL DEFAULT 0");
   // Journey leg counter — incremented when a charge stop is detected (multi-leg "chapters").
   tryAddColumn(db, "journeys", "leg_index", "INTEGER NOT NULL DEFAULT 0");
+  // Timestamp the current leg started (set on each charge stop) — drives the per-leg arc reset.
+  tryAddColumn(db, "journeys", "leg_started_at", "TEXT");
   // Last meaningful activity timestamp, for inactivity auto-stop (car off overnight, etc.).
   tryAddColumn(db, "journeys", "last_active_at", "TEXT");
   // Last-known location fallback (seeded from destination, refreshed by browser geo / telemetry fixes).
