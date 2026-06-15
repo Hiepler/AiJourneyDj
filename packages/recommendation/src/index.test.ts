@@ -502,8 +502,8 @@ describe("recommendation", () => {
     // A couple gets a touch more discovery room than the solo baseline.
     const couplePolicy = buildRecommendationPolicy({ ...context, passengerMode: "couple" });
     const soloPolicy = buildRecommendationPolicy({ ...context, passengerMode: "solo" });
-    expect(couplePolicy.targetDiscoveryRatio).toBeGreaterThan(
-      soloPolicy.targetDiscoveryRatio,
+    expect(couplePolicy.targetDiscoveryRatio ?? 0).toBeGreaterThan(
+      soloPolicy.targetDiscoveryRatio ?? 0,
     );
   });
 
