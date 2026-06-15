@@ -700,8 +700,9 @@ export function App() {
     setShowDevices(false);
     setError(undefined);
     try {
-      // Explicit device choice from the menu takes over playback on that Connect device.
-      await api.registerSpotifyDevice(activeJourneyId, { deviceId: device.id, status: "ready", transfer: true });
+      // Explicit device choice from the menu takes over playback on that Connect device. pin:true
+      // defends this pick so the passive Connect-follow can't bounce it to a transient web device.
+      await api.registerSpotifyDevice(activeJourneyId, { deviceId: device.id, status: "ready", transfer: true, pin: true });
       autoTakeoverForRef.current = device.id;
       setIsPaused(false);
       setDetail(await api.journey(activeJourneyId));
@@ -974,7 +975,9 @@ export function App() {
     if (!active || autoTakeoverForRef.current === active.id) return;
     autoTakeoverForRef.current = active.id;
     void api
-      .registerSpotifyDevice(activeJourneyId, { deviceId: active.id, status: "ready", transfer: true })
+      // pin:false — auto-adopt is opportunistic (whatever is active), not an explicit human pick,
+      // so it must NOT pin the device (that could pin a transient web player over the Tesla).
+      .registerSpotifyDevice(activeJourneyId, { deviceId: active.id, status: "ready", transfer: true, pin: false })
       .then(() => api.journey(activeJourneyId))
       .then(setDetail)
       .catch(() => {
