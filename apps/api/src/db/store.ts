@@ -139,11 +139,15 @@ export class Store {
     ]);
   }
 
-  updateJourneyLegIndex(journeyId: string, legIndex: number): void {
-    this.db.run("UPDATE journeys SET leg_index = ? WHERE id = ?", [
-      legIndex,
-      journeyId,
-    ]);
+  updateJourneyLegIndex(
+    journeyId: string,
+    legIndex: number,
+    legStartedAtIso?: string,
+  ): void {
+    this.db.run(
+      "UPDATE journeys SET leg_index = ?, leg_started_at = ? WHERE id = ?",
+      [legIndex, legStartedAtIso ?? null, journeyId],
+    );
   }
 
   setAdaptiveModeEnabled(journeyId: string, enabled: boolean): void {
@@ -327,8 +331,8 @@ export class Store {
   ): void {
     this.db.run(
       `INSERT INTO telemetry_snapshots
-       (journey_id, timestamp, coarse_region, country_name, country_code, geo_source, destination, eta_minutes, speed_kph, outside_temp_c, speed_bucket, temperature_bucket, phase, autopilot_state, battery_percent, traffic_delay_minutes, energy_percent_at_arrival, audio_volume, longitudinal_accel_mps2, brake_pedal, hazards_active, received_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (journey_id, timestamp, coarse_region, country_name, country_code, geo_source, destination, eta_minutes, speed_kph, outside_temp_c, speed_bucket, temperature_bucket, phase, autopilot_state, battery_percent, charging_state, traffic_delay_minutes, energy_percent_at_arrival, audio_volume, longitudinal_accel_mps2, brake_pedal, hazards_active, received_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         journeyId,
         event.timestampIso,
@@ -345,6 +349,7 @@ export class Store {
         phase,
         event.autopilotState,
         event.batteryPercent,
+        event.chargingState ?? null,
         event.trafficDelayMinutes ?? null,
         event.energyPercentAtArrival ?? null,
         event.audioVolume ?? null,
@@ -1024,6 +1029,7 @@ function mapJourney(row: any): JourneyRecord {
         : row.adaptive_mode_enabled !== 0,
     plannedDurationMinutes: row.planned_duration_minutes ?? undefined,
     legIndex: row.leg_index ?? undefined,
+    legStartedAtIso: row.leg_started_at ?? undefined,
     kidsMode: row.kids_mode === 1,
     lastGeo:
       row.last_geo_country_name ||
@@ -1077,6 +1083,7 @@ function mapTelemetrySnapshot(row: any): TelemetrySnapshotReadModel {
     phase: row.phase ?? undefined,
     autopilotState: row.autopilot_state ?? undefined,
     batteryPercent: row.battery_percent ?? undefined,
+    chargingState: row.charging_state ?? undefined,
     trafficDelayMinutes: row.traffic_delay_minutes ?? undefined,
     energyPercentAtArrival: row.energy_percent_at_arrival ?? undefined,
     audioVolume: row.audio_volume ?? undefined,
@@ -1177,6 +1184,14 @@ export function contextFromJourney(
     elapsedMinutes: Math.max(
       0,
       (Date.now() - Date.parse(journey.createdAtIso)) / 60000,
+    ),
+    // Minutes within the current leg — resets at each charge stop so the arc reopens per leg.
+    // Falls back to whole-journey elapsed on leg 0 (no leg start recorded yet).
+    legElapsedMinutes: Math.max(
+      0,
+      (Date.now() -
+        Date.parse(journey.legStartedAtIso ?? journey.createdAtIso)) /
+        60000,
     ),
     trafficDelayMinutes: telemetry?.trafficDelayMinutes,
     accelStyle: accelStyleFrom(recentTelemetry),

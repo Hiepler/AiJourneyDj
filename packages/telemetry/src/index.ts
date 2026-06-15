@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type {
+  ChargingState,
   JourneyPhase,
   NormalizedTelemetryEvent,
   SpeedBucket,
@@ -118,6 +119,23 @@ function telemetryBoolean(value: unknown): boolean | undefined {
   return undefined;
 }
 
+/**
+ * Maps a raw vehicle charging-state string to our normalized enum. Handles both the REST
+ * `charge_state.charging_state` form ("Charging", "Complete", …) and the streaming
+ * "DetailedChargeState…"/"ChargeState…" forms via substring matching. Unknown/empty → undefined.
+ */
+function mapChargingState(value: unknown): ChargingState | undefined {
+  if (typeof value !== "string" || value.trim() === "") return undefined;
+  const s = value.toLowerCase();
+  if (s.includes("charging") || s.includes("starting")) return "charging";
+  if (s.includes("complete")) return "complete";
+  if (s.includes("disconnect")) return "disconnected";
+  if (s.includes("stop") || s.includes("nopower") || s.includes("no_power")) {
+    return "stopped";
+  }
+  return "other";
+}
+
 /** Maps a Fleet API `vehicle_data` payload (drive/charge/climate state) into a normalized event. */
 export function normalizeFleetVehicleData(
   payload: Record<string, any>,
@@ -163,6 +181,7 @@ export function normalizeFleetVehicleData(
       typeof charge.usable_battery_level === "number"
         ? charge.usable_battery_level
         : undefined,
+    chargingState: mapChargingState(charge.charging_state),
     trafficDelayMinutes:
       typeof drive.active_route_traffic_minutes_delay === "number"
         ? Math.round(drive.active_route_traffic_minutes_delay)
@@ -225,6 +244,9 @@ export function normalizeFleetStream(
     outsideTempC: telemetryNumber(payload?.OutsideTemp),
     autopilotState: "unknown",
     batteryPercent: telemetryNumber(payload?.Soc),
+    chargingState: mapChargingState(
+      payload?.DetailedChargeState ?? payload?.ChargeState,
+    ),
     trafficDelayMinutes:
       typeof routeTrafficDelay === "number"
         ? Math.round(routeTrafficDelay)
