@@ -452,6 +452,61 @@ describe("recommendation", () => {
     expect(prompt).not.toMatch(/novelty children-song/i);
   });
 
+  it("kids mode resolves the all-ages mood profile for coherent energy/valence", () => {
+    const kidsContext = { ...context, passengerMode: "solo" as const, kidsMode: true };
+    const brief = buildMusicalBrief(kidsContext);
+    // Previously kids stayed on the time-of-day mood; now it shares family's all-ages profile.
+    expect(brief.moodKey).toBe("family_singalong");
+    expect(moodTagsForContext(kidsContext)).toEqual(
+      expect.arrayContaining(["dance-pop", "feelgood"]),
+    );
+  });
+
+  it("kids mode draws fallback candidates from the all-ages family pool, even solo", () => {
+    const poolArtists = (ctx: JourneyContext) =>
+      [...new Set(fallbackCandidates(ctx, 50).map((candidate) => candidate.artist))].sort();
+    const kids = poolArtists({ ...context, passengerMode: "solo", kidsMode: true });
+    const family = poolArtists({ ...context, passengerMode: "family" });
+    const solo = poolArtists({ ...context, passengerMode: "solo" });
+    // Kids (even on a solo drive) uses the same curated all-ages pool as family…
+    expect(kids).toEqual(family);
+    // …not the generic pool.
+    expect(kids).not.toEqual(solo);
+  });
+
+  it("friends mode lifts energy with a crowd-pleasing good-mood lens", () => {
+    const solo = buildMusicalBrief({ ...context, passengerMode: "solo" });
+    const friends = buildMusicalBrief({ ...context, passengerMode: "friends" });
+    expect(friends.targetEnergy).toBeGreaterThanOrEqual(solo.targetEnergy);
+    expect(friends.moodWords).toEqual(
+      expect.arrayContaining(["upbeat", "crowd-pleasing"]),
+    );
+    expect(selectJourneyLenses(friends).map((lens) => lens.key)).toContain(
+      "good_mood",
+    );
+    const policy = buildRecommendationPolicy({ ...context, passengerMode: "friends" });
+    expect(policy.targetPopularity).toBe(66);
+    expect(policy.preferDistinctArtists).toBe(true);
+  });
+
+  it("couple mode is warmer, calmer, and leans on shared discovery", () => {
+    const solo = buildMusicalBrief({ ...context, passengerMode: "solo" });
+    const couple = buildMusicalBrief({ ...context, passengerMode: "couple" });
+    expect(couple.targetEnergy).toBeLessThanOrEqual(solo.targetEnergy);
+    expect(couple.moodWords).toEqual(
+      expect.arrayContaining(["warm", "intimate"]),
+    );
+    expect(selectJourneyLenses(couple).map((lens) => lens.key)).toContain(
+      "cinematic_warmth",
+    );
+    // A couple gets a touch more discovery room than the solo baseline.
+    const couplePolicy = buildRecommendationPolicy({ ...context, passengerMode: "couple" });
+    const soloPolicy = buildRecommendationPolicy({ ...context, passengerMode: "solo" });
+    expect(couplePolicy.targetDiscoveryRatio ?? 0).toBeGreaterThan(
+      soloPolicy.targetDiscoveryRatio ?? 0,
+    );
+  });
+
   it("local touch: a mapped country names the language and seeds a local lens, geo lenses only", () => {
     const franceBrief = buildMusicalBrief({
       ...context,
