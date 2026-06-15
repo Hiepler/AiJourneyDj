@@ -40,6 +40,8 @@ const deviceSchema = z.object({
     .default("ready"),
   syncOnly: z.boolean().optional(),
   transfer: z.boolean().optional(),
+  /** True only for an explicit human device pick — pins the choice against the passive follow. */
+  pin: z.boolean().optional(),
 });
 
 const musicWishSchema = z.object({
@@ -331,6 +333,7 @@ export async function registerJourneyRoutes(
     return service.registerSpotifyDevice(id, payload.deviceId, payload.status, {
       syncOnly: payload.syncOnly,
       transfer: payload.transfer,
+      pin: payload.pin,
     });
   });
 

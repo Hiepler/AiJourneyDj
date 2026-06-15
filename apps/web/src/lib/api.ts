@@ -310,7 +310,7 @@ export const api = {
     }),
   registerSpotifyDevice: (
     id: string,
-    payload: { deviceId: string; status?: string; syncOnly?: boolean; transfer?: boolean },
+    payload: { deviceId: string; status?: string; syncOnly?: boolean; transfer?: boolean; pin?: boolean },
   ) =>
     request<JourneyDetail["playbackSession"]>(
       `/journeys/${id}/playback/device`,
