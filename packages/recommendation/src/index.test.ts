@@ -507,6 +507,35 @@ describe("recommendation", () => {
     );
   });
 
+  it("an active singalong wish steers lens selection toward singalong (pivots generation, not just ranking)", () => {
+    const wishContext = {
+      ...context,
+      passengerMode: "solo" as const,
+      activeMusicWishes: [
+        {
+          id: "w1",
+          journeyId: "j1",
+          rawText: "was zum Mitsingen",
+          source: "chip",
+          intents: [{ type: "role", role: "singalong", strength: 0.8 }],
+          status: "active",
+          confidence: 0.8,
+          summary: "Mitsingen",
+          pinned: true,
+          expiresAfterTracks: 5,
+          remainingTracks: 5,
+          createdAtIso: "2026-05-28T18:00:00.000Z",
+          updatedAtIso: "2026-05-28T18:00:00.000Z",
+        },
+      ],
+    } as JourneyContext;
+    const brief = buildMusicalBrief(wishContext);
+    expect(brief.wishRoles).toContain("singalong");
+    const keys = selectJourneyLenses(brief).map((lens) => lens.key);
+    expect(keys).toContain("singalong_classics");
+    expect(keys).toContain("good_mood");
+  });
+
   it("local touch: a mapped country names the language and seeds a local lens, geo lenses only", () => {
     const franceBrief = buildMusicalBrief({
       ...context,
