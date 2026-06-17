@@ -1013,3 +1013,44 @@ describe("device pin (explicit choice defended)", () => {
     expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("this-browser");
   });
 });
+
+describe("vibe shift (Kids toggle) — felt immediately", () => {
+  function makePlaying(store: Store, journeyId: string) {
+    const session = store.getPlaybackSession(journeyId)!;
+    const tracks = store
+      .listResolvedTracks(journeyId)
+      .filter((track) => track.provider === "spotify");
+    store.savePlaybackSession({
+      ...session,
+      status: "playing",
+      activeTrack: tracks[0],
+      queuedTrackIds: tracks.slice(1, 4).map((track) => track.id),
+    });
+  }
+
+  it("a Kids toggle regenerates and starts a fresh anchor at once (interrupts the current song)", async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+    makePlaying(store, journey.id);
+    adapter.startCalls.length = 0;
+
+    await service.setKidsMode(journey.id, true);
+
+    expect(store.getJourney(journey.id)!.kidsMode).toBe(true);
+    // The vibe shift forces shouldStart → playback (re)starts on the curated anchor right away,
+    // rather than appending behind the already-queued tracks.
+    expect(adapter.startCalls.length).toBeGreaterThan(0);
+  });
+
+  it("an automated refill on a playing session does NOT interrupt (no forced start)", async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+    makePlaying(store, journey.id);
+    adapter.startCalls.length = 0;
+
+    await service.analyzeJourney(journey.id, "low-buffer");
+
+    // Non-vibe reasons keep the "only start if idle" behavior — the current song plays on.
+    expect(adapter.startCalls.length).toBe(0);
+  });
+});

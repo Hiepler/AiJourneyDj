@@ -1093,6 +1093,8 @@ export interface MusicalBrief {
   passengerMode: string;
   /** "Kids am Steuer": allow Disney/film/animated singalongs that family mode otherwise avoids. */
   kidsMode?: boolean;
+  /** Roles of active music wishes (e.g. "singalong") — steer lens selection, not just ranking. */
+  wishRoles?: string[];
   /** Adaptive Drive Mode applied to this brief (comfort feature; selection bias only). */
   driveMode: DriveMode;
   /** Human-readable cause when driveMode is not neutral (for prompts/diagnostics). */
@@ -1885,6 +1887,13 @@ export function buildMusicalBrief(
     userPrompt: context.userPrompt,
     passengerMode: context.passengerMode,
     kidsMode: context.kidsMode === true,
+    // Roles of active/soft-applied wishes (e.g. "singalong") so lens selection can pivot generation.
+    wishRoles: (context.activeMusicWishes ?? [])
+      .filter(
+        (wish) => wish.status === "active" || wish.status === "soft_applied",
+      )
+      .flatMap((wish) => wish.intents)
+      .flatMap((intent) => (intent.type === "role" ? [intent.role] : [])),
     driveMode,
     driveReason:
       assessment?.mode && assessment.mode !== "neutral"
@@ -2077,6 +2086,20 @@ export function selectJourneyLenses(
   // Adaptive Drive Mode primes the first lens toward the situation.
   if (brief.driveMode === "calm") add("cinematic_warmth");
   else if (brief.driveMode === "focus") add("steady_momentum");
+
+  // Active music-wish roles steer generation toward the wished vibe (not just ranking). Seeded high
+  // so the matching lens survives the five-lens cap, e.g. "Mitsingen" → real singalong candidates.
+  const wishRoles = new Set(brief.wishRoles ?? []);
+  if (wishRoles.has("singalong")) {
+    add("singalong_classics");
+    add("good_mood");
+  }
+  if (wishRoles.has("kids")) {
+    add("kids_hits");
+    add("singalong_classics");
+  }
+  if (wishRoles.has("wake_up")) add("current_pop_hits");
+  if (wishRoles.has("calm_down")) add("cinematic_warmth");
 
   // Social texture of the cabin (non-family/kids): a friends carful leans on crowd-pleasing good-mood
   // picks, a couple on warm/intimate ones. Seeded high so it survives the five-lens cap, but after any

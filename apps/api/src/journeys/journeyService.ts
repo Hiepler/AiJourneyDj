@@ -87,10 +87,17 @@ const USER_INITIATED_REASONS = new Set([
   "music-wish",
   "music-wish-undo",
   "kids-mode",
+  "kids-mode-off",
   "geo-manual",
   "taste-override",
   "tidal-fallback",
 ]);
+/**
+ * Explicit "vibe shift" toggles (Kids on/off). These force fresh candidate generation (so the new
+ * lenses actually run), rebuild the upcoming queue, and start the freshly-curated anchor immediately
+ * — so the driver hears the change at once instead of waiting out the append-only Spotify queue.
+ */
+const VIBE_SHIFT_REASONS = new Set(["kids-mode", "kids-mode-off"]);
 const COUNTRY_NAME_BY_CODE: Record<string, string> = {
   AT: "Austria",
   CH: "Switzerland",
@@ -952,7 +959,8 @@ export class JourneyService {
       `Kids mode ${enabled ? "enabled" : "disabled"}.`,
       { enabled },
     );
-    await this.analyzeJourney(journeyId, "kids-mode");
+    // Distinct reason for OFF so the queue rebuild also flushes the now-stale kids tracks.
+    await this.analyzeJourney(journeyId, enabled ? "kids-mode" : "kids-mode-off");
     return this.getJourneyOrThrow(journeyId);
   }
 
@@ -1683,6 +1691,10 @@ export class JourneyService {
       "recovery",
       "music-wish",
       "music-wish-undo",
+      // Kids on/off must regenerate so the kids/normal lenses actually run (Disney is fetched, not
+      // just re-ranked from a pool that never contained it).
+      "kids-mode",
+      "kids-mode-off",
     ]);
     const storedForGate = this.store
       .listResolvedTracks(journeyId)
@@ -1920,6 +1932,11 @@ export class JourneyService {
       reason === "music-wish" || reason === "music-wish-undo";
     const shouldRebuildQueueForWish =
       isWishApplicationPass || (reason === "manual" && activeMusicWishes.length > 0);
+    // An explicit vibe shift (Kids on/off) rebuilds the upcoming queue too, so stale non-vibe tracks
+    // don't sit in front of the freshly-curated ones. Kept separate from the wish gate so it never
+    // consumes music-wish budgets (the decay branch below stays keyed to shouldRebuildQueueForWish).
+    const isVibeShift = VIBE_SHIFT_REASONS.has(reason);
+    const shouldRebuildQueueForVibeShift = shouldRebuildQueueForWish || isVibeShift;
     const anchorKeys = new Set(
       candidates
         .filter((candidate) =>
@@ -1933,8 +1950,16 @@ export class JourneyService {
             anchorKeys.has(songKey(track.artist, track.title)),
           )
         : undefined;
+    // On a vibe shift, lead with the top freshly-curated playable pick so the listener hears the new
+    // direction immediately (it becomes the started anchor — see shouldStart below).
+    const vibeShiftAnchor = isVibeShift
+      ? rankedStored.find(
+          (track) => track.providerUri && track.isPlayable !== false,
+        )
+      : undefined;
     let activeTrack =
       immediateWishTrack ??
+      vibeShiftAnchor ??
       openingAnchorTrack ??
       (session?.activeTrack && session.activeTrack.provider === "spotify"
         ? stored.find((track) => track.id === session?.activeTrack?.id)
@@ -1957,7 +1982,7 @@ export class JourneyService {
           savedToPlaylist: boolean;
         } => Boolean(track),
       );
-    const preservedQueued = shouldRebuildQueueForWish ? [] : currentQueued;
+    const preservedQueued = shouldRebuildQueueForVibeShift ? [] : currentQueued;
     const needed = Math.max(0, 5 - preservedQueued.length);
     const selected = queueTracksForBuffer(rankedStored, {
       activeProviderTrackId: activeTrack?.providerTrackId,
@@ -2091,7 +2116,12 @@ export class JourneyService {
     }
 
     session = this.store.getPlaybackSession(journeyId);
-    const deviceId = journey.spotifyDeviceId ?? session?.deviceId;
+    // A vibe shift forces a start/transfer; target the explicitly pinned device first so we re-assert
+    // on the driver's chosen Connect device (e.g. the native Tesla app), never a lingering web player.
+    const deviceId =
+      (isVibeShift ? this.getActiveDevicePin(journeyId) : undefined) ??
+      journey.spotifyDeviceId ??
+      session?.deviceId;
     // The visible model decides what reaches the device: Spotify must never be sent a
     // track the 5-slot model doesn't show, or the reconciler later flags our own queue
     // as "external". Compute the model first and sync exactly its delta.
@@ -2107,9 +2137,12 @@ export class JourneyService {
           deviceId,
           activeTrack,
           queueTracks: queueDelta,
+          // A vibe shift starts the freshly-curated anchor immediately (interrupts the current song)
+          // so the change is felt at once — the context reset is the only way past Spotify's
+          // append-only queue. Automated/refill passes keep the "only start if idle" behavior.
           shouldStart: Boolean(
             activeTrack?.providerUri &&
-            (!session?.activeTrack || session.status !== "playing"),
+            (isVibeShift || !session?.activeTrack || session.status !== "playing"),
           ),
           automated: !USER_INITIATED_REASONS.has(reason),
         })
