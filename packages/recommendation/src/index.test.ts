@@ -417,13 +417,37 @@ describe("recommendation", () => {
       expect.arrayContaining(["clean", "singalong", "current-pop"]),
     );
     expect(brief.genres).toEqual(expect.arrayContaining(["pop", "dance-pop"]));
-    expect(selectJourneyLenses(brief).map((lens) => lens.key)).toEqual([
+    // Family now seeds the Disney/animated singalong lens (kids are in the car) while keeping the
+    // current-pop + good-mood lead for the adults.
+    const familyLenses = selectJourneyLenses(brief).map((lens) => lens.key);
+    expect(familyLenses).toEqual([
       "current_pop_hits",
       "good_mood",
+      "kids_hits",
       "local_language_hits",
       "singalong_classics",
-      "regional_texture",
     ]);
+  });
+
+  it("family mode no longer penalizes beloved kid classics on recency, and seeds Disney fallbacks", () => {
+    const familyPolicy = buildRecommendationPolicy({
+      ...context,
+      passengerMode: "family",
+    });
+    const soloPolicy = buildRecommendationPolicy({
+      ...context,
+      passengerMode: "solo",
+    });
+    // Was 0.78 (fresh-only) — now relaxed so timeless singalongs can surface.
+    expect(familyPolicy.recencyBias).toBeLessThan(0.78);
+    expect(familyPolicy.recencyBias).toBeGreaterThanOrEqual(soloPolicy.recencyBias);
+
+    // The family fallback pool now contains real animated-film singalongs, not just current pop.
+    const fallbackArtists = fallbackCandidates(
+      { ...context, passengerMode: "family" },
+      50,
+    ).map((candidate) => candidate.artist);
+    expect(fallbackArtists).toContain("Idina Menzel");
   });
 
   it("kids mode stays clean, leads with the kids lens, and welcomes Disney/film singalongs", () => {

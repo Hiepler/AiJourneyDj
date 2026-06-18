@@ -266,6 +266,44 @@ const FAMILY_FALLBACK_CANDIDATES: SongCandidate[] = [
     source: "fallback",
     confidence: 0.8,
   },
+  // Beloved animated-film singalongs the whole car knows — distinct artists so they all survive
+  // diversity, clean, and timeless (recencyBias for family no longer penalizes them).
+  {
+    artist: "Idina Menzel",
+    title: "Let It Go",
+    genre: "soundtrack",
+    moodTags: ["disney", "singalong", "feelgood"],
+    explicit: false,
+    popularity: 80,
+    releaseDate: "2013-11-25",
+    reason: "iconic clean Disney singalong loved by kids and adults",
+    source: "fallback",
+    confidence: 0.84,
+  },
+  {
+    artist: "Auli'i Cravalho",
+    title: "How Far I'll Go",
+    genre: "soundtrack",
+    moodTags: ["disney", "singalong", "feelgood"],
+    explicit: false,
+    popularity: 76,
+    releaseDate: "2016-11-18",
+    reason: "uplifting clean animated-film singalong for the whole family",
+    source: "fallback",
+    confidence: 0.83,
+  },
+  {
+    artist: "Phil Collins",
+    title: "You'll Be in My Heart",
+    genre: "soundtrack",
+    moodTags: ["disney", "singalong", "warm"],
+    explicit: false,
+    popularity: 74,
+    releaseDate: "1999-04-05",
+    reason: "warm timeless animated-film classic adults and kids both know",
+    source: "fallback",
+    confidence: 0.82,
+  },
 ];
 
 const FORBIDDEN_PROMPT_KEYS = [
@@ -1328,7 +1366,9 @@ export function buildRecommendationPolicy(
     cleanRequired: familyMode,
     targetPopularity: familyMode ? 72 : highAcceptance ? 66 : 58,
     // Kids singalongs are often catalog (Disney classics), so don't over-bias toward fresh releases.
-    recencyBias: kidsMode ? 0.4 : familyMode ? 0.78 : nostalgic ? 0.18 : 0.42,
+    // Family was 0.78 (fresh-only), which penalized beloved kid classics (Lion King, Frozen, Encanto).
+    // 0.5 keeps current pop in reach for the adults while letting timeless singalongs surface.
+    recencyBias: kidsMode ? 0.4 : familyMode ? 0.5 : nostalgic ? 0.18 : 0.42,
     moodTags: moodTagsForContext(context),
     avoidArtists: [],
     avoidSongKeys: [],
@@ -1858,9 +1898,10 @@ export function buildMusicalBrief(
       ? [
           "pop",
           "dance-pop",
+          // "soundtrack" lets Disney/animated-film singalongs out of the pure-pop cage for the kids.
+          "soundtrack",
           "disco/funk",
           "latin pop",
-          "afrobeats",
           "indie pop",
         ]
       : uniqueNormalizedTags([
@@ -2064,6 +2105,9 @@ export function selectJourneyLenses(
   if (brief.passengerMode === "family") {
     add("current_pop_hits");
     add("good_mood");
+    // A family car has kids: seed the Disney/animated singalong lens high (web-grounded) so beloved
+    // kid hits reliably surface, while current pop + good mood still keep adult appeal.
+    add("kids_hits");
     if (brief.regionHint || brief.countryName) add("local_language_hits");
     add("singalong_classics");
     if (brief.regionHint || brief.countryName) add("regional_texture");
