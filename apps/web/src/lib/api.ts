@@ -5,6 +5,8 @@ export interface Journey {
   id: string;
   provider: "spotify" | "tidal";
   destination: string;
+  /** Car's current nav target (next charge stop or final destination), updated live across legs. */
+  currentDestination?: string;
   userPrompt: string;
   passengerMode: string;
   phase: string;

@@ -101,6 +101,60 @@ describe("detectJourneyMoment", () => {
     expect(moment!.candidateRequest).toEqual({ kind: "taste-anchor" });
   });
 
+  it("does NOT fire arrival at an interim charge stop (next nav target is a charger)", () => {
+    const moment = detectJourneyMoment({
+      context: {
+        phase: "arrival",
+        etaMinutes: 8,
+        destination: "Supercharger Kassel",
+        finalDestination: "Lago di Garda",
+      } as any,
+      history: [snap({ etaMinutes: 8, batteryPercent: 14 })],
+      previousPhase: "cruise",
+      act: "act_one",
+      lastMomentAt: new Map(),
+      nowMs: NOW,
+      config: cfg,
+    });
+    expect(moment?.type).not.toBe("arrival");
+  });
+
+  it("fires arrival when the nav target IS the final destination", () => {
+    const moment = detectJourneyMoment({
+      context: {
+        phase: "arrival",
+        etaMinutes: 8,
+        destination: "Lago di Garda",
+        finalDestination: "Lago di Garda",
+      } as any,
+      history: [snap({ etaMinutes: 8, batteryPercent: 70 })],
+      previousPhase: "arrival",
+      act: "finale",
+      lastMomentAt: new Map(),
+      nowMs: NOW,
+      config: cfg,
+    });
+    expect(moment?.type).toBe("arrival");
+  });
+
+  it("still fires arrival at the final destination even on low battery (name matches)", () => {
+    const moment = detectJourneyMoment({
+      context: {
+        phase: "arrival",
+        etaMinutes: 8,
+        destination: "Lago di Garda",
+        finalDestination: "Lago di Garda",
+      } as any,
+      history: [snap({ etaMinutes: 8, batteryPercent: 12 })],
+      previousPhase: "arrival",
+      act: "finale",
+      lastMomentAt: new Map(),
+      nowMs: NOW,
+      config: cfg,
+    });
+    expect(moment?.type).toBe("arrival");
+  });
+
   it("respects the per-type cooldown", () => {
     const lastMomentAt = new Map([["traffic_jam", NOW - 60_000]]);
     const moment = detectJourneyMoment({
