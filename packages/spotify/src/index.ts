@@ -912,6 +912,16 @@ function withCandidateMetadata(
   };
 }
 
+// Version markers that are (almost) never the canonical recording the listener means. Matched on
+// normalizeText output (lowercase, words separated by single spaces). Guarded by the candidate's own
+// title — if the AI/user explicitly asked for e.g. "... live", we don't penalize that.
+const FAKE_VERSION_RE =
+  /\b(karaoke|tribute|lullaby|nightcore)\b|made famous|originally performed|performed by|sped up|8d audio/;
+// Lesser versions: a studio original is preferred, but these can still win if they're the only/most
+// popular match (so we penalize rather than hard-exclude).
+const LESSER_VERSION_RE =
+  /\b(cover|instrumental|acoustic|unplugged|live|remix|rendition)\b/;
+
 export function bestSpotifyMatch(
   candidate: SongCandidate,
   results: SpotifyTrackSearchResult[],
@@ -925,12 +935,19 @@ export function bestSpotifyMatch(
   let best:
     | { track: SpotifyTrackSearchResult; confidence: number; reason: string }
     | undefined;
+  let bestScore = -Infinity;
 
   for (const track of results) {
     if (track.isPlayable === false) continue;
 
     const artist = normalizeText(track.artist);
     const title = normalizeText(track.title);
+    // A version marker only counts against the track if the candidate didn't ask for it.
+    const hasFakeVersion =
+      FAKE_VERSION_RE.test(title) && !FAKE_VERSION_RE.test(candidateTitle);
+    // Karaoke / tribute / "made famous by" recordings are never what we want — skip outright.
+    if (hasFakeVersion) continue;
+
     const artistMatch =
       artist.includes(candidateArtist) || candidateArtist.includes(artist);
     const titleMatch = title === candidateTitle;
@@ -960,13 +977,26 @@ export function bestSpotifyMatch(
         : artistMatch && titleContains
           ? "artist and fuzzy title match"
           : "low-confidence fuzzy match";
-    const popularityTieBreak = (track.popularity ?? 0) / 10_000;
-    const adjusted = confidence + popularityTieBreak;
+
+    // A title-only match (different artist) is the classic cover trap. Only trust it when the track
+    // is clearly the popular/canonical recording; otherwise drop it below the acceptance threshold.
+    let effConfidence = confidence;
+    if (!isrcMatch && !artistMatch && titleMatch) {
+      effConfidence = (track.popularity ?? 0) >= 60 ? confidence : 0.5;
+    }
+    // Prefer studio originals over live/acoustic/remix/cover when the candidate didn't ask for one.
     if (
-      !best ||
-      adjusted > best.confidence + (best.track.popularity ?? 0) / 10_000
+      LESSER_VERSION_RE.test(title) &&
+      !LESSER_VERSION_RE.test(candidateTitle)
     ) {
-      best = { track, confidence, reason };
+      effConfidence = Math.max(0, effConfidence - 0.2);
+    }
+    // Popularity now meaningfully steers selection (was a negligible 1e-4 tie-break): among comparable
+    // matches the canonical, widely-known recording wins — exactly what Disney/kid hits need.
+    const selectionScore = effConfidence + ((track.popularity ?? 0) / 100) * 0.2;
+    if (selectionScore > bestScore) {
+      bestScore = selectionScore;
+      best = { track, confidence: effConfidence, reason };
     }
   }
 

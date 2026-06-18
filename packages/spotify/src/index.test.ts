@@ -291,6 +291,120 @@ describe("spotify resolver", () => {
     expect(match?.confidence).toBeGreaterThanOrEqual(0.8);
   });
 
+  it("skips karaoke versions and resolves the canonical recording", () => {
+    const match = bestSpotifyMatch(
+      {
+        artist: "Idina Menzel",
+        title: "Let It Go",
+        reason: "kids singalong",
+        source: "gemini",
+        confidence: 0.8,
+      },
+      [
+        {
+          id: "karaoke",
+          uri: "spotify:track:karaoke",
+          artist: "Idina Menzel",
+          title: "Let It Go (Karaoke Version)",
+          isPlayable: true,
+          popularity: 30,
+        },
+        {
+          id: "real",
+          uri: "spotify:track:real",
+          artist: "Idina Menzel",
+          title: "Let It Go",
+          isPlayable: true,
+          popularity: 84,
+        },
+      ],
+    );
+
+    expect(match?.track.id).toBe("real");
+  });
+
+  it("prefers the popular canonical recording among equal-tier matches", () => {
+    const match = bestSpotifyMatch(
+      {
+        artist: "Pharrell Williams",
+        title: "Happy",
+        reason: "feelgood",
+        source: "gemini",
+        confidence: 0.8,
+      },
+      [
+        {
+          id: "obscure",
+          uri: "spotify:track:obscure",
+          artist: "Pharrell Williams",
+          title: "Happy",
+          isPlayable: true,
+          popularity: 18,
+        },
+        {
+          id: "canonical",
+          uri: "spotify:track:canonical",
+          artist: "Pharrell Williams",
+          title: "Happy",
+          isPlayable: true,
+          popularity: 90,
+        },
+      ],
+    );
+
+    expect(match?.track.id).toBe("canonical");
+  });
+
+  it("rejects a low-popularity title-only match (likely a cover by another artist)", () => {
+    const match = bestSpotifyMatch(
+      {
+        artist: "The Beatles",
+        title: "Yesterday",
+        reason: "classic",
+        source: "gemini",
+        confidence: 0.8,
+      },
+      [
+        {
+          id: "coverband",
+          uri: "spotify:track:coverband",
+          artist: "Some Cover Band",
+          title: "Yesterday",
+          isPlayable: true,
+          popularity: 12,
+        },
+      ],
+    );
+
+    // Returned below the resolver's 0.7 acceptance threshold, so it won't be used.
+    expect(match?.confidence).toBeLessThan(0.7);
+  });
+
+  it("does not penalize a version word the candidate explicitly asked for", () => {
+    const match = bestSpotifyMatch(
+      {
+        artist: "Wings",
+        title: "Live and Let Die",
+        reason: "anthem",
+        source: "gemini",
+        confidence: 0.8,
+      },
+      [
+        {
+          id: "song",
+          uri: "spotify:track:song",
+          artist: "Wings",
+          title: "Live and Let Die",
+          isPlayable: true,
+          popularity: 70,
+        },
+      ],
+    );
+
+    expect(match?.track.id).toBe("song");
+    expect(match?.confidence).toBeGreaterThanOrEqual(0.9);
+  });
+
   it("keeps the future queue buffer at exactly five unique Spotify tracks", () => {
     const tracks = Array.from({ length: 8 }, (_, index) => ({
       provider: "spotify" as const,

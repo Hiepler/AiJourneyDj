@@ -71,6 +71,55 @@ describe("OpenMusicClient.findRecording", () => {
     });
   });
 
+  it("skips a karaoke/live top result and locks the canonical recording's ISRC", async () => {
+    const client = clientWith(
+      async () =>
+        new Response(
+          JSON.stringify({
+            recordings: [
+              {
+                id: "mbid-karaoke",
+                title: "Let It Go (Karaoke Version)",
+                score: 100,
+                isrcs: ["KARAOKE00001"],
+                "artist-credit": [{ name: "Idina Menzel" }],
+              },
+              {
+                id: "mbid-live",
+                title: "Let It Go",
+                disambiguation: "live",
+                score: 99,
+                isrcs: ["LIVE000000001"],
+                "artist-credit": [{ name: "Idina Menzel" }],
+              },
+              {
+                id: "mbid-studio",
+                title: "Let It Go",
+                score: 98,
+                isrcs: ["STUDIO0000001"],
+                "artist-credit": [{ name: "Idina Menzel" }],
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+    );
+
+    const match = await client.findRecording("Idina Menzel", "Let It Go");
+    expect(match?.isrc).toBe("STUDIO0000001");
+    expect(match?.mbid).toBe("mbid-studio");
+  });
+
+  it("fetches several recordings so non-canonical ones can be skipped", async () => {
+    let requestedUrl = "";
+    const client = clientWith(async (input) => {
+      requestedUrl = String(input);
+      return new Response(JSON.stringify({ recordings: [] }), { status: 200 });
+    });
+    await client.findRecording("M83", "Outro");
+    expect(requestedUrl).toContain("limit=5");
+  });
+
   it("enrichCandidate keeps the original candidate when enrichment fails", async () => {
     const client = clientWith(async () => new Response("not json", { status: 200 }));
     const candidate = { artist: "M83", title: "Outro", confidence: 0.5 } as Parameters<

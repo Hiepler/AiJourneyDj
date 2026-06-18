@@ -18,6 +18,11 @@ export interface RecordingMatch {
   tags?: string[];
 }
 
+// Recording variants that aren't the canonical studio version. We avoid locking their ISRC (which
+// would force Spotify onto e.g. a live/karaoke recording) unless the requested title asked for it.
+const NON_CANONICAL_RECORDING_RE =
+  /\b(karaoke|tribute|lullaby|nightcore|cover|instrumental|live|acoustic|unplugged|remix|rendition)\b|made famous|originally performed/i;
+
 export class OpenMusicClient {
   private readonly fetchImpl: typeof fetch;
   private readonly requestTimeoutMs: number;
@@ -44,7 +49,7 @@ export class OpenMusicClient {
     const query = encodeURIComponent(`artist:"${artist}" AND recording:"${title}"`);
     // `inc` is only valid on lookup/browse endpoints; on the search endpoint MusicBrainz
     // answers 200 with a non-JSON schema body, so it must be omitted here.
-    const url = `${this.options.musicBrainzBaseUrl.replace(/\/$/, "")}/recording?query=${query}&fmt=json&limit=1`;
+    const url = `${this.options.musicBrainzBaseUrl.replace(/\/$/, "")}/recording?query=${query}&fmt=json&limit=5`;
 
     // Enrichment is best-effort: any failure here (network drop, timeout, non-OK status,
     // malformed body) must degrade to "no match" and never crash the caller's journey analysis.
@@ -52,6 +57,7 @@ export class OpenMusicClient {
       recordings?: Array<{
         id?: string;
         title?: string;
+        disambiguation?: string;
         score?: number;
         isrcs?: string[];
         tags?: Array<{ name: string }>;
@@ -74,7 +80,24 @@ export class OpenMusicClient {
       return undefined;
     }
 
-    const recording = payload.recordings?.[0];
+    const recordings = payload.recordings ?? [];
+    if (recordings.length === 0) {
+      return undefined;
+    }
+
+    // Skip non-canonical variants (live/karaoke/cover/…) unless the requested title asked for one,
+    // so we never pin a wrong-version ISRC. Results are score-ordered; keep that order.
+    const titleAskedForVariant = NON_CANONICAL_RECORDING_RE.test(title);
+    const canonical = recordings.filter((rec) => {
+      if (titleAskedForVariant) return true;
+      const text = `${rec.title ?? ""} ${rec.disambiguation ?? ""}`;
+      return !NON_CANONICAL_RECORDING_RE.test(text);
+    });
+    // Prefer the highest-ranked canonical recording that actually carries an ISRC; otherwise the
+    // top canonical one (mbid/score still help confidence). If everything looked non-canonical,
+    // return nothing so the more robust Spotify search picks the version.
+    const recording =
+      canonical.find((rec) => rec.isrcs && rec.isrcs.length > 0) ?? canonical[0];
     if (!recording) {
       return undefined;
     }
