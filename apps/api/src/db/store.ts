@@ -150,6 +150,14 @@ export class Store {
     );
   }
 
+  /** Refresh the car's current nav target (per leg). Never touches the final `destination`. */
+  updateJourneyCurrentDestination(journeyId: string, destination: string): void {
+    this.db.run("UPDATE journeys SET current_destination = ? WHERE id = ?", [
+      destination,
+      journeyId,
+    ]);
+  }
+
   setAdaptiveModeEnabled(journeyId: string, enabled: boolean): void {
     this.db.run("UPDATE journeys SET adaptive_mode_enabled = ? WHERE id = ?", [
       enabled ? 1 : 0,
@@ -1012,6 +1020,7 @@ function mapJourney(row: any): JourneyRecord {
     id: row.id,
     provider: row.provider ?? "tidal",
     destination: row.destination,
+    currentDestination: row.current_destination ?? undefined,
     userPrompt: row.user_prompt,
     passengerMode: row.passenger_mode,
     phase: row.phase,
@@ -1156,6 +1165,8 @@ export function contextFromJourney(
   const band = timeOfDayBand(localDate.getHours());
   return {
     destination: telemetry?.destination ?? journey.destination,
+    // The seeded final target — lets moment detection tell an interim charge stop from the real arrival.
+    finalDestination: journey.destination,
     coarseRegion: resolvedGeo.coarseRegion,
     countryName: resolvedGeo.countryName,
     countryCode: resolvedGeo.countryCode,

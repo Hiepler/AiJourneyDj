@@ -52,7 +52,11 @@ export interface TasteProfile {
 }
 
 export interface JourneyContext {
+  /** Current nav target — the live telemetry destination if present, else the journey's final one. */
   destination: string;
+  /** The journey's original final destination (seeded at start). Used to tell an interim charge
+   *  stop apart from the real arrival so the finale anthem only fires at the true destination. */
+  finalDestination?: string;
   coarseRegion?: string;
   countryName?: string;
   countryCode?: string;
@@ -319,7 +323,10 @@ export interface DriveStateAssessment {
 export interface JourneyRecord {
   id: string;
   provider: StreamingProvider;
+  /** The final destination, seeded at journey start (immutable). */
   destination: string;
+  /** The car's current nav target, refreshed from live telemetry across charge stops (per leg). */
+  currentDestination?: string;
   userPrompt: string;
   passengerMode: PassengerMode;
   phase: JourneyPhase;

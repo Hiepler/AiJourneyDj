@@ -260,6 +260,15 @@ export class JourneyService {
         source: event.geoSource === "manual" ? "manual" : "reverse-geocode",
       });
     }
+    // Track the car's current nav target (the next charge stop or final destination) so the cockpit
+    // can show the next stop. The immutable journey.destination stays the final target.
+    if (
+      typeof event.destination === "string" &&
+      event.destination.length > 0 &&
+      event.destination !== journey.currentDestination
+    ) {
+      this.store.updateJourneyCurrentDestination(journey.id, event.destination);
+    }
     if (phase !== journey.phase) {
       this.store.updateJourneyPhase(journey.id, phase);
     }

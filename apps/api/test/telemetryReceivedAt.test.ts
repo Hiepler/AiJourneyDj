@@ -192,6 +192,22 @@ describe("telemetry received_at (store)", () => {
     expect(ctx.telemetrySource).toBe("streaming");
   });
 
+  it("exposes the final destination and tracks the current nav target across legs", () => {
+    const store = freshStore();
+    store.createJourney(makeJourney()); // destination: "Lago di Garda"
+
+    const ctx0 = contextFromJourney(store.getJourney("journey-1")!);
+    expect(ctx0.finalDestination).toBe("Lago di Garda");
+
+    // A charge stop: the car now navigates to a Supercharger.
+    store.updateJourneyCurrentDestination("journey-1", "Supercharger Kassel");
+    const updated = store.getJourney("journey-1")!;
+    expect(updated.currentDestination).toBe("Supercharger Kassel");
+    // The final destination stays the seeded one (not overwritten).
+    expect(updated.destination).toBe("Lago di Garda");
+    expect(contextFromJourney(updated).finalDestination).toBe("Lago di Garda");
+  });
+
   it("round-trips the normalized charging state", () => {
     const store = freshStore();
     store.createJourney(makeJourney());
