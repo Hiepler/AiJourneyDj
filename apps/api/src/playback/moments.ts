@@ -3,7 +3,22 @@
  * recentTelemetry und ist NEUESTE ZUERST sortiert (history[0] = aktuellster Snapshot).
  */
 import type { ChargingState, JourneyContext, JourneyPhase } from "@ai-journey-dj/core";
+import { normalizeText } from "@ai-journey-dj/core";
 import type { StoryAct } from "@ai-journey-dj/recommendation";
+
+/** Nav-target names that signal an interim charge stop rather than the trip's real destination. */
+const CHARGER_DESTINATION_RE =
+  /supercharg|charg(ing|er)|ionity|electrify|fastned|tankstell|raststätt|rastplatz|ladepark|ladestation/i;
+
+/** Loose destination equality: the Tesla nav text and the user's destination rarely match exactly. */
+function destinationsLooselyMatch(a: string, b: string): boolean {
+  const na = normalizeText(a);
+  const nb = normalizeText(b);
+  if (!na || !nb) return false;
+  if (na.includes(nb) || nb.includes(na)) return true;
+  const tokens = new Set(na.split(" ").filter((token) => token.length >= 4));
+  return nb.split(" ").some((token) => token.length >= 4 && tokens.has(token));
+}
 
 export type MomentType =
   | "traffic_jam"
@@ -78,10 +93,20 @@ export function detectJourneyMoment(args: {
   const newest = history[0];
   const candidates = new Map<MomentType, JourneyMoment>();
 
-  // arrival (Einmaligkeit erzwingt der Aufrufer via Audit)
+  // arrival (Einmaligkeit erzwingt der Aufrufer via Audit). Suppress the finale when a low ETA is to
+  // an interim CHARGE STOP, not the real destination — otherwise the anthem fires at every charger.
+  const liveDest = args.context.destination;
+  const finalDest = args.context.finalDestination;
+  const atFinalDestination =
+    !liveDest || !finalDest || destinationsLooselyMatch(liveDest, finalDest);
+  const looksLikeChargeStop =
+    (typeof liveDest === "string" && CHARGER_DESTINATION_RE.test(liveDest)) ||
+    (typeof newest?.batteryPercent === "number" && newest.batteryPercent <= 25);
+  const headingToInterimChargeStop = !atFinalDestination && looksLikeChargeStop;
   if (
     typeof args.context.etaMinutes === "number" &&
-    args.context.etaMinutes <= config.arrivalWindowMinutes
+    args.context.etaMinutes <= config.arrivalWindowMinutes &&
+    !headingToInterimChargeStop
   ) {
     candidates.set("arrival", {
       type: "arrival",
