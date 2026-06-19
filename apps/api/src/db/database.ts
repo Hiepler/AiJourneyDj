@@ -281,6 +281,9 @@ export function migrate(db: Db): void {
   tryAddColumn(db, "journeys", "leg_index", "INTEGER NOT NULL DEFAULT 0");
   // Timestamp the current leg started (set on each charge stop) — drives the per-leg arc reset.
   tryAddColumn(db, "journeys", "leg_started_at", "TEXT");
+  // Car's current nav target (refreshed from live telemetry across charge stops); the immutable
+  // `destination` stays the final target. Lets the cockpit show the next stop + gate the finale.
+  tryAddColumn(db, "journeys", "current_destination", "TEXT");
   // Last meaningful activity timestamp, for inactivity auto-stop (car off overnight, etc.).
   tryAddColumn(db, "journeys", "last_active_at", "TEXT");
   // Last-known location fallback (seeded from destination, refreshed by browser geo / telemetry fixes).

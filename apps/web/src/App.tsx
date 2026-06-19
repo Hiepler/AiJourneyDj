@@ -1255,7 +1255,22 @@ export function App() {
               <div className="stage-head">
                 <span className="now-label">{nowLabel}</span>
                 <span className="dest">
-                  <MapPin size={14} /> {detail?.journey.destination}
+                  <MapPin size={14} />{" "}
+                  {(() => {
+                    const dest = detail?.journey.destination;
+                    const next = detail?.journey.currentDestination?.trim();
+                    // Across charge stops the car navigates to the next stop first — show it, with the
+                    // final destination as the ultimate goal, when they differ.
+                    return next &&
+                      dest &&
+                      next.toLowerCase() !== dest.toLowerCase() ? (
+                      <>
+                        {next} <span className="dest-final">· Ziel: {dest}</span>
+                      </>
+                    ) : (
+                      dest
+                    );
+                  })()}
                 </span>
               </div>
 
