@@ -1936,6 +1936,31 @@ export class JourneyService {
           moodTags: [...policy.moodTags, ...moment.moodTagBias],
         };
       }
+      // Currency-lens grounding: surface real release-radar titles to the AI scout so the
+      // "current" lens prompt can name actual recent tracks instead of hallucinating them.
+      // Best-effort: errors or empty results ⇒ no grounding line (harmless).
+      if (
+        this.config.CURRENCY_LENS_GROUNDING_ENABLED &&
+        this.config.SPOTIFY_FRESH_ENABLED &&
+        this.freshAlbumSource
+      ) {
+        const freshForGrounding = await releaseRadarCandidates({
+          albums: this.freshAlbumSource,
+          tasteArtists: this.freshSeedArtists(scoutContext),
+          bannedArtists: bannedArtists,
+          moodTags: policy.moodTags,
+          windowDays: this.config.FRESH_WINDOW_DAYS,
+          limit: 12,
+        }).catch(() => [] as SongCandidate[]);
+        if (freshForGrounding.length > 0) {
+          scoutContext = {
+            ...scoutContext,
+            currentReleases: freshForGrounding
+              .slice(0, 12)
+              .map((c) => `${c.artist} – ${c.title}`),
+          };
+        }
+      }
       candidates = this.filterFreshCandidates(
         await this.generateAndStoreCandidateSet(
           journeyId,
@@ -3663,7 +3688,7 @@ export class JourneyService {
     const rotation = this.config.LASTFM_CHART_ROTATION_ENABLED;
     const page = rotation ? (seed % this.config.LASTFM_CHART_PAGES) + 1 : 1;
     const window = rotation
-      ? this.config.LASTFM_CHART_WINDOW
+      ? this.config.FRESH_CHART_WINDOW
       : Math.max(targetCount, 30);
     const [geoTracks, tagTracks] = await Promise.all([
       this.lastfmCharts.getGeoTopTracks(country, window, page),

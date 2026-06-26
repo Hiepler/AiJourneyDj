@@ -1701,3 +1701,36 @@ describe("releaseRecencyScore date-based curve", () => {
     expect(releaseRecencyScore(undefined, now, true)).toBe(0.35);
   });
 });
+
+describe("current lens grounding", () => {
+  const makeJourneyContext = (overrides: Partial<JourneyContext>): JourneyContext => ({
+    destination: "Hamburg",
+    coarseRegion: "Northern Germany",
+    localTimeIso: "2026-06-26T14:00:00.000Z",
+    etaMinutes: 60,
+    speedBucket: "highway",
+    phase: "cruise",
+    userPrompt: "upbeat drive",
+    passengerMode: "solo",
+    ...overrides,
+  });
+
+  it("injects real releases into the current lens prompt", () => {
+    const ctx = makeJourneyContext({
+      currentReleases: ["Bonobo – Fresh Drop", "Fresh Act – Chart Newcomer"],
+    });
+    const brief = buildMusicalBrief(ctx);
+    const currentLens = DEFAULT_LENSES.find((l) => l.key === "current")!;
+    const prompt = buildLensPrompt(currentLens, brief, 5);
+    expect(prompt).toContain("Bonobo – Fresh Drop");
+  });
+
+  it("does not inject for non-current lenses", () => {
+    const ctx = makeJourneyContext({
+      currentReleases: ["Bonobo – Fresh Drop"],
+    });
+    const brief = buildMusicalBrief(ctx);
+    const classics = DEFAULT_LENSES.find((l) => l.key === "classics")!;
+    expect(buildLensPrompt(classics, brief, 5)).not.toContain("Fresh Drop");
+  });
+});
