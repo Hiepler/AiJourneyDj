@@ -920,7 +920,10 @@ describe("getPlaybackState", () => {
       fetchImpl,
       wait: async () => undefined,
     });
-    const state = await adapter.getPlaybackState({ accessToken: "t", market: "DE" });
+    const state = await adapter.getPlaybackState({
+      accessToken: "t",
+      market: "DE",
+    });
     expect(state.currentlyPlayingType).toBe("episode");
     expect(state.activeDeviceId).toBe("phone-xyz");
     expect(state.activeDeviceName).toBe("Pixel");
@@ -942,7 +945,10 @@ describe("getPlaybackState", () => {
       fetchImpl,
       wait: async () => undefined,
     });
-    const state = await adapter.getPlaybackState({ accessToken: "t", market: "DE" });
+    const state = await adapter.getPlaybackState({
+      accessToken: "t",
+      market: "DE",
+    });
     expect(state.activeProviderTrackId).toBe("t1");
     expect(state.currentlyPlayingType).toBeUndefined();
     expect(state.activeDeviceId).toBeUndefined();
@@ -995,7 +1001,9 @@ describe("getArtistAlbums", () => {
     // Fresh album date is now relative to now (11 days ago); verify it's within the last 30 days.
     const freshAlbum = albums.find((a) => a.id?.endsWith("-fresh"));
     expect(freshAlbum).toBeDefined();
-    const freshDate = freshAlbum?.releaseDate ? new Date(freshAlbum.releaseDate) : null;
+    const freshDate = freshAlbum?.releaseDate
+      ? new Date(freshAlbum.releaseDate)
+      : null;
     expect(freshDate).not.toBeNull();
     expect(Date.now() - freshDate!.getTime()).toBeLessThan(30 * 86_400_000);
   });

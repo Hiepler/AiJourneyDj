@@ -1186,7 +1186,10 @@ export interface MusicalBrief {
  * Covers the common European road-trip corridor plus a few majors; unmapped countries fall back to a
  * region-text directive so the grounded LLM can still infer the local language from the place name.
  */
-const COUNTRY_LOCAL_FLAVOR: Record<string, { language: string; demonym: string }> = {
+const COUNTRY_LOCAL_FLAVOR: Record<
+  string,
+  { language: string; demonym: string }
+> = {
   FR: { language: "French", demonym: "French" },
   DE: { language: "German", demonym: "German" },
   AT: { language: "German", demonym: "Austrian" },
@@ -1485,10 +1488,13 @@ export function rankResolvedTracksForPolicy<T extends ResolvedTrack>(
   const recentSongPenalty =
     options.recentSongPenalty ?? new Map<string, number>();
   const fatigueExempt = new Set(
-    [...(options.fatigueExemptArtists ?? [])].map((artist) => normalizeText(artist)),
+    [...(options.fatigueExemptArtists ?? [])].map((artist) =>
+      normalizeText(artist),
+    ),
   );
   const bannedArtists = options.bannedArtists ?? new Set<string>();
-  const jitterStrength = options.seed !== undefined ? options.jitterStrength ?? 0.06 : 0;
+  const jitterStrength =
+    options.seed !== undefined ? (options.jitterStrength ?? 0.06) : 0;
   return [...tracks]
     .filter((track) => track.providerUri && track.isPlayable !== false)
     .filter((track) => !(policy.cleanRequired && track.explicit === true))
@@ -1548,7 +1554,11 @@ export function rankResolvedTracksForPolicy<T extends ResolvedTrack>(
         track.matchConfidence * 0.24 +
         familiarityComponent * 0.22 +
         chartSignalScore(track) * 0.22 +
-        releaseRecencyScore(track.releaseDate, options.now, options.recencyDateScoring) *
+        releaseRecencyScore(
+          track.releaseDate,
+          options.now,
+          options.recencyDateScoring,
+        ) *
           policy.recencyBias *
           (options.recencyDateScoring ? 0.2 : 0.14) +
         moodFitScore(track, policy) * 0.08 +
@@ -1773,7 +1783,9 @@ export function buildMusicalBrief(
   let intensityLabel = profile.intensity;
   // Archetype familiarity bias first (errand/commute lean familiar); calm/family overrides below
   // still win on top of it.
-  let tasteWeight = clamp01((context.tasteWeight ?? 0) + strategy.tasteWeightBias);
+  let tasteWeight = clamp01(
+    (context.tasteWeight ?? 0) + strategy.tasteWeightBias,
+  );
   const driveMode: DriveMode = assessment?.mode ?? "neutral";
   if (assessment?.mode === "calm") {
     targetEnergy = clamp01(targetEnergy - 0.2 * assessment.intensity);
@@ -1820,7 +1832,10 @@ export function buildMusicalBrief(
     context.paceTrend,
     context.speedBucket,
   );
-  const fatigueRisk = energyFloor > 0 ? clamp01((energyFloor - ALERTNESS_FLOOR_BASE) / ALERTNESS_FLOOR_SLOPE) : 0;
+  const fatigueRisk =
+    energyFloor > 0
+      ? clamp01((energyFloor - ALERTNESS_FLOOR_BASE) / ALERTNESS_FLOOR_SLOPE)
+      : 0;
   targetEnergy = Math.max(targetEnergy, energyFloor);
   if (energyFloor > 0) moodWords.push("alert", "wakeful");
 
@@ -2293,7 +2308,9 @@ export function buildLensPrompt(
       : "",
     localTouchLine,
     brief.weatherFeel ? `Weather right now: ${brief.weatherFeel}.` : "",
-    brief.explorationAngle ? `Freshness directive: ${brief.explorationAngle}.` : "",
+    brief.explorationAngle
+      ? `Freshness directive: ${brief.explorationAngle}.`
+      : "",
     brief.storyDirective ? `Drive story: ${brief.storyDirective}` : "",
     brief.momentDirective ? `Moment: ${brief.momentDirective}` : "",
     brief.avoidRecentArtists && brief.avoidRecentArtists.length > 0
@@ -3034,10 +3051,6 @@ export {
   type AlbumSource,
 } from "./releaseRadar.js";
 
-export {
-  driveStoryAct,
-  type StoryAct,
-  type StoryBeat,
-} from "./driveStory.js";
+export { driveStoryAct, type StoryAct, type StoryBeat } from "./driveStory.js";
 
 export { looksLikeSpokenWord } from "./spokenWord.js";

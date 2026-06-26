@@ -71,7 +71,8 @@ class FreshnessTestSpotifyAdapter extends MockSpotifyAdapter {
     signal?: AbortSignal;
   }): Promise<SpotifyTrackSearchResult[]> {
     const results = await super.searchTracks(args);
-    return results.map(({ releaseDate: _omit, ...rest }) => rest);
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    return results.map(({ releaseDate: _releaseDate, ...rest }) => rest);
   }
 
   /** Limit to 2 taste artists so the resolver slot budget fits the chart tracks. */

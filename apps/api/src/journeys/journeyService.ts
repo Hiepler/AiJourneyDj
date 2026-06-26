@@ -195,13 +195,23 @@ export class JourneyService {
    */
   private readonly freshAlbumCache = new Map<
     string,
-    { at: number; albums: Array<{ id: string; name: string; artist: string; releaseDate?: string }> }
+    {
+      at: number;
+      albums: Array<{
+        id: string;
+        name: string;
+        artist: string;
+        releaseDate?: string;
+      }>;
+    }
   >();
   /**
    * Cached taste artists with Spotify ids — populated alongside the TasteProfile by loadTasteProfile.
    * Used as seed for the release-radar candidate source.
    */
-  private cachedTasteArtistsWithIds: Array<{ id: string; name: string }> | undefined;
+  private cachedTasteArtistsWithIds:
+    | Array<{ id: string; name: string }>
+    | undefined;
 
   constructor(
     private readonly config: AppConfig,
@@ -215,9 +225,7 @@ export class JourneyService {
     private readonly lastfmCharts?: LastfmChartClient,
     private readonly logger: JourneyLogger = noopLogger,
   ) {
-    if (
-      typeof this.spotifyAdapter.getArtistAlbums === "function"
-    ) {
+    if (typeof this.spotifyAdapter.getArtistAlbums === "function") {
       const adapter = this.spotifyAdapter;
       const cacheMap = this.freshAlbumCache;
       const getCacheHours = () => this.config.FRESH_CACHE_HOURS;
@@ -256,7 +264,9 @@ export class JourneyService {
               } catch {
                 return [];
               }
-              const albums = await adapter.getNewReleases!({ accessToken: token });
+              const albums = await adapter.getNewReleases!({
+                accessToken: token,
+              });
               return albums.map((a) => ({
                 id: a.id,
                 name: a.name,
@@ -668,7 +678,10 @@ export class JourneyService {
     );
     for (const tag of track.moodTags ?? []) {
       const key = normalizeText(tag);
-      entry.moodTags.set(key, Math.min(0.6, (entry.moodTags.get(key) ?? 0) + 0.15));
+      entry.moodTags.set(
+        key,
+        Math.min(0.6, (entry.moodTags.get(key) ?? 0) + 0.15),
+      );
     }
     this.store.audit(
       journeyId,
@@ -797,11 +810,15 @@ export class JourneyService {
   }
 
   async undoMusicWish(journeyId: string, wishId: string): Promise<MusicWish> {
-    const wish = await this.updateMusicWish(journeyId, wishId, { status: "undone" });
+    const wish = await this.updateMusicWish(journeyId, wishId, {
+      status: "undone",
+    });
     // Re-curate only while the journey is still running; the undo itself is
     // already persisted, so a stopped journey must not surface as a failed undo.
     if (this.getJourneyOrThrow(journeyId).status === "active") {
-      void this.analyzeJourney(journeyId, "music-wish-undo").catch(() => undefined);
+      void this.analyzeJourney(journeyId, "music-wish-undo").catch(
+        () => undefined,
+      );
     }
     return wish;
   }
@@ -853,7 +870,12 @@ export class JourneyService {
     if (this.prewarmInFlight.has(journeyId)) return;
     if (this.analyzeByJourney.has(journeyId)) return;
     const journey = this.store.getJourney(journeyId);
-    if (!journey || journey.provider !== "spotify" || journey.status !== "active") return;
+    if (
+      !journey ||
+      journey.provider !== "spotify" ||
+      journey.status !== "active"
+    )
+      return;
 
     const session = this.store.getPlaybackSession(journeyId);
     const stored = this.store
@@ -874,8 +896,10 @@ export class JourneyService {
     if (unused.length >= this.config.CANDIDATE_POOL_FLOOR) return;
 
     const last = this.store.latestPlaylistUpdate(journeyId);
-    const minIntervalMs = this.config.SPOTIFY_REFILL_MIN_INTERVAL_SECONDS * 1000;
-    if (!shouldRegenerate(last?.createdAtIso, Date.now(), minIntervalMs)) return;
+    const minIntervalMs =
+      this.config.SPOTIFY_REFILL_MIN_INTERVAL_SECONDS * 1000;
+    if (!shouldRegenerate(last?.createdAtIso, Date.now(), minIntervalMs))
+      return;
 
     this.prewarmInFlight.add(journeyId);
     try {
@@ -929,16 +953,24 @@ export class JourneyService {
       const added =
         this.store
           .listResolvedTracks(journeyId)
-          .filter((track) => track.provider === "spotify").length - storedBefore;
+          .filter((track) => track.provider === "spotify").length -
+        storedBefore;
       this.store.audit(
         journeyId,
         "recommendation.pool_prewarmed",
         `Pre-warmed the candidate pool (+${added} new resolved tracks).`,
-        { resolved: resolved.length, added, floor: this.config.CANDIDATE_POOL_FLOOR },
+        {
+          resolved: resolved.length,
+          added,
+          floor: this.config.CANDIDATE_POOL_FLOOR,
+        },
       );
     } catch (error) {
       this.logger.warn(
-        { journeyId, err: error instanceof Error ? error.message : String(error) },
+        {
+          journeyId,
+          err: error instanceof Error ? error.message : String(error),
+        },
         "recommendation.prewarm_failed",
       );
     } finally {
@@ -1058,7 +1090,10 @@ export class JourneyService {
       { enabled },
     );
     // Distinct reason for OFF so the queue rebuild also flushes the now-stale kids tracks.
-    await this.analyzeJourney(journeyId, enabled ? "kids-mode" : "kids-mode-off");
+    await this.analyzeJourney(
+      journeyId,
+      enabled ? "kids-mode" : "kids-mode-off",
+    );
     return this.getJourneyOrThrow(journeyId);
   }
 
@@ -1813,7 +1848,10 @@ export class JourneyService {
         priorSession?.activeTrack?.provider === "spotify" &&
         priorSession.activeTrack.artist &&
         priorSession.activeTrack.title
-          ? { artist: priorSession.activeTrack.artist, title: priorSession.activeTrack.title }
+          ? {
+              artist: priorSession.activeTrack.artist,
+              title: priorSession.activeTrack.title,
+            }
           : undefined,
       storyDirective: story?.directive,
       momentDirective: moment?.directive,
@@ -1987,7 +2025,10 @@ export class JourneyService {
       }
       if (moment?.candidateRequest) {
         let momentCandidates: SongCandidate[] = [];
-        if (moment.candidateRequest.kind === "geo-charts" && this.lastfmCharts) {
+        if (
+          moment.candidateRequest.kind === "geo-charts" &&
+          this.lastfmCharts
+        ) {
           const localTracks = await this.lastfmCharts
             .getGeoTopTracks(moment.candidateRequest.country, 20, 1)
             .catch(() => []);
@@ -1997,7 +2038,10 @@ export class JourneyService {
             policy.moodTags,
           )
             .slice(0, 3)
-            .map((candidate) => ({ ...candidate, lens: `moment:${moment.type}` }));
+            .map((candidate) => ({
+              ...candidate,
+              lens: `moment:${moment.type}`,
+            }));
         } else if (moment.candidateRequest.kind === "taste-anchor") {
           momentCandidates = await this.tasteAnchorCandidates(
             "arrival",
@@ -2007,7 +2051,10 @@ export class JourneyService {
         }
         if (momentCandidates.length > 0) {
           candidates = [
-            ...(await this.enrichAndStoreCandidates(journeyId, momentCandidates)),
+            ...(await this.enrichAndStoreCandidates(
+              journeyId,
+              momentCandidates,
+            )),
             ...candidates,
           ];
         }
@@ -2106,12 +2153,14 @@ export class JourneyService {
     const isWishApplicationPass =
       reason === "music-wish" || reason === "music-wish-undo";
     const shouldRebuildQueueForWish =
-      isWishApplicationPass || (reason === "manual" && activeMusicWishes.length > 0);
+      isWishApplicationPass ||
+      (reason === "manual" && activeMusicWishes.length > 0);
     // An explicit vibe shift (Kids on/off) rebuilds the upcoming queue too, so stale non-vibe tracks
     // don't sit in front of the freshly-curated ones. Kept separate from the wish gate so it never
     // consumes music-wish budgets (the decay branch below stays keyed to shouldRebuildQueueForWish).
     const isVibeShift = VIBE_SHIFT_REASONS.has(reason);
-    const shouldRebuildQueueForVibeShift = shouldRebuildQueueForWish || isVibeShift;
+    const shouldRebuildQueueForVibeShift =
+      shouldRebuildQueueForWish || isVibeShift;
     const anchorKeys = new Set(
       candidates
         .filter((candidate) =>
@@ -2213,9 +2262,9 @@ export class JourneyService {
           recentSongPenalty,
           fatigueExemptArtists: wishArtists,
           bannedArtists: effectiveBannedArtists,
-        softMoodPenalty: skipEntry.moodTags,
-        excludeSpokenWord: this.config.SPOKEN_WORD_FILTER_ENABLED,
-        recencyDateScoring: this.config.RECENCY_DATE_SCORING_ENABLED,
+          softMoodPenalty: skipEntry.moodTags,
+          excludeSpokenWord: this.config.SPOKEN_WORD_FILTER_ENABLED,
+          recencyDateScoring: this.config.RECENCY_DATE_SCORING_ENABLED,
         },
       );
       const alreadyQueued = new Set([
@@ -2315,7 +2364,9 @@ export class JourneyService {
           // append-only queue. Automated/refill passes keep the "only start if idle" behavior.
           shouldStart: Boolean(
             activeTrack?.providerUri &&
-            (isVibeShift || !session?.activeTrack || session.status !== "playing"),
+            (isVibeShift ||
+              !session?.activeTrack ||
+              session.status !== "playing"),
           ),
           automated: !USER_INITIATED_REASONS.has(reason),
         })
@@ -2453,10 +2504,13 @@ export class JourneyService {
     );
 
     const isWishTrack = (track: ResolvedTrack) =>
-      wishArtistKeys.size > 0 && wishArtistKeys.has(normalizeText(track.artist));
+      wishArtistKeys.size > 0 &&
+      wishArtistKeys.has(normalizeText(track.artist));
 
     if (min > 0 && maxSlots > 0 && wishArtistKeys.size > 0) {
-      const inQueueIds = new Set(selected.map((track) => track.providerTrackId));
+      const inQueueIds = new Set(
+        selected.map((track) => track.providerTrackId),
+      );
       let wishSlots = selected.filter(isWishTrack).length;
 
       const wishCandidates = args.rankedStored.filter(
@@ -2925,7 +2979,8 @@ export class JourneyService {
         } else {
           // Playback is best-effort: a transient Spotify error (e.g. 500) must not fail the
           // journey. The queue is already saved; degrade and let the user retry playback.
-          const message = error instanceof Error ? error.message : String(error);
+          const message =
+            error instanceof Error ? error.message : String(error);
           this.logger.warn(
             { journeyId: args.journeyId, deviceId, err: message },
             "spotify.transfer.degraded",
@@ -3141,8 +3196,7 @@ export class JourneyService {
       const skippedTrack = this.store
         .listResolvedTracks(journeyId)
         .find(
-          (track) =>
-            track.providerTrackId === previousProgress.providerTrackId,
+          (track) => track.providerTrackId === previousProgress.providerTrackId,
         );
       if (skippedTrack) this.recordSkipFeedback(journeyId, skippedTrack);
     }
@@ -3153,7 +3207,11 @@ export class JourneyService {
     // was playing is now truthfully "paused" so the UI doesn't show a stopped journey as live.
     if (!state.isPlaying || !state.activeProviderTrackId) {
       if (session.status === "playing") {
-        this.saveSession({ ...session, status: "paused", lastHeartbeatAt: now });
+        this.saveSession({
+          ...session,
+          status: "paused",
+          lastHeartbeatAt: now,
+        });
       }
       return "idle";
     }
@@ -3170,7 +3228,11 @@ export class JourneyService {
       }) === "handed-over"
     ) {
       if (session.status !== "external") {
-        this.saveSession({ ...session, status: "external", lastHeartbeatAt: now });
+        this.saveSession({
+          ...session,
+          status: "external",
+          lastHeartbeatAt: now,
+        });
       }
       return "external";
     }
@@ -3223,14 +3285,20 @@ export class JourneyService {
           );
         } else {
           const previousDeviceId = session.deviceId;
-          this.store.updateJourneySpotifyDevice(journeyId, state.activeDeviceId);
+          this.store.updateJourneySpotifyDevice(
+            journeyId,
+            state.activeDeviceId,
+          );
           session = { ...session, deviceId: state.activeDeviceId };
           this.saveSession({ ...session, lastHeartbeatAt: now });
           this.store.audit(
             journeyId,
             "spotify.device_followed",
             "Followed Spotify Connect to the active playback device.",
-            { fromDeviceId: previousDeviceId, toDeviceId: state.activeDeviceId },
+            {
+              fromDeviceId: previousDeviceId,
+              toDeviceId: state.activeDeviceId,
+            },
           );
         }
       }
@@ -3346,7 +3414,9 @@ export class JourneyService {
               { activeProviderTrackId: nextTrack.providerTrackId },
             );
             // Refill the now-empty queue in the background.
-            void this.analyzeJourney(journeyId, "skip-refill").catch(() => undefined);
+            void this.analyzeJourney(journeyId, "skip-refill").catch(
+              () => undefined,
+            );
             return "playing";
           }
         }
@@ -3600,7 +3670,9 @@ export class JourneyService {
             nowPlaying: context.nowPlaying,
             wishArtists: (context.activeMusicWishes ?? [])
               .flatMap((wish) => wish.intents)
-              .flatMap((intent) => (intent.type === "artist" ? [intent.artist] : [])),
+              .flatMap((intent) =>
+                intent.type === "artist" ? [intent.artist] : [],
+              ),
             tasteArtists: context.tasteProfile?.representativeArtists ?? [],
             tasteWeight: context.tasteWeight ?? 0.5,
             seed,
@@ -3634,9 +3706,18 @@ export class JourneyService {
           targetCount + 8,
           seed,
         ),
-        this.generateAndStoreCandidates(journeyId, context, targetCount, policy),
-        similarPromise.then((items) => this.enrichAndStoreCandidates(journeyId, items)),
-        freshPromise.then((items) => this.enrichAndStoreCandidates(journeyId, items)),
+        this.generateAndStoreCandidates(
+          journeyId,
+          context,
+          targetCount,
+          policy,
+        ),
+        similarPromise.then((items) =>
+          this.enrichAndStoreCandidates(journeyId, items),
+        ),
+        freshPromise.then((items) =>
+          this.enrichAndStoreCandidates(journeyId, items),
+        ),
       ]);
     const seen = new Set<string>();
     return [
@@ -3692,7 +3773,9 @@ export class JourneyService {
       : Math.max(targetCount, 30);
     const [geoTracks, tagTracks] = await Promise.all([
       this.lastfmCharts.getGeoTopTracks(country, window, page),
-      Promise.all(tags.map((tag) => this.lastfmCharts!.getTagTopTracks(tag, 12, page))),
+      Promise.all(
+        tags.map((tag) => this.lastfmCharts!.getTagTopTracks(tag, 12, page)),
+      ),
     ]);
     const pool = [...geoTracks, ...tagTracks.flat()];
     const rotated = rotation ? rotateWindow(pool, seed, pool.length) : pool;

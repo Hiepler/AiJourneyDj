@@ -148,7 +148,11 @@ const schema = z.object({
   WISH_QUOTA_MIN: z.coerce.number().int().min(0).max(5).default(2),
   WISH_QUOTA_MAX_SLOTS: z.coerce.number().int().min(0).max(5).default(3),
   PLAYBACK_RECLAIM_ENABLED: envBoolean(true),
-  PLAYBACK_RECLAIM_COOLDOWN_SECONDS: z.coerce.number().int().min(10).default(120),
+  PLAYBACK_RECLAIM_COOLDOWN_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(10)
+    .default(120),
   // Once a device is established for a journey (the driver picked it, or auto-adopt bound it), keep
   // that device locked for the journey: passive Connect-follow / auto-adopt won't rebind away to a
   // transient active device (e.g. a lingering web player), and reclaim/refills target the locked
@@ -164,11 +168,21 @@ const schema = z.object({
   // refills never wait on LLM generation mid-drive (0 disables pre-warming).
   CANDIDATE_POOL_FLOOR: z.coerce.number().int().min(0).max(50).default(6),
   // Pause between consecutive device queue adds (gentle API pacing).
-  SPOTIFY_QUEUE_ADD_DELAY_MS: z.coerce.number().int().min(0).max(2000).default(150),
+  SPOTIFY_QUEUE_ADD_DELAY_MS: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(2000)
+    .default(150),
   // Vielfalts-Doktrin: harter Artist-Bann auf Basis des recent_plays-Ledgers.
   ARTIST_BAN_PLAYS: z.coerce.number().int().min(0).default(2),
   ARTIST_BAN_WINDOW_HOURS: z.coerce.number().min(1).default(168),
-  ARTIST_AVOID_PROMPT_LIMIT: z.coerce.number().int().min(1).max(100).default(40),
+  ARTIST_AVOID_PROMPT_LIMIT: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(100)
+    .default(40),
   SIMILAR_SOURCE_ENABLED: envBoolean(true),
   SIMILAR_RANK_MIN: z.coerce.number().int().min(1).default(5),
   SIMILAR_RANK_MAX: z.coerce.number().int().min(2).default(30),
