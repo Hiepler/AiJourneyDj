@@ -173,6 +173,14 @@ const schema = z.object({
   SIMILAR_RANK_MIN: z.coerce.number().int().min(1).default(5),
   SIMILAR_RANK_MAX: z.coerce.number().int().min(2).default(30),
   LASTFM_SIMILAR_CACHE_HOURS: z.coerce.number().min(1).default(168),
+  // Engine-Frische: echter Release-Radar aus den Alben der Taste-Artisten + kuratierte New Releases.
+  SPOTIFY_FRESH_ENABLED: envBoolean(true),
+  FRESH_WINDOW_DAYS: z.coerce.number().int().min(1).max(365).default(75),
+  FRESH_CACHE_HOURS: z.coerce.number().min(0.1).default(24),
+  FRESH_QUOTA_MIN: z.coerce.number().int().min(0).max(5).default(2),
+  FRESH_CHART_WINDOW: z.coerce.number().int().min(10).max(1000).default(40),
+  RECENCY_DATE_SCORING_ENABLED: envBoolean(true),
+  CURRENCY_LENS_GROUNDING_ENABLED: envBoolean(true),
   // Deep-Cut-Explorer-Lens (zusätzlicher grounded Scout-Call) + Genre-Spread im Buffer.
   EXPLORER_LENS_ENABLED: envBoolean(true),
   GENRE_SPREAD_ENABLED: envBoolean(true),
