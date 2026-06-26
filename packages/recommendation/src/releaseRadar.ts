@@ -12,6 +12,9 @@ interface RadarAlbum {
 
 /** Minimal album feed the radar needs (testable via a stub). */
 export interface AlbumSource {
+  /**
+   * Returns albums by the queried artist as PRIMARY artist (not collaborations or appears-on).
+   */
   getArtistAlbums(artistId: string): Promise<RadarAlbum[]>;
   getNewReleases?(): Promise<RadarAlbum[]>;
 }
@@ -48,9 +51,9 @@ export async function releaseRadarCandidates(args: {
   const seen = new Set<string>();
 
   const push = (album: RadarAlbum, monthLabel: string) => {
+    if (!album.artist || !album.name) return;
     const key = normalizeText(album.artist);
     const dupe = normalizeText(`${album.artist}-${album.name}`);
-    if (!album.artist || !album.name) return;
     if (args.bannedArtists.has(key)) return;
     if (looksLikeSpokenWord(album.artist, album.name)) return;
     if (seen.has(dupe)) return;
