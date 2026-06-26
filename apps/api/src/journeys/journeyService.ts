@@ -45,6 +45,7 @@ import {
   candidatesFromMusicWishes,
   deriveTasteProfile,
   fallbackCandidates,
+  isWithinFreshWindow,
   lastfmTracksToCandidates,
   driveStoryAct,
   energyCurveForContext,
@@ -2414,7 +2415,6 @@ export class JourneyService {
     }
     const min = this.config.WISH_QUOTA_MIN;
     const maxSlots = this.config.WISH_QUOTA_MAX_SLOTS;
-    if (min <= 0 || maxSlots <= 0) return selected;
 
     const wishArtistKeys = new Set(
       args.wishes
@@ -2426,38 +2426,74 @@ export class JourneyService {
           intent.type === "artist" ? [normalizeText(intent.artist)] : [],
         ),
     );
-    if (wishArtistKeys.size === 0) return selected;
 
     const isWishTrack = (track: ResolvedTrack) =>
-      wishArtistKeys.has(normalizeText(track.artist));
+      wishArtistKeys.size > 0 && wishArtistKeys.has(normalizeText(track.artist));
 
-    const inQueueIds = new Set(selected.map((track) => track.providerTrackId));
-    let wishSlots = selected.filter(isWishTrack).length;
+    if (min > 0 && maxSlots > 0 && wishArtistKeys.size > 0) {
+      const inQueueIds = new Set(selected.map((track) => track.providerTrackId));
+      let wishSlots = selected.filter(isWishTrack).length;
 
-    const wishCandidates = args.rankedStored.filter(
-      (track) =>
-        isWishTrack(track) &&
-        track.providerUri &&
-        track.isPlayable !== false &&
-        !inQueueIds.has(track.providerTrackId) &&
-        !args.excludeProviderIds.has(track.providerTrackId),
-    );
+      const wishCandidates = args.rankedStored.filter(
+        (track) =>
+          isWishTrack(track) &&
+          track.providerUri &&
+          track.isPlayable !== false &&
+          !inQueueIds.has(track.providerTrackId) &&
+          !args.excludeProviderIds.has(track.providerTrackId),
+      );
 
-    const target = Math.min(maxSlots, Math.max(min, wishSlots));
-    for (const candidate of wishCandidates) {
-      if (wishSlots >= target) break;
-      const victimIndex = [...selected]
-        .map((track, index) => ({ track, index }))
-        .reverse()
-        .find(
-          ({ track, index }) =>
-            !isWishTrack(track) && !(args.priorityTrack && index === 0),
-        )?.index;
-      if (victimIndex === undefined) break;
-      selected[victimIndex] = candidate;
-      inQueueIds.add(candidate.providerTrackId);
-      wishSlots += 1;
+      const target = Math.min(maxSlots, Math.max(min, wishSlots));
+      for (const candidate of wishCandidates) {
+        if (wishSlots >= target) break;
+        const victimIndex = [...selected]
+          .map((track, index) => ({ track, index }))
+          .reverse()
+          .find(
+            ({ track, index }) =>
+              !isWishTrack(track) && !(args.priorityTrack && index === 0),
+          )?.index;
+        if (victimIndex === undefined) break;
+        selected[victimIndex] = candidate;
+        inQueueIds.add(candidate.providerTrackId);
+        wishSlots += 1;
+      }
     }
+
+    const freshMin = this.config.FRESH_QUOTA_MIN;
+    if (freshMin > 0) {
+      const isFresh = (track: ResolvedTrack) =>
+        isWithinFreshWindow(track.releaseDate, this.config.FRESH_WINDOW_DAYS);
+      const freshInQueueIds = new Set(
+        selected.map((track) => track.providerTrackId),
+      );
+      let freshSlots = selected.filter(isFresh).length;
+      const freshCandidates = args.rankedStored.filter(
+        (track) =>
+          isFresh(track) &&
+          track.providerUri &&
+          track.isPlayable !== false &&
+          !freshInQueueIds.has(track.providerTrackId) &&
+          !args.excludeProviderIds.has(track.providerTrackId),
+      );
+      for (const candidate of freshCandidates) {
+        if (freshSlots >= freshMin) break;
+        const victimIndex = [...selected]
+          .map((track, index) => ({ track, index }))
+          .reverse()
+          .find(
+            ({ track, index }) =>
+              !isWishTrack(track) &&
+              !isFresh(track) &&
+              !(args.priorityTrack && index === 0),
+          )?.index;
+        if (victimIndex === undefined) break;
+        selected[victimIndex] = candidate;
+        freshInQueueIds.add(candidate.providerTrackId);
+        freshSlots += 1;
+      }
+    }
+
     return selected;
   }
 
