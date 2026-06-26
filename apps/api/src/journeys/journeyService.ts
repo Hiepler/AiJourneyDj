@@ -51,6 +51,7 @@ import {
   makeVarietyContext,
   momentumRadioCandidates,
   orderByEnergyArc,
+  releaseRadarCandidates,
   resolvedTrackEnergy,
   resolvedTrackValence01,
   parseMusicWish,
@@ -59,6 +60,7 @@ import {
   seededExplorationAngle,
   selectRollingBatch,
   stabilizeDriveMode,
+  type AlbumSource,
   type LastfmChartClient,
   type RecommendationPolicy,
 } from "@ai-journey-dj/recommendation";
@@ -180,6 +182,25 @@ export class JourneyService {
   >();
   /** On-demand live telemetry reader (injected post-construction; absent in mock/tests). */
   private liveTelemetryReader?: TeslaLiveReader;
+  /**
+   * AlbumSource backed by the Spotify adapter — wraps getArtistAlbums / getNewReleases with an
+   * in-memory TTL cache keyed by artist id (mirroring the moment-cooldown Map pattern).
+   * Undefined when the adapter lacks the methods (best-effort, no crash).
+   */
+  private readonly freshAlbumSource: AlbumSource | undefined;
+  /**
+   * In-memory album cache per artist id: { at: epoch ms, albums: RadarAlbum[] }.
+   * Restart-loss is acceptable (same as moment cooldowns). TTL = FRESH_CACHE_HOURS.
+   */
+  private readonly freshAlbumCache = new Map<
+    string,
+    { at: number; albums: Array<{ id: string; name: string; artist: string; releaseDate?: string }> }
+  >();
+  /**
+   * Cached taste artists with Spotify ids — populated alongside the TasteProfile by loadTasteProfile.
+   * Used as seed for the release-radar candidate source.
+   */
+  private cachedTasteArtistsWithIds: Array<{ id: string; name: string }> | undefined;
 
   constructor(
     private readonly config: AppConfig,
@@ -192,7 +213,60 @@ export class JourneyService {
     private readonly openMusic: OpenMusicClient | NoopOpenMusicClient,
     private readonly lastfmCharts?: LastfmChartClient,
     private readonly logger: JourneyLogger = noopLogger,
-  ) {}
+  ) {
+    if (
+      typeof this.spotifyAdapter.getArtistAlbums === "function"
+    ) {
+      const adapter = this.spotifyAdapter;
+      const cacheMap = this.freshAlbumCache;
+      const getCacheHours = () => this.config.FRESH_CACHE_HOURS;
+      const getAccessToken = () => this.spotifyAuth.getAccessToken();
+      this.freshAlbumSource = {
+        async getArtistAlbums(artistId: string) {
+          const now = Date.now();
+          const cached = cacheMap.get(artistId);
+          if (cached && now - cached.at < getCacheHours() * 3_600_000) {
+            return cached.albums;
+          }
+          let token: string;
+          try {
+            token = await getAccessToken();
+          } catch {
+            return [];
+          }
+          const albums = await adapter.getArtistAlbums!({
+            accessToken: token,
+            artistId,
+          });
+          const mapped = albums.map((a) => ({
+            id: a.id,
+            name: a.name,
+            artist: a.artist,
+            releaseDate: a.releaseDate,
+          }));
+          cacheMap.set(artistId, { at: now, albums: mapped });
+          return mapped;
+        },
+        getNewReleases: adapter.getNewReleases
+          ? async () => {
+              let token: string;
+              try {
+                token = await getAccessToken();
+              } catch {
+                return [];
+              }
+              const albums = await adapter.getNewReleases!({ accessToken: token });
+              return albums.map((a) => ({
+                id: a.id,
+                name: a.name,
+                artist: a.artist,
+                releaseDate: a.releaseDate,
+              }));
+            }
+          : undefined,
+      };
+    }
+  }
 
   /**
    * Wires the on-demand Tesla reader after construction so a journey can seed its first queue with a
@@ -1044,6 +1118,7 @@ export class JourneyService {
   /**
    * Loads the listener's taste profile (top artists → favored genres) for personalization.
    * Cached ~24h so the Spotify API is touched at most once/day; any failure degrades to no taste.
+   * Also caches the raw {id, name} artists for the release-radar source in cachedTasteArtistsWithIds.
    */
   private async loadTasteProfile(
     accessToken: string,
@@ -1051,6 +1126,7 @@ export class JourneyService {
     try {
       const cached = this.store.getCachedTasteProfile("local");
       if (cached) {
+        // cachedTasteArtistsWithIds may already be populated from a prior fetch this session.
         return cached;
       }
       if (!this.spotifyAdapter.getTopArtists) {
@@ -1067,6 +1143,10 @@ export class JourneyService {
       }
       const profile = deriveTasteProfile(artists);
       this.store.saveCachedTasteProfile("local", profile);
+      // Stash artist ids for the release-radar source (in-memory, restart-loss acceptable).
+      this.cachedTasteArtistsWithIds = artists
+        .filter((a) => a.id && a.name)
+        .map((a) => ({ id: a.id, name: a.name }));
       return profile;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1843,6 +1923,7 @@ export class JourneyService {
         ...groundedContext,
         tasteProfile,
         tasteWeight: journey.tasteWeight ?? DEFAULT_TASTE_WEIGHT,
+        tasteArtistsWithIds: this.cachedTasteArtistsWithIds,
       };
       policy = applyMusicWishesToPolicy(
         buildRecommendationPolicy(scoutContext),
@@ -3467,20 +3548,37 @@ export class JourneyService {
             rankMax: this.config.SIMILAR_RANK_MAX,
           }).catch(() => [] as SongCandidate[])
         : Promise.resolve([] as SongCandidate[]);
-    const [chartCandidates, aiCandidates, similarCandidates] = await Promise.all([
-      this.generateAndStoreLastfmCandidates(
-        journeyId,
-        context,
-        policy,
-        targetCount + 8,
-        seed,
-      ),
-      this.generateAndStoreCandidates(journeyId, context, targetCount, policy),
-      similarPromise.then((items) => this.enrichAndStoreCandidates(journeyId, items)),
-    ]);
+    // Vierte Quelle: Release-Radar — frische Alben/Singles der Taste-Artisten + kuratierte New Releases.
+    const freshPromise: Promise<SongCandidate[]> =
+      this.config.SPOTIFY_FRESH_ENABLED &&
+      this.spotifyAdapter.getArtistAlbums &&
+      this.freshAlbumSource
+        ? releaseRadarCandidates({
+            albums: this.freshAlbumSource,
+            tasteArtists: this.freshSeedArtists(context),
+            bannedArtists: extras.bannedArtists ?? new Set(),
+            moodTags: policy.moodTags,
+            windowDays: this.config.FRESH_WINDOW_DAYS,
+            limit: 8,
+          }).catch(() => [] as SongCandidate[])
+        : Promise.resolve([] as SongCandidate[]);
+    const [chartCandidates, aiCandidates, similarCandidates, freshCandidates] =
+      await Promise.all([
+        this.generateAndStoreLastfmCandidates(
+          journeyId,
+          context,
+          policy,
+          targetCount + 8,
+          seed,
+        ),
+        this.generateAndStoreCandidates(journeyId, context, targetCount, policy),
+        similarPromise.then((items) => this.enrichAndStoreCandidates(journeyId, items)),
+        freshPromise.then((items) => this.enrichAndStoreCandidates(journeyId, items)),
+      ]);
     const seen = new Set<string>();
     return [
       ...wishCandidates,
+      ...freshCandidates,
       ...similarCandidates,
       ...chartCandidates,
       ...aiCandidates,
@@ -3503,6 +3601,15 @@ export class JourneyService {
       seen.add(key);
       return true;
     });
+  }
+
+  /** Seed artists for the release radar: the cached taste profile's artists with their Spotify ids. */
+  private freshSeedArtists(
+    context: JourneyContext,
+  ): Array<{ id: string; name: string }> {
+    return (context.tasteArtistsWithIds ?? [])
+      .filter((a) => a.id && a.name)
+      .slice(0, 8);
   }
 
   private async generateAndStoreLastfmCandidates(

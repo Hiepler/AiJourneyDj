@@ -59,6 +59,8 @@ function buildService() {
     XAI_MOCK: "false",
     LASTFM_API_KEY: "test-lastfm-key",
     CORS_ORIGIN: "http://localhost:5173",
+    // Isolate this test to Last.fm charts only — fresh radar is tested separately.
+    SPOTIFY_FRESH_ENABLED: "false",
   });
   const db = openDatabase(config.DATABASE_PATH);
   migrate(db);
