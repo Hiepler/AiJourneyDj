@@ -948,3 +948,50 @@ describe("getPlaybackState", () => {
     expect(state.activeDeviceId).toBeUndefined();
   });
 });
+
+describe("getArtistAlbums", () => {
+  it("maps album/single items to SpotifyAlbum with release dates", async () => {
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              id: "alb1",
+              name: "New Record",
+              album_type: "album",
+              release_date: "2026-06-01",
+              artists: [{ name: "Bonobo" }],
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      )) as unknown as typeof fetch;
+    const adapter = new OfficialSpotifyAdapter({
+      baseUrl: "https://api.spotify.com/v1",
+      fetchImpl,
+    });
+    const albums = await adapter.getArtistAlbums({
+      accessToken: "t",
+      artistId: "art1",
+    });
+    expect(albums).toEqual([
+      {
+        id: "alb1",
+        name: "New Record",
+        artist: "Bonobo",
+        releaseDate: "2026-06-01",
+        albumType: "album",
+      },
+    ]);
+  });
+
+  it("MockSpotifyAdapter returns deterministic fresh + stale albums", async () => {
+    const mock = new MockSpotifyAdapter();
+    const albums = await mock.getArtistAlbums({
+      accessToken: "t",
+      artistId: "mock-bonobo",
+    });
+    expect(albums.length).toBeGreaterThan(0);
+    expect(albums.some((a) => a.releaseDate === "2026-06-15")).toBe(true);
+  });
+});
