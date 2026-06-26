@@ -9,6 +9,8 @@ import { normalizeText, songKey } from "@ai-journey-dj/core";
 
 import type { RecommendationPolicy } from "./index.js";
 
+import { releaseRecencyScore } from "./index.js";
+
 import {
   assertJourneyContextIsPrivacySafe,
   assertPromptIsPrivacySafe,
@@ -1679,5 +1681,23 @@ describe("artist ban ranking", () => {
       fatigueExemptArtists: ["Banned Star"],
     });
     expect(exempt.map((t) => t.providerTrackId).sort()).toEqual(["a", "b"]);
+  });
+});
+
+describe("releaseRecencyScore date-based curve", () => {
+  const now = new Date("2026-06-26T00:00:00Z");
+  it("scores brand-new releases highest and decays by days", () => {
+    expect(releaseRecencyScore("2026-06-10", now, true)).toBe(1);
+    expect(releaseRecencyScore("2026-04-01", now, true)).toBeCloseTo(0.85, 2);
+    expect(releaseRecencyScore("2025-10-01", now, true)).toBeCloseTo(0.6, 2);
+    // a classic stays above the legacy floor, never crashes to 0
+    expect(releaseRecencyScore("1999-01-01", now, true)).toBeGreaterThanOrEqual(0.18);
+  });
+  it("falls back to year-buckets when dateScoring is off", () => {
+    expect(releaseRecencyScore("2026-01-01", now, false)).toBe(1);
+    expect(releaseRecencyScore("2020-01-01", now, false)).toBeCloseTo(0.58, 2);
+  });
+  it("returns the neutral default for a missing date", () => {
+    expect(releaseRecencyScore(undefined, now, true)).toBe(0.35);
   });
 });

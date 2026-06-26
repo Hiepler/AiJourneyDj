@@ -1379,18 +1379,32 @@ export function buildRecommendationPolicy(
   };
 }
 
-function releaseRecencyScore(
+export function releaseRecencyScore(
   releaseDate: string | undefined,
   now = new Date(),
+  dateScoring = false,
 ): number {
   if (!releaseDate) return 0.35;
-  const year = Number(releaseDate.slice(0, 4));
-  if (!Number.isFinite(year) || year < 1900) return 0.35;
-  const age = Math.max(0, now.getFullYear() - year);
-  if (age <= 1) return 1;
-  if (age <= 3) return 0.82;
-  if (age <= 7) return 0.58;
-  if (age <= 15) return 0.35;
+  if (!dateScoring) {
+    const year = Number(releaseDate.slice(0, 4));
+    if (!Number.isFinite(year) || year < 1900) return 0.35;
+    const age = Math.max(0, now.getFullYear() - year);
+    if (age <= 1) return 1;
+    if (age <= 3) return 0.82;
+    if (age <= 7) return 0.58;
+    if (age <= 15) return 0.35;
+    return 0.18;
+  }
+  const parsed = new Date(
+    releaseDate.length === 4 ? `${releaseDate}-01-01` : releaseDate,
+  );
+  const ms = parsed.getTime();
+  if (!Number.isFinite(ms)) return 0.35;
+  const ageDays = Math.max(0, (now.getTime() - ms) / 86_400_000);
+  if (ageDays <= 30) return 1;
+  if (ageDays <= 90) return 0.85;
+  if (ageDays <= 365) return 0.6;
+  if (ageDays <= 365 * 3) return 0.35;
   return 0.18;
 }
 
@@ -1444,6 +1458,8 @@ export function rankResolvedTracksForPolicy<T extends ResolvedTrack>(
     softMoodPenalty?: Map<string, number>;
     /** Hard-Filter: Hörspiele/Hörbücher/Spoken-Word ausschließen (ein Musik-DJ spielt keine Hörspiele). */
     excludeSpokenWord?: boolean;
+    /** Day-based recency curve + stronger recency weight (Engine-Frische). */
+    recencyDateScoring?: boolean;
   } = {},
 ): T[] {
   const consumedArtists = new Set(
@@ -1530,9 +1546,9 @@ export function rankResolvedTracksForPolicy<T extends ResolvedTrack>(
         track.matchConfidence * 0.24 +
         familiarityComponent * 0.22 +
         chartSignalScore(track) * 0.22 +
-        releaseRecencyScore(track.releaseDate, options.now) *
+        releaseRecencyScore(track.releaseDate, options.now, options.recencyDateScoring) *
           policy.recencyBias *
-          0.14 +
+          (options.recencyDateScoring ? 0.2 : 0.14) +
         moodFitScore(track, policy) * 0.08 +
         (policy.cleanRequired && track.explicit === false ? 0.08 : 0) +
         boost * 0.42 +
