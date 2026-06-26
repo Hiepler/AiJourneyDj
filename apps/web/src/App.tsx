@@ -40,7 +40,7 @@ import { getSpeechRecognitionCtor, isSpeechRecognitionSupported } from "./lib/sp
 import { MOOD_PRESETS, moodPromptFor } from "./lib/moods.js";
 import { buildContextPills, telemetryLiveness } from "./lib/driveContext.js";
 import { applyMediaSession, buildMediaMetadata } from "./backgroundAudio.js";
-import { activeDeviceLabel } from "./lib/devices.js";
+import { activeDeviceLabel, shouldAutoAdoptConnectDevice } from "./lib/devices.js";
 
 const passengerModes = ["solo", "couple", "family", "friends"];
 
@@ -452,7 +452,10 @@ export function App() {
         userPrompt: moodPromptFor(selectedMood),
         passengerMode,
         provider: "spotify",
-        deviceId
+        deviceId,
+        // Spotify is already playing on the driver's chosen Connect device (the regular flow) →
+        // defend it from the first beat so playback can't bounce to a transient/foreign device.
+        lockDevice: Boolean(deviceId)
       });
       setActiveJourneyId(journey.id);
       autoTakeoverForRef.current = deviceId;
@@ -646,8 +649,9 @@ export function App() {
         );
         return;
       }
-      // Explicit user start on the chosen Connect device. The backend transfers + starts there.
-      await api.registerSpotifyDevice(activeJourneyId, { deviceId, status: "ready", transfer: true });
+      // Explicit user start on the chosen Connect device. Pin it so passive auto-adopt cannot
+      // bounce playback back to a foreground browser device.
+      await api.registerSpotifyDevice(activeJourneyId, { deviceId, status: "ready", transfer: true, pin: true });
       autoTakeoverForRef.current = deviceId;
       setIsPaused(false);
       setDetail(await api.journey(activeJourneyId));
@@ -969,22 +973,38 @@ export function App() {
   // device. There is deliberately no browser-playback fallback, so the foreground tab never steals
   // playback from the car.
   useEffect(() => {
-    if (!activeJourneyId || !isSpotifyJourney || health?.spotifyMock) return;
-    if (sessionStatus === "playing" || sessionStatus === "paused") return;
     const active = devices.find((device) => device.isActive);
-    if (!active || autoTakeoverForRef.current === active.id) return;
+    if (
+      !shouldAutoAdoptConnectDevice({
+        activeJourneyId,
+        isSpotifyJourney,
+        spotifyMock: health?.spotifyMock,
+        sessionStatus,
+        boundDeviceId,
+        activeDeviceId: active?.id,
+        autoTakeoverDeviceId: autoTakeoverForRef.current,
+      })
+    ) {
+      return;
+    }
+    if (!active) return;
+    const journeyId = activeJourneyId;
+    if (!journeyId) return;
     autoTakeoverForRef.current = active.id;
     void api
-      // pin:false — auto-adopt is opportunistic (whatever is active), not an explicit human pick,
-      // so it must NOT pin the device (that could pin a transient web player over the Tesla).
-      .registerSpotifyDevice(activeJourneyId, { deviceId: active.id, status: "ready", transfer: true, pin: false })
-      .then(() => api.journey(activeJourneyId))
+      // pin:true — opening Spotify on the Tesla IS the driver choosing where to play. Lock + defend
+      // that device exactly like an explicit picker tap so a transient/foreign active device (e.g. a
+      // lingering open.spotify.com tab) can't bounce playback away right after we bind it. There is
+      // no in-browser Web Playback player anymore, so "whatever is active" is always a real Connect
+      // device; a genuine later move is recoverable by picking that device explicitly (it overrides).
+      .registerSpotifyDevice(journeyId, { deviceId: active.id, status: "ready", transfer: true, pin: true })
+      .then(() => api.journey(journeyId))
       .then(setDetail)
       .catch(() => {
         // Allow a retry on the next poll if binding failed.
         autoTakeoverForRef.current = undefined;
       });
-  }, [devices, activeJourneyId, isSpotifyJourney, health?.spotifyMock, sessionStatus]);
+  }, [devices, activeJourneyId, isSpotifyJourney, health?.spotifyMock, sessionStatus, boundDeviceId]);
 
   // A new journey re-arms auto-adopt.
   useEffect(() => {

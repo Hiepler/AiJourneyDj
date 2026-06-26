@@ -246,6 +246,7 @@ export const api = {
     passengerMode: string;
     provider?: "spotify" | "tidal";
     deviceId?: string;
+    lockDevice?: boolean;
   }) =>
     request<Journey>("/journeys", {
       method: "POST",
