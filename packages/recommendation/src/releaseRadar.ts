@@ -83,7 +83,8 @@ export async function releaseRadarCandidates(args: {
     }
     for (const album of albums) {
       if (kept >= perArtist) break;
-      if (!isWithinFreshWindow(album.releaseDate, args.windowDays, now)) continue;
+      if (!isWithinFreshWindow(album.releaseDate, args.windowDays, now))
+        continue;
       // Prefer the canonical artist name from tasteArtists over the raw id returned by the source
       const normalised: RadarAlbum = { ...album, artist: artist.name };
       const before = out.length;

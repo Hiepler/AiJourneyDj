@@ -31,16 +31,30 @@ import {
   Sunset,
   Wifi,
   Wind,
-  X
+  X,
 } from "lucide-react";
 
-import { api, type Health, type Journey, type JourneyDetail, type LiveTelemetry, type MusicWish, type SpotifyDevice } from "./lib/api.js";
+import {
+  api,
+  type Health,
+  type Journey,
+  type JourneyDetail,
+  type LiveTelemetry,
+  type MusicWish,
+  type SpotifyDevice,
+} from "./lib/api.js";
 import { queueTracksInPlaybackOrder } from "./lib/queue.js";
-import { getSpeechRecognitionCtor, isSpeechRecognitionSupported } from "./lib/speech.js";
+import {
+  getSpeechRecognitionCtor,
+  isSpeechRecognitionSupported,
+} from "./lib/speech.js";
 import { MOOD_PRESETS, moodPromptFor } from "./lib/moods.js";
 import { buildContextPills, telemetryLiveness } from "./lib/driveContext.js";
 import { applyMediaSession, buildMediaMetadata } from "./backgroundAudio.js";
-import { activeDeviceLabel, shouldAutoAdoptConnectDevice } from "./lib/devices.js";
+import {
+  activeDeviceLabel,
+  shouldAutoAdoptConnectDevice,
+} from "./lib/devices.js";
 
 const passengerModes = ["solo", "couple", "family", "friends"];
 
@@ -50,7 +64,7 @@ const GEO_SOURCE_LABELS: Record<string, string> = {
   "browser-gps": "Browser",
   destination: "Ziel",
   manual: "manuell",
-  simulated: "Sim"
+  simulated: "Sim",
 };
 
 // German labels for the Adaptive Drive Mode reasons surfaced by the backend.
@@ -58,7 +72,7 @@ const DRIVE_MODE_REASON_LABELS: Record<string, string> = {
   "heavy traffic": "zäher Verkehr",
   "low range": "wenig Reichweite",
   "wintry conditions": "winterlich",
-  "long night drive": "Nachtfahrt"
+  "long night drive": "Nachtfahrt",
 };
 
 // Synced-karaoke tuning. Lines light up slightly early so they're easy to follow; we re-sync the
@@ -67,7 +81,10 @@ const LYRICS_LOOKAHEAD_MS = 250;
 const LYRICS_SYNC_INTERVAL_MS = 2500;
 
 /** Index of the line that should be highlighted at a given (interpolated) playback position. */
-function lyricLineIndex(synced: { timeMs: number }[], positionMs: number): number {
+function lyricLineIndex(
+  synced: { timeMs: number }[],
+  positionMs: number,
+): number {
   let index = -1;
   for (let i = 0; i < synced.length; i += 1) {
     if (synced[i].timeMs <= positionMs + LYRICS_LOOKAHEAD_MS) index = i;
@@ -77,13 +94,18 @@ function lyricLineIndex(synced: { timeMs: number }[], positionMs: number): numbe
 }
 
 // Celebratory family-event copy for a freshly-fired journey moment (shown briefly in the cockpit).
-function momentEventLabel(moment: {
-  type: string;
-  country?: string;
-}): { emoji: string; text: string } {
+function momentEventLabel(moment: { type: string; country?: string }): {
+  emoji: string;
+  text: string;
+} {
   switch (moment.type) {
     case "border_crossing":
-      return { emoji: "🎉", text: moment.country ? `Willkommen in ${moment.country}!` : "Neues Land!" };
+      return {
+        emoji: "🎉",
+        text: moment.country
+          ? `Willkommen in ${moment.country}!`
+          : "Neues Land!",
+      };
     case "traffic_release":
       return { emoji: "🚀", text: "Freie Fahrt — der Stau ist durch!" };
     case "traffic_jam":
@@ -105,7 +127,7 @@ const PHASES: { key: string; label: string; Icon: typeof Navigation }[] = [
   { key: "golden_hour", label: "Golden hour", Icon: Sunset },
   { key: "focus", label: "Focus", Icon: Crosshair },
   { key: "arrival", label: "Arrival", Icon: MapPin },
-  { key: "rest", label: "Rest", Icon: Coffee }
+  { key: "rest", label: "Rest", Icon: Coffee },
 ];
 
 function phaseMeta(phase?: string) {
@@ -114,10 +136,15 @@ function phaseMeta(phase?: string) {
 
 // Familiarity↔discovery mix: discrete, deliberate taps (re-curation costs AI tokens, so no
 // continuous slider). Each step maps to the per-journey tasteWeight (0..1).
-const VIBE_MIX: { key: string; label: string; weight: number; Icon: typeof Navigation }[] = [
+const VIBE_MIX: {
+  key: string;
+  label: string;
+  weight: number;
+  Icon: typeof Navigation;
+}[] = [
   { key: "familiar", label: "Familiar", weight: 0.25, Icon: Heart },
   { key: "balanced", label: "Balanced", weight: 0.5, Icon: Scale },
-  { key: "discovery", label: "Discover", weight: 0.75, Icon: Compass }
+  { key: "discovery", label: "Discover", weight: 0.75, Icon: Compass },
 ];
 
 const DEFAULT_TASTE_WEIGHT = 0.4;
@@ -125,7 +152,9 @@ const DEFAULT_TASTE_WEIGHT = 0.4;
 function nearestVibe(weight?: number) {
   const target = weight ?? DEFAULT_TASTE_WEIGHT;
   return VIBE_MIX.reduce((best, entry) =>
-    Math.abs(entry.weight - target) < Math.abs(best.weight - target) ? entry : best
+    Math.abs(entry.weight - target) < Math.abs(best.weight - target)
+      ? entry
+      : best,
   );
 }
 
@@ -144,7 +173,11 @@ export function App() {
   const [destination, setDestination] = useState("Lago di Garda");
   const [liveTelemetry, setLiveTelemetry] = useState<LiveTelemetry>();
   const [liveLoading, setLiveLoading] = useState(false);
-  const [momentBanner, setMomentBanner] = useState<{ type: string; country?: string; atIso: string }>();
+  const [momentBanner, setMomentBanner] = useState<{
+    type: string;
+    country?: string;
+    atIso: string;
+  }>();
   const [karaokeOn, setKaraokeOn] = useState(false);
   const [lyrics, setLyrics] = useState<{
     trackId: string;
@@ -171,7 +204,8 @@ export function App() {
   const [geoInput, setGeoInput] = useState("");
   const [geoBusy, setGeoBusy] = useState(false);
   const [listening, setListening] = useState(false);
-  const speechSupported = typeof window !== "undefined" && isSpeechRecognitionSupported();
+  const speechSupported =
+    typeof window !== "undefined" && isSpeechRecognitionSupported();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -194,32 +228,47 @@ export function App() {
   const geoFallbackTriedRef = useRef<string | undefined>(undefined);
   // Latest playback-position sample for synced karaoke; the rAF loop interpolates from it with a local
   // clock so highlighting stays smooth between (infrequent) re-syncs. durationRef feeds lyrics matching.
-  const lyricsSyncRef = useRef<{ positionMs: number; isPlaying: boolean; atMs: number } | undefined>(
-    undefined,
-  );
+  const lyricsSyncRef = useRef<
+    { positionMs: number; isPlaying: boolean; atMs: number } | undefined
+  >(undefined);
   const lyricsDurationRef = useRef<number | undefined>(undefined);
   // Holds the latest playback actions so MediaSession / visibility handlers never call stale closures.
   const playbackActionsRef = useRef({
     next: () => {},
     prev: () => {},
     toggle: () => {},
-    resume: () => {}
+    resume: () => {},
   });
   useEffect(() => {
     refreshShell().catch((err) =>
-      setError(err instanceof Error ? err.message : "API unreachable. Run npm run dev and ensure port 3000 is free.")
+      setError(
+        err instanceof Error
+          ? err.message
+          : "API unreachable. Run npm run dev and ensure port 3000 is free.",
+      ),
     );
 
     const params = new URLSearchParams(window.location.search);
     const spotify = params.get("spotify");
     const tidal = params.get("tidal");
-    if (spotify === "connected" || spotify === "mock" || tidal === "connected" || tidal === "mock") {
+    if (
+      spotify === "connected" ||
+      spotify === "mock" ||
+      tidal === "connected" ||
+      tidal === "mock"
+    ) {
       refreshShell().catch((err) =>
-        setError(err instanceof Error ? err.message : "API unreachable. Run npm run dev and ensure port 3000 is free.")
+        setError(
+          err instanceof Error
+            ? err.message
+            : "API unreachable. Run npm run dev and ensure port 3000 is free.",
+        ),
       );
     }
     if (spotify === "error" || tidal === "error") {
-      setError(decodeURIComponent(params.get("message") ?? "Provider login failed."));
+      setError(
+        decodeURIComponent(params.get("message") ?? "Provider login failed."),
+      );
     }
     if (spotify || tidal) {
       params.delete("spotify");
@@ -233,7 +282,10 @@ export function App() {
   useEffect(() => {
     if (!activeJourneyId) return;
     const timer = setInterval(() => {
-      api.journey(activeJourneyId).then(setDetail).catch((err) => setError(String(err)));
+      api
+        .journey(activeJourneyId)
+        .then(setDetail)
+        .catch((err) => setError(String(err)));
     }, 6000);
     return () => clearInterval(timer);
   }, [activeJourneyId]);
@@ -243,7 +295,11 @@ export function App() {
   useEffect(() => {
     const shouldPoll =
       showDevices ||
-      Boolean(activeJourneyId && detail?.journey.provider === "spotify" && !health?.spotifyMock);
+      Boolean(
+        activeJourneyId &&
+        detail?.journey.provider === "spotify" &&
+        !health?.spotifyMock,
+      );
     if (!shouldPoll) return;
     let cancelled = false;
     const load = () =>
@@ -259,7 +315,12 @@ export function App() {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [showDevices, activeJourneyId, detail?.journey.provider, health?.spotifyMock]);
+  }, [
+    showDevices,
+    activeJourneyId,
+    detail?.journey.provider,
+    health?.spotifyMock,
+  ]);
 
   // On the start screen, pull one live reading as soon as the car is connected so the destination/ETA
   // can pre-fill — instead of waiting for the journey's first background poll. Strictly one-shot per
@@ -282,13 +343,22 @@ export function App() {
   useEffect(() => {
     if (!activeJourneyId || !navigator.geolocation) return;
     const source = detail?.context?.geoSource;
-    if (source === "reverse-geocode" || source === "browser-gps" || source === "manual") return;
+    if (
+      source === "reverse-geocode" ||
+      source === "browser-gps" ||
+      source === "manual"
+    )
+      return;
     if (geoFallbackTriedRef.current === activeJourneyId) return;
     geoFallbackTriedRef.current = activeJourneyId;
     navigator.geolocation.getCurrentPosition(
       (position) => {
         void api
-          .setGeo(activeJourneyId, position.coords.latitude, position.coords.longitude)
+          .setGeo(
+            activeJourneyId,
+            position.coords.latitude,
+            position.coords.longitude,
+          )
           .then(() => api.journey(activeJourneyId))
           .then(setDetail)
           .catch(() => undefined);
@@ -325,8 +395,10 @@ export function App() {
     }
     return places;
   }, [history]);
-  const displayTracks = bufferTracks.length > 0 ? bufferTracks : (detail?.tracks ?? []).slice(0, 8);
-  const bufferCount = queuedIds.length > 0 ? queuedIds.length : displayTracks.length;
+  const displayTracks =
+    bufferTracks.length > 0 ? bufferTracks : (detail?.tracks ?? []).slice(0, 8);
+  const bufferCount =
+    queuedIds.length > 0 ? queuedIds.length : displayTracks.length;
   const activeTrack = detail?.playbackSession?.activeTrack;
   const sessionStatus = detail?.playbackSession?.status;
   const isSpotifyJourney = detail?.journey.provider === "spotify";
@@ -341,9 +413,17 @@ export function App() {
     sessionStatus !== "playing" &&
     sessionStatus !== "paused";
   // No Connect device available at all → guide the driver to open Spotify on the Tesla once.
-  const needsConnectDevice = needsConnectStart && !activeConnectDevice && !boundDeviceId;
-  const tracksPending = Boolean(activeJourneyId && detail && detail.tracks.length === 0 && !detail.analysisError);
-  const tracksFailed = Boolean(detail?.analysisError || detail?.latestUpdate?.status === "failed");
+  const needsConnectDevice =
+    needsConnectStart && !activeConnectDevice && !boundDeviceId;
+  const tracksPending = Boolean(
+    activeJourneyId &&
+    detail &&
+    detail.tracks.length === 0 &&
+    !detail.analysisError,
+  );
+  const tracksFailed = Boolean(
+    detail?.analysisError || detail?.latestUpdate?.status === "failed",
+  );
   const spotifyConnected = Boolean(health?.spotifyConnected);
 
   const liveReading = liveTelemetry?.reading ?? undefined;
@@ -352,9 +432,16 @@ export function App() {
   const liveBadge = useMemo(() => {
     if (!health?.teslaConnected || !liveTelemetry?.available) return undefined;
     return telemetryLiveness(liveReading?.timestampIso, nowMs);
-  }, [health?.teslaConnected, liveTelemetry?.available, liveReading?.timestampIso, nowMs]);
+  }, [
+    health?.teslaConnected,
+    liveTelemetry?.available,
+    liveReading?.timestampIso,
+    nowMs,
+  ]);
   const navDestination = liveReading?.destination?.trim();
-  const navDestinationAvailable = Boolean(navDestination && navDestination !== destination);
+  const navDestinationAvailable = Boolean(
+    navDestination && navDestination !== destination,
+  );
   const startContextPills = useMemo(
     () => (liveReading ? buildContextPills(liveReading) : []),
     [liveReading],
@@ -363,7 +450,8 @@ export function App() {
   const statusLine = useMemo(() => {
     if (!health) return "Loading…";
     if (!spotifyConnected) return "Connect Spotify to start your journey.";
-    if (!health.spotifyPremium) return "Spotify Premium is required for playback.";
+    if (!health.spotifyPremium)
+      return "Spotify Premium is required for playback.";
     if (health.spotifyMock) return "Demo mode — playback is simulated.";
     if (activeJourneyId && detail) {
       if (needsConnectDevice) {
@@ -372,18 +460,34 @@ export function App() {
       if (needsConnectStart) {
         return "Tracks ready — tap “Im Auto starten” to play on your Spotify Connect device.";
       }
-      const queueHint = detail.journey.provider === "spotify" ? `Queue ${bufferCount}/5` : "TIDAL playlist";
+      const queueHint =
+        detail.journey.provider === "spotify"
+          ? `Queue ${bufferCount}/5`
+          : "TIDAL playlist";
       return `${queueHint} · ${detail.journey.phase}`;
     }
     return "Ready — press Start Journey.";
-  }, [activeJourneyId, bufferCount, detail, health, needsConnectDevice, needsConnectStart, spotifyConnected]);
+  }, [
+    activeJourneyId,
+    bufferCount,
+    detail,
+    health,
+    needsConnectDevice,
+    needsConnectStart,
+    spotifyConnected,
+  ]);
 
   async function refreshShell(options: { autoResume?: boolean } = {}) {
     const { autoResume = true } = options;
-    const [nextHealth, nextHistory] = await Promise.all([api.health(), api.history()]);
+    const [nextHealth, nextHistory] = await Promise.all([
+      api.health(),
+      api.history(),
+    ]);
     setHealth(nextHealth);
     setHistory(nextHistory.journeys);
-    const active = nextHistory.journeys.find((journey) => journey.status === "active");
+    const active = nextHistory.journeys.find(
+      (journey) => journey.status === "active",
+    );
     if (autoResume && active) {
       setActiveJourneyId(active.id);
       setDetail(await api.journey(active.id));
@@ -455,7 +559,7 @@ export function App() {
         deviceId,
         // Spotify is already playing on the driver's chosen Connect device (the regular flow) →
         // defend it from the first beat so playback can't bounce to a transient/foreign device.
-        lockDevice: Boolean(deviceId)
+        lockDevice: Boolean(deviceId),
       });
       setActiveJourneyId(journey.id);
       autoTakeoverForRef.current = deviceId;
@@ -489,7 +593,10 @@ export function App() {
     await loadTracks();
   }
 
-  async function submitMusicWish(text: string, source: "text" | "voice" | "chip" = "text") {
+  async function submitMusicWish(
+    text: string,
+    source: "text" | "voice" | "chip" = "text",
+  ) {
     const trimmed = text.trim();
     if (!activeJourneyId || !trimmed) return;
     setWishLoading(true);
@@ -509,7 +616,9 @@ export function App() {
     if (!activeJourneyId) return;
     setWishLoading(true);
     try {
-      await api.updateMusicWish(activeJourneyId, wish.id, { pinned: !wish.pinned });
+      await api.updateMusicWish(activeJourneyId, wish.id, {
+        pinned: !wish.pinned,
+      });
       setDetail(await api.journey(activeJourneyId));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -557,8 +666,7 @@ export function App() {
   ): MusicWish | undefined {
     return detail?.activeMusicWishes?.find(
       (wish) =>
-        wish.pinned &&
-        (wish.intents as Record<string, unknown>[]).some(match),
+        wish.pinned && (wish.intents as Record<string, unknown>[]).some(match),
     );
   }
 
@@ -645,13 +753,18 @@ export function App() {
       const deviceId = await resolveConnectDeviceId();
       if (!deviceId) {
         setError(
-          "Kein aktives Spotify-Gerät gefunden. Starte Spotify einmal auf dem Tesla-Display — die Wiedergabe wird dann automatisch übernommen."
+          "Kein aktives Spotify-Gerät gefunden. Starte Spotify einmal auf dem Tesla-Display — die Wiedergabe wird dann automatisch übernommen.",
         );
         return;
       }
       // Explicit user start on the chosen Connect device. Pin it so passive auto-adopt cannot
       // bounce playback back to a foreground browser device.
-      await api.registerSpotifyDevice(activeJourneyId, { deviceId, status: "ready", transfer: true, pin: true });
+      await api.registerSpotifyDevice(activeJourneyId, {
+        deviceId,
+        status: "ready",
+        transfer: true,
+        pin: true,
+      });
       autoTakeoverForRef.current = deviceId;
       setIsPaused(false);
       setDetail(await api.journey(activeJourneyId));
@@ -671,7 +784,9 @@ export function App() {
       // exact selected track (+ our queue) on the device. We must NOT skip via the Web Playback SDK
       // here — the SDK only skips *relatively*, walking Spotify's own (drifting) queue, which is
       // what made the played track differ from the one shown.
-      const deviceId = boundDeviceId ?? (await resolveConnectDeviceId().catch(() => undefined));
+      const deviceId =
+        boundDeviceId ??
+        (await resolveConnectDeviceId().catch(() => undefined));
       await api.skipTrack(activeJourneyId, { direction, deviceId });
       setDetail(await api.journey(activeJourneyId));
       setIsPaused(false);
@@ -706,7 +821,12 @@ export function App() {
     try {
       // Explicit device choice from the menu takes over playback on that Connect device. pin:true
       // defends this pick so the passive Connect-follow can't bounce it to a transient web device.
-      await api.registerSpotifyDevice(activeJourneyId, { deviceId: device.id, status: "ready", transfer: true, pin: true });
+      await api.registerSpotifyDevice(activeJourneyId, {
+        deviceId: device.id,
+        status: "ready",
+        transfer: true,
+        pin: true,
+      });
       autoTakeoverForRef.current = device.id;
       setIsPaused(false);
       setDetail(await api.journey(activeJourneyId));
@@ -742,7 +862,11 @@ export function App() {
     }
   }
 
-  async function selectVibeMix(entry: { key: string; label: string; weight: number }) {
+  async function selectVibeMix(entry: {
+    key: string;
+    label: string;
+    weight: number;
+  }) {
     if (!activeJourneyId || retuningPhase || vibeTuning) return;
     if (entry.key === nearestVibe(detail?.journey.tasteWeight).key) return;
     setVibeTuning(entry.label);
@@ -766,12 +890,19 @@ export function App() {
   useEffect(() => {
     if (!activeJourneyId || !detail || loading) return;
     const shouldRecover =
-      detail.needsAnalysis || (Boolean(detail.analysisError) && detail.tracks.length === 0);
+      detail.needsAnalysis ||
+      (Boolean(detail.analysisError) && detail.tracks.length === 0);
     if (!shouldRecover) return;
     if (recoveryAttemptedFor.current === activeJourneyId) return;
     recoveryAttemptedFor.current = activeJourneyId;
     void loadTracks();
-  }, [activeJourneyId, detail?.needsAnalysis, detail?.analysisError, detail?.tracks.length, loading]);
+  }, [
+    activeJourneyId,
+    detail?.needsAnalysis,
+    detail?.analysisError,
+    detail?.tracks.length,
+    loading,
+  ]);
 
   async function startTidalJourney() {
     if (!health?.tidalConnected && !health?.tidalMock) {
@@ -785,7 +916,7 @@ export function App() {
         destination,
         userPrompt: moodPromptFor(selectedMood),
         passengerMode,
-        provider: "tidal"
+        provider: "tidal",
       });
       setActiveJourneyId(journey.id);
       setDetail(await api.journey(journey.id));
@@ -820,7 +951,9 @@ export function App() {
 
   const heroTrack = activeTrack ?? displayTracks[0];
   const heroTrackId = heroTrack?.id;
-  const upcoming = displayTracks.filter((track) => track.id !== heroTrack?.id).slice(0, 5);
+  const upcoming = displayTracks
+    .filter((track) => track.id !== heroTrack?.id)
+    .slice(0, 5);
 
   // Fetch lyrics for the current track when karaoke is open (cached server-side; once per track). Pass
   // the playing track's duration so the server matches the right recording (live/remix/edit drift).
@@ -835,10 +968,16 @@ export function App() {
     api
       .lyrics(activeJourneyId, heroTrackId, durationSec)
       .then((res) => {
-        if (!cancelled) setLyrics({ trackId: heroTrackId, synced: res.synced, plain: res.plain });
+        if (!cancelled)
+          setLyrics({
+            trackId: heroTrackId,
+            synced: res.synced,
+            plain: res.plain,
+          });
       })
       .catch(() => {
-        if (!cancelled) setLyrics({ trackId: heroTrackId, synced: null, plain: null });
+        if (!cancelled)
+          setLyrics({ trackId: heroTrackId, synced: null, plain: null });
       })
       .finally(() => {
         if (!cancelled) setLyricsLoading(false);
@@ -854,7 +993,13 @@ export function App() {
   useEffect(() => {
     setActiveLyricIndex(-1);
     lyricsSyncRef.current = undefined;
-    if (!karaokeOn || !lyrics?.synced || lyrics.synced.length === 0 || !activeJourneyId) return;
+    if (
+      !karaokeOn ||
+      !lyrics?.synced ||
+      lyrics.synced.length === 0 ||
+      !activeJourneyId
+    )
+      return;
     let active = true;
     const syncTick = async () => {
       // Connect-only: position comes from the device-independent server endpoint (works for the
@@ -867,7 +1012,8 @@ export function App() {
             isPlaying: progress.isPlaying,
             atMs: performance.now(),
           };
-          if (typeof progress.durationMs === "number") lyricsDurationRef.current = progress.durationMs;
+          if (typeof progress.durationMs === "number")
+            lyricsDurationRef.current = progress.durationMs;
         }
       } catch {
         // best-effort: leave the last sample, the panel just shows static lyrics
@@ -904,7 +1050,9 @@ export function App() {
 
   useEffect(() => {
     if (activeLyricIndex < 0) return;
-    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    const reduceMotion = window.matchMedia?.(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
     activeLineRef.current?.scrollIntoView({
       behavior: reduceMotion ? "auto" : "smooth",
       block: "center",
@@ -916,14 +1064,22 @@ export function App() {
   const contextPills = buildContextPills(detail?.context);
   const liveness = telemetryLiveness(detail?.context?.lastTelemetryAt, nowMs);
   const driveMode = detail?.context?.driveMode;
-  const driveModeLabel = DRIVE_MODE_REASON_LABELS[detail?.context?.driveModeReason ?? ""] ?? detail?.context?.driveModeReason;
+  const driveModeLabel =
+    DRIVE_MODE_REASON_LABELS[detail?.context?.driveModeReason ?? ""] ??
+    detail?.context?.driveModeReason;
   const demo = Boolean(health?.spotifyMock);
   // Connect-only: the playback truth lives in the server session (kept fresh by the backend poller
   // that follows the active Connect device). `isPaused` is a short-lived optimistic override for the
   // toggle button; it is cleared whenever a fresh session status arrives.
-  const playing = isPaused === undefined ? sessionStatus === "playing" : !isPaused;
-  const nowLabel = activeTrack ? (playing ? "Now playing" : "Paused") : "Up next";
-  const canSkipBack = (detail?.playbackSession?.playedTrackIds?.length ?? 0) > 0;
+  const playing =
+    isPaused === undefined ? sessionStatus === "playing" : !isPaused;
+  const nowLabel = activeTrack
+    ? playing
+      ? "Now playing"
+      : "Paused"
+    : "Up next";
+  const canSkipBack =
+    (detail?.playbackSession?.playedTrackIds?.length ?? 0) > 0;
   const canSkipForward = upcoming.length > 0 || displayTracks.length > 1;
 
   // Tick once a second so the "Live · vor Xs" badge counts up between the 4s detail polls.
@@ -945,13 +1101,14 @@ export function App() {
       next: () => void skipTrack("next"),
       prev: () => void skipTrack("previous"),
       toggle: () => void togglePlayPause(),
-      resume: () => void togglePlayPause()
+      resume: () => void togglePlayPause(),
     };
   });
 
   // Feed OS / Tesla Miniplayer media controls (also makes its skip buttons work via action handlers).
   useEffect(() => {
-    if (typeof navigator === "undefined" || !("mediaSession" in navigator)) return;
+    if (typeof navigator === "undefined" || !("mediaSession" in navigator))
+      return;
     const metadata =
       typeof MediaMetadata !== "undefined"
         ? new MediaMetadata(buildMediaMetadata(heroTrack))
@@ -963,8 +1120,8 @@ export function App() {
         play: () => playbackActionsRef.current.toggle(),
         pause: () => playbackActionsRef.current.toggle(),
         nexttrack: () => playbackActionsRef.current.next(),
-        previoustrack: () => playbackActionsRef.current.prev()
-      }
+        previoustrack: () => playbackActionsRef.current.prev(),
+      },
     });
   }, [heroTrack?.id, heroTrack?.title, playing]);
 
@@ -997,14 +1154,26 @@ export function App() {
       // lingering open.spotify.com tab) can't bounce playback away right after we bind it. There is
       // no in-browser Web Playback player anymore, so "whatever is active" is always a real Connect
       // device; a genuine later move is recoverable by picking that device explicitly (it overrides).
-      .registerSpotifyDevice(journeyId, { deviceId: active.id, status: "ready", transfer: true, pin: true })
+      .registerSpotifyDevice(journeyId, {
+        deviceId: active.id,
+        status: "ready",
+        transfer: true,
+        pin: true,
+      })
       .then(() => api.journey(journeyId))
       .then(setDetail)
       .catch(() => {
         // Allow a retry on the next poll if binding failed.
         autoTakeoverForRef.current = undefined;
       });
-  }, [devices, activeJourneyId, isSpotifyJourney, health?.spotifyMock, sessionStatus, boundDeviceId]);
+  }, [
+    devices,
+    activeJourneyId,
+    isSpotifyJourney,
+    health?.spotifyMock,
+    sessionStatus,
+    boundDeviceId,
+  ]);
 
   // A new journey re-arms auto-adopt.
   useEffect(() => {
@@ -1016,7 +1185,11 @@ export function App() {
       <div
         aria-hidden="true"
         className="ambient"
-        style={heroTrack?.albumArtUrl ? { backgroundImage: `url(${heroTrack.albumArtUrl})` } : undefined}
+        style={
+          heroTrack?.albumArtUrl
+            ? { backgroundImage: `url(${heroTrack.albumArtUrl})` }
+            : undefined
+        }
       />
       <div aria-hidden="true" className="ambient-veil" />
 
@@ -1043,7 +1216,9 @@ export function App() {
               <Radio size={15} /> Externe Wiedergabe
             </span>
           ) : null}
-          {activeJourneyId && detail && (health?.teslaConnected || detail.context?.lastTelemetryAt) ? (
+          {activeJourneyId &&
+          detail &&
+          (health?.teslaConnected || detail.context?.lastTelemetryAt) ? (
             <span
               className={`chip telemetry ${liveness.state}`}
               title={
@@ -1057,7 +1232,8 @@ export function App() {
               <Satellite size={15} />{" "}
               {liveness.state === "none"
                 ? "Keine Live-Daten"
-                : liveness.state === "live" && detail?.context?.telemetrySource === "streaming"
+                : liveness.state === "live" &&
+                    detail?.context?.telemetrySource === "streaming"
                   ? "Live (Streaming)"
                   : liveness.label}
             </span>
@@ -1070,7 +1246,9 @@ export function App() {
                   ? "Ruhigere, vertraute Musik für die aktuelle Fahrsituation"
                   : "Wachere Musik gegen Monotonie"
               }${
-                detail.context?.driveModeSignals?.length ? ` · ${detail.context.driveModeSignals.join(", ")}` : ""
+                detail.context?.driveModeSignals?.length
+                  ? ` · ${detail.context.driveModeSignals.join(", ")}`
+                  : ""
               } — Komfortfunktion, kein Sicherheitssystem.`}
             >
               {driveMode === "calm" ? <Wind size={15} /> : <Moon size={15} />}{" "}
@@ -1084,7 +1262,14 @@ export function App() {
             </span>
           ) : null}
           {health?.songScout && !health.songScout.mock ? (
-            <span className="chip" title={health.songScout.webSearch ? "Web-grounded song picks" : "AI song picks"}>
+            <span
+              className="chip"
+              title={
+                health.songScout.webSearch
+                  ? "Web-grounded song picks"
+                  : "AI song picks"
+              }
+            >
               <Sparkles size={15} />{" "}
               {health.songScout.provider === "xai" ? "Grok" : "Gemini"}
               {health.songScout.webSearch ? " · Search" : ""}
@@ -1095,11 +1280,21 @@ export function App() {
               <BadgeCheck size={15} /> Demo
             </span>
           ) : spotifyConnected ? (
-            <button className="chip good chip-btn" onClick={connectSpotify} title="Reconnect Spotify" type="button">
-              <BadgeCheck size={15} /> {health?.spotifyPremium ? "Premium" : "Spotify"}
+            <button
+              className="chip good chip-btn"
+              onClick={connectSpotify}
+              title="Reconnect Spotify"
+              type="button"
+            >
+              <BadgeCheck size={15} />{" "}
+              {health?.spotifyPremium ? "Premium" : "Spotify"}
             </button>
           ) : (
-            <button className="chip connect" onClick={connectSpotify} type="button">
+            <button
+              className="chip connect"
+              onClick={connectSpotify}
+              type="button"
+            >
               <Wifi size={15} /> Connect Spotify
             </button>
           )}
@@ -1119,7 +1314,11 @@ export function App() {
                   title="Refresh live data from the car"
                   type="button"
                 >
-                  {liveLoading ? <Loader2 className="spin" size={13} /> : <Satellite size={13} />}
+                  {liveLoading ? (
+                    <Loader2 className="spin" size={13} />
+                  ) : (
+                    <Satellite size={13} />
+                  )}
                   {liveBadge.label}
                 </button>
               ) : null}
@@ -1219,22 +1418,41 @@ export function App() {
 
             <button
               className="cta"
-              disabled={loading || (spotifyConnected && !health?.spotifyPremium)}
+              disabled={
+                loading || (spotifyConnected && !health?.spotifyPremium)
+              }
               onClick={startJourney}
               type="button"
             >
-              {loading ? <Loader2 className="spin" size={20} /> : !spotifyConnected ? <Wifi size={20} /> : <Play size={20} />}
+              {loading ? (
+                <Loader2 className="spin" size={20} />
+              ) : !spotifyConnected ? (
+                <Wifi size={20} />
+              ) : (
+                <Play size={20} />
+              )}
               {primaryLabel}
             </button>
 
             {error ? <p className="error">{error}</p> : null}
 
-            <details className="advanced" onToggle={(event) => setShowAdvanced(event.currentTarget.open)}>
+            <details
+              className="advanced"
+              onToggle={(event) => setShowAdvanced(event.currentTarget.open)}
+            >
               <summary>More options</summary>
               {showAdvanced ? (
                 <div className="advanced-body">
-                  <p className="muted">Use TIDAL if Spotify Web Playback is unavailable in your browser.</p>
-                  <button className="ghost" disabled={loading} onClick={startTidalJourney} type="button">
+                  <p className="muted">
+                    Use TIDAL if Spotify Web Playback is unavailable in your
+                    browser.
+                  </p>
+                  <button
+                    className="ghost"
+                    disabled={loading}
+                    onClick={startTidalJourney}
+                    type="button"
+                  >
                     Start with TIDAL
                   </button>
                   {history.length > 0 ? (
@@ -1245,13 +1463,17 @@ export function App() {
                           key={journey.id}
                           onClick={() => {
                             setActiveJourneyId(journey.id);
-                            api.journey(journey.id).then(setDetail).catch((err) => setError(String(err)));
+                            api
+                              .journey(journey.id)
+                              .then(setDetail)
+                              .catch((err) => setError(String(err)));
                           }}
                           type="button"
                         >
                           <span>{journey.destination}</span>
                           <small>
-                            {journey.provider} · {new Date(journey.createdAtIso).toLocaleString()}
+                            {journey.provider} ·{" "}
+                            {new Date(journey.createdAtIso).toLocaleString()}
                           </small>
                         </button>
                       ))}
@@ -1264,11 +1486,16 @@ export function App() {
         ) : (
           <section className="cockpit">
             {momentBanner ? (
-              <div className={`moment-banner moment-${momentBanner.type}`} role="status">
+              <div
+                className={`moment-banner moment-${momentBanner.type}`}
+                role="status"
+              >
                 <span className="moment-emoji" aria-hidden="true">
                   {momentEventLabel(momentBanner).emoji}
                 </span>
-                <span className="moment-text">{momentEventLabel(momentBanner).text}</span>
+                <span className="moment-text">
+                  {momentEventLabel(momentBanner).text}
+                </span>
               </div>
             ) : null}
             <div className="stage glass">
@@ -1285,7 +1512,8 @@ export function App() {
                       dest &&
                       next.toLowerCase() !== dest.toLowerCase() ? (
                       <>
-                        {next} <span className="dest-final">· Ziel: {dest}</span>
+                        {next}{" "}
+                        <span className="dest-final">· Ziel: {dest}</span>
                       </>
                     ) : (
                       dest
@@ -1326,7 +1554,11 @@ export function App() {
                         placeholder="Ort/Land, z.B. Marseille"
                         value={geoInput}
                       />
-                      <button className="geo-btn" disabled={geoBusy || !geoInput.trim()} type="submit">
+                      <button
+                        className="geo-btn"
+                        disabled={geoBusy || !geoInput.trim()}
+                        type="submit"
+                      >
                         OK
                       </button>
                       {detail?.context?.geoSource === "manual" ? (
@@ -1355,7 +1587,11 @@ export function App() {
                     <button
                       className="geo-chip"
                       onClick={() => {
-                        setGeoInput(detail?.context?.coarseRegion ?? detail?.context?.countryName ?? "");
+                        setGeoInput(
+                          detail?.context?.coarseRegion ??
+                            detail?.context?.countryName ??
+                            "",
+                        );
                         setGeoEditing(true);
                       }}
                       title="Standort korrigieren — bestimmt den lokalen Musik-Touch"
@@ -1363,11 +1599,14 @@ export function App() {
                     >
                       <MapPin size={13} />
                       <span className="geo-place">
-                        {detail?.context?.coarseRegion ?? detail?.context?.countryName ?? "Standort setzen"}
+                        {detail?.context?.coarseRegion ??
+                          detail?.context?.countryName ??
+                          "Standort setzen"}
                       </span>
                       {detail?.context?.geoSource ? (
                         <span className="geo-src">
-                          {GEO_SOURCE_LABELS[detail.context.geoSource] ?? detail.context.geoSource}
+                          {GEO_SOURCE_LABELS[detail.context.geoSource] ??
+                            detail.context.geoSource}
                         </span>
                       ) : null}
                     </button>
@@ -1378,7 +1617,11 @@ export function App() {
               {heroTrack ? (
                 <div className="hero">
                   <div className="art-xl">
-                    {heroTrack.albumArtUrl ? <img alt="" src={heroTrack.albumArtUrl} /> : <Music2 size={72} />}
+                    {heroTrack.albumArtUrl ? (
+                      <img alt="" src={heroTrack.albumArtUrl} />
+                    ) : (
+                      <Music2 size={72} />
+                    )}
                   </div>
                   <div className="hero-meta">
                     <h2 className="hero-title">{heroTrack.title}</h2>
@@ -1405,31 +1648,51 @@ export function App() {
                       ? humanizeAnalysisError(detail.analysisError)
                       : "Could not load tracks. Check Gemini and Spotify settings, then retry."}
                   </p>
-                  <button className="ctrl primary" disabled={loading} onClick={retryAnalysis} type="button">
-                    {loading ? <Loader2 className="spin" size={20} /> : <RefreshCw size={20} />}
+                  <button
+                    className="ctrl primary"
+                    disabled={loading}
+                    onClick={retryAnalysis}
+                    type="button"
+                  >
+                    {loading ? (
+                      <Loader2 className="spin" size={20} />
+                    ) : (
+                      <RefreshCw size={20} />
+                    )}
                     <span>Retry song picks</span>
                   </button>
                 </div>
               ) : (
-                <p className="muted big">{loading || tracksPending ? "Finding songs for your journey…" : "No tracks yet."}</p>
+                <p className="muted big">
+                  {loading || tracksPending
+                    ? "Finding songs for your journey…"
+                    : "No tracks yet."}
+                </p>
               )}
 
               {karaokeOn && heroTrack ? (
                 <div className="karaoke" aria-label="Songtext zum Mitsingen">
                   {lyricsLoading && lyrics?.trackId !== heroTrack.id ? (
                     <p className="karaoke-empty">
-                      <Loader2 className="spin" size={16} /> Songtext wird geladen…
+                      <Loader2 className="spin" size={16} /> Songtext wird
+                      geladen…
                     </p>
                   ) : lyrics?.synced && lyrics.synced.length > 0 ? (
                     <div className="karaoke-lines">
                       <span className="sr-only" aria-live="polite">
-                        {activeLyricIndex >= 0 ? lyrics.synced[activeLyricIndex]?.text : ""}
+                        {activeLyricIndex >= 0
+                          ? lyrics.synced[activeLyricIndex]?.text
+                          : ""}
                       </span>
                       {lyrics.synced.map((line, index) => (
                         <p
                           className={`karaoke-line${index === activeLyricIndex ? " active" : ""}`}
                           key={`${line.timeMs}-${index}`}
-                          ref={index === activeLyricIndex ? activeLineRef : undefined}
+                          ref={
+                            index === activeLyricIndex
+                              ? activeLineRef
+                              : undefined
+                          }
                         >
                           {line.text || "♪"}
                         </p>
@@ -1438,17 +1701,26 @@ export function App() {
                   ) : lyrics?.plain ? (
                     <pre className="karaoke-plain">{lyrics.plain}</pre>
                   ) : (
-                    <p className="karaoke-empty">Kein Songtext gefunden — einfach mitsummen 🎶</p>
+                    <p className="karaoke-empty">
+                      Kein Songtext gefunden — einfach mitsummen 🎶
+                    </p>
                   )}
                 </div>
               ) : null}
 
               <div className="transport">
                 {demo ? (
-                  <span className="transport-note">Demo mode — playback is simulated.</span>
+                  <span className="transport-note">
+                    Demo mode — playback is simulated.
+                  </span>
                 ) : !isSpotifyJourney ? (
                   detail?.journey.tidalPlaylistUrl ? (
-                    <a className="ctrl primary big" href={detail.journey.tidalPlaylistUrl} rel="noreferrer" target="_blank">
+                    <a
+                      className="ctrl primary big"
+                      href={detail.journey.tidalPlaylistUrl}
+                      rel="noreferrer"
+                      target="_blank"
+                    >
                       <Play size={22} />
                       <span>Open TIDAL playlist</span>
                     </a>
@@ -1457,11 +1729,21 @@ export function App() {
                   )
                 ) : needsConnectDevice ? (
                   <span className="transport-note">
-                    Starte Spotify einmal auf dem Tesla-Display — die Wiedergabe wird dann automatisch übernommen.
+                    Starte Spotify einmal auf dem Tesla-Display — die Wiedergabe
+                    wird dann automatisch übernommen.
                   </span>
                 ) : needsConnectStart ? (
-                  <button className="ctrl primary big" disabled={loading} onClick={playOnCar} type="button">
-                    {loading ? <Loader2 className="spin" size={22} /> : <Play size={22} />}
+                  <button
+                    className="ctrl primary big"
+                    disabled={loading}
+                    onClick={playOnCar}
+                    type="button"
+                  >
+                    {loading ? (
+                      <Loader2 className="spin" size={22} />
+                    ) : (
+                      <Play size={22} />
+                    )}
                     <span>Im Auto starten</span>
                   </button>
                 ) : (
@@ -1476,7 +1758,12 @@ export function App() {
                       <SkipBack size={22} />
                       <span className="sr-only">Previous</span>
                     </button>
-                    <button className="ctrl primary big" disabled={loading} onClick={togglePlayPause} type="button">
+                    <button
+                      className="ctrl primary big"
+                      disabled={loading}
+                      onClick={togglePlayPause}
+                      type="button"
+                    >
                       {playing ? <Pause size={22} /> : <Play size={22} />}
                       <span>{playing ? "Pause" : "Play"}</span>
                     </button>
@@ -1492,14 +1779,24 @@ export function App() {
                     </button>
                   </>
                 )}
-                {boundDeviceId && (sessionStatus === "playing" || sessionStatus === "paused") ? (
+                {boundDeviceId &&
+                (sessionStatus === "playing" || sessionStatus === "paused") ? (
                   <span className="transport-note">
                     {sessionStatus === "playing" ? "Spielt" : "Pausiert"} auf{" "}
                     {activeDeviceLabel(devices, boundDeviceId)}
                   </span>
                 ) : null}
-                <button className="ctrl" disabled={loading} onClick={refreshQueue} title="Refresh queue" type="button">
-                  <RefreshCw className={loading ? "spin" : undefined} size={20} />
+                <button
+                  className="ctrl"
+                  disabled={loading}
+                  onClick={refreshQueue}
+                  title="Refresh queue"
+                  type="button"
+                >
+                  <RefreshCw
+                    className={loading ? "spin" : undefined}
+                    size={20}
+                  />
                   <span>Refresh</span>
                 </button>
                 {detail?.journey.spotifyPlaylistUrl ? (
@@ -1522,12 +1819,20 @@ export function App() {
                     type="button"
                   >
                     <MonitorSpeaker size={20} />
-                    <span>{activeDeviceLabel(devices, detail?.journey.spotifyDeviceId)}</span>
+                    <span>
+                      {activeDeviceLabel(
+                        devices,
+                        detail?.journey.spotifyDeviceId,
+                      )}
+                    </span>
                   </button>
                   {showDevices ? (
                     <div className="device-menu" role="menu">
                       {devices.length === 0 ? (
-                        <p className="device-empty">No Spotify devices found. Open Spotify on a device, then retry.</p>
+                        <p className="device-empty">
+                          No Spotify devices found. Open Spotify on a device,
+                          then retry.
+                        </p>
                       ) : (
                         devices.map((device) => (
                           <button
@@ -1545,13 +1850,23 @@ export function App() {
                     </div>
                   ) : null}
                 </div>
-                <button className="ctrl danger" disabled={loading} onClick={stop} title="Stop journey" type="button">
+                <button
+                  className="ctrl danger"
+                  disabled={loading}
+                  onClick={stop}
+                  title="Stop journey"
+                  type="button"
+                >
                   <Power size={20} />
                   <span>Stop</span>
                 </button>
               </div>
 
-              <div className="vibe-row" role="group" aria-label="Vibe-Direktiven">
+              <div
+                className="vibe-row"
+                role="group"
+                aria-label="Vibe-Direktiven"
+              >
                 {VIBE_DIRECTIVES.map((entry) => {
                   const active = Boolean(activeVibeWish(entry.match));
                   return (
@@ -1592,14 +1907,27 @@ export function App() {
                     placeholder="Musikwunsch..."
                     value={wishText}
                   />
-                  <button className="icon-btn" disabled={wishLoading || !wishText.trim()} title="Wunsch senden" type="submit">
-                    {wishLoading ? <Loader2 className="spin" size={16} /> : <Send size={16} />}
+                  <button
+                    className="icon-btn"
+                    disabled={wishLoading || !wishText.trim()}
+                    title="Wunsch senden"
+                    type="submit"
+                  >
+                    {wishLoading ? (
+                      <Loader2 className="spin" size={16} />
+                    ) : (
+                      <Send size={16} />
+                    )}
                   </button>
                   <button
                     className={`icon-btn${listening ? " on" : ""}`}
                     disabled={!speechSupported || wishLoading}
                     onClick={startWishSpeech}
-                    title={speechSupported ? "Spracheingabe" : "Spracheingabe ist in diesem Browser nicht verfügbar"}
+                    title={
+                      speechSupported
+                        ? "Spracheingabe"
+                        : "Spracheingabe ist in diesem Browser nicht verfügbar"
+                    }
                     type="button"
                   >
                     <Mic size={16} />
@@ -1607,11 +1935,20 @@ export function App() {
                 </form>
                 <div className="wish-chips">
                   {["Mitsingen", "Mehr Pop", "Weniger ruhig"].map((chip) => (
-                    <button disabled={wishLoading} key={chip} onClick={() => submitMusicWish(chip, "chip")} type="button">
+                    <button
+                      disabled={wishLoading}
+                      key={chip}
+                      onClick={() => submitMusicWish(chip, "chip")}
+                      type="button"
+                    >
                       {chip}
                     </button>
                   ))}
-                  <button className="wish-drawer-toggle" onClick={() => setWishDrawerOpen(true)} type="button">
+                  <button
+                    className="wish-drawer-toggle"
+                    onClick={() => setWishDrawerOpen(true)}
+                    type="button"
+                  >
                     Wünsche
                   </button>
                 </div>
@@ -1619,8 +1956,15 @@ export function App() {
                   <div className="wish-active">
                     {detail.activeMusicWishes.slice(0, 2).map((wish) => (
                       <span className="wish-layer" key={wish.id}>
-                        {wish.summary} · {wish.pinned ? "Pinned" : `${wish.remainingTracks} Songs`}
-                        <button onClick={() => undoWish(wish)} title="Undo" type="button">
+                        {wish.summary} ·{" "}
+                        {wish.pinned
+                          ? "Pinned"
+                          : `${wish.remainingTracks} Songs`}
+                        <button
+                          onClick={() => undoWish(wish)}
+                          title="Undo"
+                          type="button"
+                        >
                           <RotateCcw size={13} />
                         </button>
                       </span>
@@ -1647,7 +1991,11 @@ export function App() {
                     >
                       <span className="q-num">{index + 1}</span>
                       <span className="q-art">
-                        {track.albumArtUrl ? <img alt="" src={track.albumArtUrl} /> : <Music2 size={18} />}
+                        {track.albumArtUrl ? (
+                          <img alt="" src={track.albumArtUrl} />
+                        ) : (
+                          <Music2 size={18} />
+                        )}
                       </span>
                       <span className="q-meta">
                         <span className="q-title">{track.title}</span>
@@ -1656,7 +2004,9 @@ export function App() {
                     </li>
                   ))
                 ) : tracksFailed ? (
-                  <li className="muted">No queue yet — retry song picks above.</li>
+                  <li className="muted">
+                    No queue yet — retry song picks above.
+                  </li>
                 ) : (
                   <li className="muted">Buffering upcoming tracks…</li>
                 )}
@@ -1677,7 +2027,11 @@ export function App() {
                       title={`Steer the soundtrack toward "${entry.label}"`}
                       type="button"
                     >
-                      {isPending ? <Loader2 className="spin" size={15} /> : <Icon size={15} />}
+                      {isPending ? (
+                        <Loader2 className="spin" size={15} />
+                      ) : (
+                        <Icon size={15} />
+                      )}
                       {isActive || isPending ? <em>{entry.label}</em> : null}
                     </button>
                   );
@@ -1692,12 +2046,20 @@ export function App() {
                   title="Passt die Musik automatisch an die Fahrsituation an (Stau, Reichweite, Nachtfahrt). Komfortfunktion — kein Sicherheitssystem."
                   type="button"
                 >
-                  <Wind size={14} /> Adaptive Drive Mode: {(detail?.context?.adaptiveModeEnabled ?? true) ? "An" : "Aus"}
+                  <Wind size={14} /> Adaptive Drive Mode:{" "}
+                  {(detail?.context?.adaptiveModeEnabled ?? true)
+                    ? "An"
+                    : "Aus"}
                 </button>
-                <small className="muted">Komfortfunktion, kein Sicherheitssystem.</small>
+                <small className="muted">
+                  Komfortfunktion, kein Sicherheitssystem.
+                </small>
               </div>
 
-              <div className="vibe-mix" aria-label="Familiarity versus discovery">
+              <div
+                className="vibe-mix"
+                aria-label="Familiarity versus discovery"
+              >
                 <div className="vibe-head">
                   <span className="vibe-title">
                     <Sparkles size={13} /> Vibe-Mix
@@ -1719,7 +2081,11 @@ export function App() {
                         title={`${entry.label} — ${Math.round(entry.weight * 100)}% an deinem Geschmack`}
                         type="button"
                       >
-                        {isPending ? <Loader2 className="spin" size={15} /> : <Icon size={15} />}
+                        {isPending ? (
+                          <Loader2 className="spin" size={15} />
+                        ) : (
+                          <Icon size={15} />
+                        )}
                         <span>{entry.label}</span>
                       </button>
                     );
@@ -1727,7 +2093,8 @@ export function App() {
                 </div>
                 {detail?.taste?.topGenres?.length ? (
                   <p className="vibe-genres">
-                    <span>Your genres</span> {detail.taste.topGenres.slice(0, 4).join(" · ")}
+                    <span>Your genres</span>{" "}
+                    {detail.taste.topGenres.slice(0, 4).join(" · ")}
                   </p>
                 ) : null}
               </div>
@@ -1738,25 +2105,48 @@ export function App() {
                 <div className="retuning-card">
                   <span className="retuning-orb" aria-hidden="true" />
                   <span className="retuning-label">
-                    {vibeTuning || !retuningPhase ? "Adjusting mix" : "Re-tuning the vibe"}
+                    {vibeTuning || !retuningPhase
+                      ? "Adjusting mix"
+                      : "Re-tuning the vibe"}
                   </span>
                   <strong className="retuning-phase">
-                    {vibeTuning ?? (retuningPhase ? phaseMeta(retuningPhase).label : "Adjusting mix")}
+                    {vibeTuning ??
+                      (retuningPhase
+                        ? phaseMeta(retuningPhase).label
+                        : "Adjusting mix")}
                   </strong>
                 </div>
               </div>
             ) : null}
             {wishDrawerOpen ? (
-              <div className="wish-drawer" role="dialog" aria-label="Music wishes">
+              <div
+                className="wish-drawer"
+                role="dialog"
+                aria-label="Music wishes"
+              >
                 <div className="wish-drawer-head">
                   <span>Music Wishes</span>
-                  <button className="icon-btn" onClick={() => setWishDrawerOpen(false)} type="button">
+                  <button
+                    className="icon-btn"
+                    onClick={() => setWishDrawerOpen(false)}
+                    type="button"
+                  >
                     <X size={16} />
                   </button>
                 </div>
                 <div className="wish-drawer-chips">
-                  {["Spiel jetzt gute Laune", "Mehr 90s Pop", "Nicht so langsam", "Für die Kinder hinten"].map((chip) => (
-                    <button disabled={wishLoading} key={chip} onClick={() => submitMusicWish(chip, "chip")} type="button">
+                  {[
+                    "Spiel jetzt gute Laune",
+                    "Mehr 90s Pop",
+                    "Nicht so langsam",
+                    "Für die Kinder hinten",
+                  ].map((chip) => (
+                    <button
+                      disabled={wishLoading}
+                      key={chip}
+                      onClick={() => submitMusicWish(chip, "chip")}
+                      type="button"
+                    >
                       {chip}
                     </button>
                   ))}
@@ -1767,13 +2157,30 @@ export function App() {
                       <div className={`wish-card ${wish.status}`} key={wish.id}>
                         <div>
                           <strong>{wish.summary}</strong>
-                          <small>{wish.status} · {wish.pinned ? "pinned" : `${wish.remainingTracks}/${wish.expiresAfterTracks} songs`}</small>
+                          <small>
+                            {wish.status} ·{" "}
+                            {wish.pinned
+                              ? "pinned"
+                              : `${wish.remainingTracks}/${wish.expiresAfterTracks} songs`}
+                          </small>
                         </div>
                         <div className="wish-card-actions">
-                          <button onClick={() => toggleWishPin(wish)} title={wish.pinned ? "Unpin" : "Pin"} type="button">
-                            {wish.pinned ? <PinOff size={15} /> : <Pin size={15} />}
+                          <button
+                            onClick={() => toggleWishPin(wish)}
+                            title={wish.pinned ? "Unpin" : "Pin"}
+                            type="button"
+                          >
+                            {wish.pinned ? (
+                              <PinOff size={15} />
+                            ) : (
+                              <Pin size={15} />
+                            )}
                           </button>
-                          <button onClick={() => undoWish(wish)} title="Undo" type="button">
+                          <button
+                            onClick={() => undoWish(wish)}
+                            title="Undo"
+                            type="button"
+                          >
                             <RotateCcw size={15} />
                           </button>
                         </div>
