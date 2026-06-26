@@ -3007,6 +3007,12 @@ export {
 } from "./momentumRadio.js";
 
 export {
+  releaseRadarCandidates,
+  isWithinFreshWindow,
+  type AlbumSource,
+} from "./releaseRadar.js";
+
+export {
   driveStoryAct,
   type StoryAct,
   type StoryBeat,
