@@ -19,19 +19,32 @@ export interface AlbumSource {
   getNewReleases?(): Promise<RadarAlbum[]>;
 }
 
+/**
+ * Age of a release in days (negative if in the future), or null when the date is
+ * missing/unparseable. Accepts `YYYY-MM-DD` or bare `YYYY`. Shared by the fresh-window
+ * check and the recency score so both parse dates the same way.
+ */
+export function releaseAgeDays(
+  releaseDate: string | undefined,
+  now = new Date(),
+): number | null {
+  if (!releaseDate) return null;
+  const parsed = new Date(
+    releaseDate.length === 4 ? `${releaseDate}-01-01` : releaseDate,
+  );
+  const ms = parsed.getTime();
+  if (!Number.isFinite(ms)) return null;
+  return (now.getTime() - ms) / 86_400_000;
+}
+
 /** True when `releaseDate` (YYYY-MM-DD or YYYY) falls within `windowDays` of `now`. */
 export function isWithinFreshWindow(
   releaseDate: string | undefined,
   windowDays: number,
   now = new Date(),
 ): boolean {
-  if (!releaseDate) return false;
-  const parsed = new Date(
-    releaseDate.length === 4 ? `${releaseDate}-01-01` : releaseDate,
-  );
-  const ms = parsed.getTime();
-  if (!Number.isFinite(ms)) return false;
-  const ageDays = (now.getTime() - ms) / 86_400_000;
+  const ageDays = releaseAgeDays(releaseDate, now);
+  if (ageDays === null) return false;
   return ageDays >= 0 && ageDays <= windowDays;
 }
 
@@ -73,15 +86,16 @@ export async function releaseRadarCandidates(args: {
   const monthLabel = (releaseDate?: string) =>
     releaseDate && releaseDate.length >= 7 ? releaseDate.slice(0, 7) : "frisch";
 
-  for (const artist of args.tasteArtists) {
+  // Fetch every seed artist's albums concurrently (each best-effort), then process the results
+  // in seed order so per-artist caps, dedup, and output order stay deterministic.
+  const albumsByArtist = await Promise.all(
+    args.tasteArtists.map((artist) =>
+      args.albums.getArtistAlbums(artist.id).catch(() => [] as RadarAlbum[]),
+    ),
+  );
+  args.tasteArtists.forEach((artist, index) => {
     let kept = 0;
-    let albums: RadarAlbum[] = [];
-    try {
-      albums = await args.albums.getArtistAlbums(artist.id);
-    } catch {
-      continue;
-    }
-    for (const album of albums) {
+    for (const album of albumsByArtist[index]) {
       if (kept >= perArtist) break;
       if (!isWithinFreshWindow(album.releaseDate, args.windowDays, now))
         continue;
@@ -91,7 +105,7 @@ export async function releaseRadarCandidates(args: {
       push(normalised, monthLabel(album.releaseDate));
       if (out.length > before) kept += 1;
     }
-  }
+  });
 
   if (args.albums.getNewReleases) {
     try {
