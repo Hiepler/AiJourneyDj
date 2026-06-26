@@ -8,7 +8,11 @@ import {
   LastfmChartClient,
   type SongScout,
 } from "@ai-journey-dj/recommendation";
-import { MockSpotifyAdapter } from "@ai-journey-dj/spotify";
+import {
+  MockSpotifyAdapter,
+  type SpotifyArtist,
+  type SpotifyTrackSearchResult,
+} from "@ai-journey-dj/spotify";
 import { MockTidalAdapter } from "@ai-journey-dj/tidal";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -30,6 +34,55 @@ afterEach(() => {
 class NoopScout implements SongScout {
   async generateCandidates(): Promise<SongCandidate[]> {
     return [];
+  }
+}
+
+/**
+ * Custom Spotify adapter for freshness-quota testing.
+ *
+ * Design choices that make the quota loop the *decisive* factor:
+ *
+ * 1. searchTracks() strips releaseDate from results so the resolver falls back to
+ *    the SongCandidate's own releaseDate via the `?? candidate.releaseDate` path:
+ *      • release-radar candidates (releaseDate ≈ 11 days ago)  → isFresh = true
+ *      • geo-chart candidates    (no SongCandidate releaseDate) → isFresh = false
+ *
+ * 2. getTopArtists() returns exactly 2 taste artists (not the default 5) so that:
+ *      • only 2 release-radar tracks are generated (one fresh album per artist)
+ *      • plus the 1 "Chart Newcomer" from getNewReleases = 3 fresh candidates total
+ *      • combined with 6 geo-chart candidates → 9 candidates, all within the
+ *        resolver's 10-track limit, so all chart tracks actually get resolved
+ *
+ * 3. DRIVE_STORY_ENABLED is disabled in buildService to suppress the opening
+ *    taste-anchor candidates that would otherwise consume resolver slots before
+ *    the chart tracks, pushing chart tracks past the resolve limit.
+ *
+ * With all of the above, without the quota loop the 6 high-chartSignal geo tracks
+ * fill the entire 5-slot queue; WITH the loop ≥2 fresh release-radar tracks are
+ * forced in — making the test genuinely falsifiable.
+ */
+class FreshnessTestSpotifyAdapter extends MockSpotifyAdapter {
+  /** Strip releaseDate so the resolver uses the candidate's own date. */
+  override async searchTracks(args: {
+    accessToken: string;
+    query: string;
+    market: string;
+    limit: number;
+    signal?: AbortSignal;
+  }): Promise<SpotifyTrackSearchResult[]> {
+    const results = await super.searchTracks(args);
+    return results.map(({ releaseDate: _omit, ...rest }) => rest);
+  }
+
+  /** Limit to 2 taste artists so the resolver slot budget fits the chart tracks. */
+  override async getTopArtists(args?: {
+    accessToken: string;
+    timeRange?: "short_term" | "medium_term" | "long_term";
+    limit?: number;
+    signal?: AbortSignal;
+  }): Promise<SpotifyArtist[]> {
+    const all = await super.getTopArtists(args);
+    return all.slice(0, 2);
   }
 }
 
@@ -63,6 +116,16 @@ function buildService(overrides: Record<string, string> = {}) {
     SPOTIFY_FRESH_ENABLED: "true",
     FRESH_QUOTA_MIN: "2",
     FRESH_WINDOW_DAYS: "365",
+    // Disable the opening taste-anchor so it doesn't consume resolver slots
+    // before the geo-chart tracks (the resolver limit is 10; anchors + fresh
+    // would push chart tracks past that limit, leaving nothing to defeat).
+    DRIVE_STORY_ENABLED: "false",
+    // Disable recency-date scoring so stale high-playcount geo-chart tracks
+    // (no releaseDate → isFresh = false) out-rank the fresh release-radar tracks
+    // via chart signal alone.  Without the quota loop the fresh ones fall outside
+    // the top-5; the loop is therefore the *only* reason they make it in — making
+    // the test falsifiable.
+    RECENCY_DATE_SCORING_ENABLED: "false",
     ...overrides,
   });
   const db = openDatabase(config.DATABASE_PATH);
@@ -159,7 +222,7 @@ function buildService(overrides: Record<string, string> = {}) {
     new TidalAuthService(config, store),
     new MockTidalAdapter(),
     new SpotifyAuthService(config, store),
-    new MockSpotifyAdapter(),
+    new FreshnessTestSpotifyAdapter(),
     new NoopScout(),
     new NoopOpenMusicClient(),
     lastfmCharts,
@@ -184,10 +247,7 @@ describe("freshness quota", () => {
     "guarantees >= FRESH_QUOTA_MIN release-radar tracks in the queue",
     { timeout: 30_000 },
     async () => {
-      const { service, store } = buildService({
-        FRESH_QUOTA_MIN: "2",
-        FRESH_WINDOW_DAYS: "365",
-      });
+      const { service, store } = buildService();
       const journey = makeJourney();
       store.createJourney(journey);
       store.saveTelemetry(journey.id, telemetry, "departure");
