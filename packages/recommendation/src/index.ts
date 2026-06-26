@@ -11,6 +11,7 @@ import type {
 import { clampConfidence, normalizeText, songKey } from "@ai-journey-dj/core";
 import { seededJitter } from "./variety.js";
 import { looksLikeSpokenWord } from "./spokenWord.js";
+import { releaseAgeDays } from "./releaseRadar.js";
 import type { LastfmChartTrack } from "./lastfm.js";
 import type {
   TimeBand,
@@ -1177,6 +1178,8 @@ export interface MusicalBrief {
   localLanguage?: string;
   /** Demonym for homegrown-artist phrasing (e.g. "French", "Italian"), paired with localLanguage. */
   localDemonym?: string;
+  /** Confirmed real current releases (artist – title) for the "current" lens grounding line. */
+  currentReleases?: string[];
 }
 
 /**
@@ -1184,7 +1187,10 @@ export interface MusicalBrief {
  * Covers the common European road-trip corridor plus a few majors; unmapped countries fall back to a
  * region-text directive so the grounded LLM can still infer the local language from the place name.
  */
-const COUNTRY_LOCAL_FLAVOR: Record<string, { language: string; demonym: string }> = {
+const COUNTRY_LOCAL_FLAVOR: Record<
+  string,
+  { language: string; demonym: string }
+> = {
   FR: { language: "French", demonym: "French" },
   DE: { language: "German", demonym: "German" },
   AT: { language: "German", demonym: "Austrian" },
@@ -1379,18 +1385,29 @@ export function buildRecommendationPolicy(
   };
 }
 
-function releaseRecencyScore(
+export function releaseRecencyScore(
   releaseDate: string | undefined,
   now = new Date(),
+  dateScoring = false,
 ): number {
   if (!releaseDate) return 0.35;
-  const year = Number(releaseDate.slice(0, 4));
-  if (!Number.isFinite(year) || year < 1900) return 0.35;
-  const age = Math.max(0, now.getFullYear() - year);
-  if (age <= 1) return 1;
-  if (age <= 3) return 0.82;
-  if (age <= 7) return 0.58;
-  if (age <= 15) return 0.35;
+  if (!dateScoring) {
+    const year = Number(releaseDate.slice(0, 4));
+    if (!Number.isFinite(year) || year < 1900) return 0.35;
+    const age = Math.max(0, now.getFullYear() - year);
+    if (age <= 1) return 1;
+    if (age <= 3) return 0.82;
+    if (age <= 7) return 0.58;
+    if (age <= 15) return 0.35;
+    return 0.18;
+  }
+  const rawAge = releaseAgeDays(releaseDate, now);
+  if (rawAge === null) return 0.35;
+  const ageDays = Math.max(0, rawAge);
+  if (ageDays <= 30) return 1;
+  if (ageDays <= 90) return 0.85;
+  if (ageDays <= 365) return 0.6;
+  if (ageDays <= 365 * 3) return 0.35;
   return 0.18;
 }
 
@@ -1444,6 +1461,8 @@ export function rankResolvedTracksForPolicy<T extends ResolvedTrack>(
     softMoodPenalty?: Map<string, number>;
     /** Hard-Filter: Hörspiele/Hörbücher/Spoken-Word ausschließen (ein Musik-DJ spielt keine Hörspiele). */
     excludeSpokenWord?: boolean;
+    /** Day-based recency curve + stronger recency weight (Engine-Frische). */
+    recencyDateScoring?: boolean;
   } = {},
 ): T[] {
   const consumedArtists = new Set(
@@ -1467,10 +1486,13 @@ export function rankResolvedTracksForPolicy<T extends ResolvedTrack>(
   const recentSongPenalty =
     options.recentSongPenalty ?? new Map<string, number>();
   const fatigueExempt = new Set(
-    [...(options.fatigueExemptArtists ?? [])].map((artist) => normalizeText(artist)),
+    [...(options.fatigueExemptArtists ?? [])].map((artist) =>
+      normalizeText(artist),
+    ),
   );
   const bannedArtists = options.bannedArtists ?? new Set<string>();
-  const jitterStrength = options.seed !== undefined ? options.jitterStrength ?? 0.06 : 0;
+  const jitterStrength =
+    options.seed !== undefined ? (options.jitterStrength ?? 0.06) : 0;
   return [...tracks]
     .filter((track) => track.providerUri && track.isPlayable !== false)
     .filter((track) => !(policy.cleanRequired && track.explicit === true))
@@ -1530,9 +1552,13 @@ export function rankResolvedTracksForPolicy<T extends ResolvedTrack>(
         track.matchConfidence * 0.24 +
         familiarityComponent * 0.22 +
         chartSignalScore(track) * 0.22 +
-        releaseRecencyScore(track.releaseDate, options.now) *
+        releaseRecencyScore(
+          track.releaseDate,
+          options.now,
+          options.recencyDateScoring,
+        ) *
           policy.recencyBias *
-          0.14 +
+          (options.recencyDateScoring ? 0.2 : 0.14) +
         moodFitScore(track, policy) * 0.08 +
         (policy.cleanRequired && track.explicit === false ? 0.08 : 0) +
         boost * 0.42 +
@@ -1755,7 +1781,9 @@ export function buildMusicalBrief(
   let intensityLabel = profile.intensity;
   // Archetype familiarity bias first (errand/commute lean familiar); calm/family overrides below
   // still win on top of it.
-  let tasteWeight = clamp01((context.tasteWeight ?? 0) + strategy.tasteWeightBias);
+  let tasteWeight = clamp01(
+    (context.tasteWeight ?? 0) + strategy.tasteWeightBias,
+  );
   const driveMode: DriveMode = assessment?.mode ?? "neutral";
   if (assessment?.mode === "calm") {
     targetEnergy = clamp01(targetEnergy - 0.2 * assessment.intensity);
@@ -1802,7 +1830,10 @@ export function buildMusicalBrief(
     context.paceTrend,
     context.speedBucket,
   );
-  const fatigueRisk = energyFloor > 0 ? clamp01((energyFloor - ALERTNESS_FLOOR_BASE) / ALERTNESS_FLOOR_SLOPE) : 0;
+  const fatigueRisk =
+    energyFloor > 0
+      ? clamp01((energyFloor - ALERTNESS_FLOOR_BASE) / ALERTNESS_FLOOR_SLOPE)
+      : 0;
   targetEnergy = Math.max(targetEnergy, energyFloor);
   if (energyFloor > 0) moodWords.push("alert", "wakeful");
 
@@ -1958,6 +1989,7 @@ export function buildMusicalBrief(
     skippedMoodTags: context.skippedMoodTags ?? [],
     storyDirective: context.storyDirective,
     momentDirective: context.momentDirective,
+    currentReleases: context.currentReleases,
   };
 }
 
@@ -2274,7 +2306,9 @@ export function buildLensPrompt(
       : "",
     localTouchLine,
     brief.weatherFeel ? `Weather right now: ${brief.weatherFeel}.` : "",
-    brief.explorationAngle ? `Freshness directive: ${brief.explorationAngle}.` : "",
+    brief.explorationAngle
+      ? `Freshness directive: ${brief.explorationAngle}.`
+      : "",
     brief.storyDirective ? `Drive story: ${brief.storyDirective}` : "",
     brief.momentDirective ? `Moment: ${brief.momentDirective}` : "",
     brief.avoidRecentArtists && brief.avoidRecentArtists.length > 0
@@ -2290,6 +2324,9 @@ export function buildLensPrompt(
       : brief.passengerMode === "family"
         ? "Family mode: prefer clean/radio-friendly current pop, dance-pop, upbeat singalong tracks; avoid explicit, aggressive, gloomy, sleepy, or novelty children-song picks."
         : "",
+    lens.key === "current" && brief.currentReleases?.length
+      ? `These tracks are confirmed real and current — prefer this stylistic neighborhood and never invent release dates: ${brief.currentReleases.slice(0, 12).join("; ")}.`
+      : "",
     `For each song also give "energy" (0=calm … 1=high) and "valence" (-1=dark … +1=bright) — your honest read of how the recording actually feels. These sequence the set into a smooth arc, so be discerning rather than defaulting to the middle.`,
     `Return ONLY JSON {"songs":[{"artist","title","year","genre","reason","role","energy","valence"}]} with exactly ${count} real, released songs.`,
     `If you include role, use one of: ${SET_ROLES.join(", ")}.`,
@@ -3007,9 +3044,12 @@ export {
 } from "./momentumRadio.js";
 
 export {
-  driveStoryAct,
-  type StoryAct,
-  type StoryBeat,
-} from "./driveStory.js";
+  releaseRadarCandidates,
+  isWithinFreshWindow,
+  releaseAgeDays,
+  type AlbumSource,
+} from "./releaseRadar.js";
+
+export { driveStoryAct, type StoryAct, type StoryBeat } from "./driveStory.js";
 
 export { looksLikeSpokenWord } from "./spokenWord.js";

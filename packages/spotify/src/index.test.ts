@@ -920,7 +920,10 @@ describe("getPlaybackState", () => {
       fetchImpl,
       wait: async () => undefined,
     });
-    const state = await adapter.getPlaybackState({ accessToken: "t", market: "DE" });
+    const state = await adapter.getPlaybackState({
+      accessToken: "t",
+      market: "DE",
+    });
     expect(state.currentlyPlayingType).toBe("episode");
     expect(state.activeDeviceId).toBe("phone-xyz");
     expect(state.activeDeviceName).toBe("Pixel");
@@ -942,9 +945,66 @@ describe("getPlaybackState", () => {
       fetchImpl,
       wait: async () => undefined,
     });
-    const state = await adapter.getPlaybackState({ accessToken: "t", market: "DE" });
+    const state = await adapter.getPlaybackState({
+      accessToken: "t",
+      market: "DE",
+    });
     expect(state.activeProviderTrackId).toBe("t1");
     expect(state.currentlyPlayingType).toBeUndefined();
     expect(state.activeDeviceId).toBeUndefined();
+  });
+});
+
+describe("getArtistAlbums", () => {
+  it("maps album/single items to SpotifyAlbum with release dates", async () => {
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              id: "alb1",
+              name: "New Record",
+              album_type: "album",
+              release_date: "2026-06-01",
+              artists: [{ name: "Bonobo" }],
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      )) as unknown as typeof fetch;
+    const adapter = new OfficialSpotifyAdapter({
+      baseUrl: "https://api.spotify.com/v1",
+      fetchImpl,
+    });
+    const albums = await adapter.getArtistAlbums({
+      accessToken: "t",
+      artistId: "art1",
+    });
+    expect(albums).toEqual([
+      {
+        id: "alb1",
+        name: "New Record",
+        artist: "Bonobo",
+        releaseDate: "2026-06-01",
+        albumType: "album",
+      },
+    ]);
+  });
+
+  it("MockSpotifyAdapter returns deterministic fresh + stale albums", async () => {
+    const mock = new MockSpotifyAdapter();
+    const albums = await mock.getArtistAlbums({
+      accessToken: "t",
+      artistId: "mock-bonobo",
+    });
+    expect(albums.length).toBeGreaterThan(0);
+    // Fresh album date is now relative to now (11 days ago); verify it's within the last 30 days.
+    const freshAlbum = albums.find((a) => a.id?.endsWith("-fresh"));
+    expect(freshAlbum).toBeDefined();
+    const freshDate = freshAlbum?.releaseDate
+      ? new Date(freshAlbum.releaseDate)
+      : null;
+    expect(freshDate).not.toBeNull();
+    expect(Date.now() - freshDate!.getTime()).toBeLessThan(30 * 86_400_000);
   });
 });

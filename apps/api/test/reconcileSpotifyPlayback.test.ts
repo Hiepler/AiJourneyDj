@@ -5,7 +5,11 @@ import { join } from "node:path";
 import { normalizeText } from "@ai-journey-dj/core";
 import { NoopOpenMusicClient } from "@ai-journey-dj/open-music";
 import { XaiSongScout } from "@ai-journey-dj/recommendation";
-import type { SpotifyAdapter, SpotifyPlaybackState, SpotifyTrackSearchResult } from "@ai-journey-dj/spotify";
+import type {
+  SpotifyAdapter,
+  SpotifyPlaybackState,
+  SpotifyTrackSearchResult,
+} from "@ai-journey-dj/spotify";
 import { MockTidalAdapter } from "@ai-journey-dj/tidal";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -18,17 +22,24 @@ import { JourneyService } from "../src/journeys/journeyService.js";
 
 const tmpDirs: string[] = [];
 afterEach(() => {
-  for (const dir of tmpDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  for (const dir of tmpDirs.splice(0))
+    rmSync(dir, { recursive: true, force: true });
 });
 
 /** Adapter whose reported "currently playing" track is fully controllable per test. */
 class ControllableAdapter implements SpotifyAdapter {
-  playbackState: SpotifyPlaybackState = { isPlaying: false, queuedProviderTrackIds: [] };
+  playbackState: SpotifyPlaybackState = {
+    isPlaying: false,
+    queuedProviderTrackIds: [],
+  };
   startCalls: { deviceId: string; uris: string[] }[] = [];
   queueCalls: { deviceId: string; uri: string }[] = [];
   transferCalls: { deviceId: string }[] = [];
 
-  async searchTracks(args: { query: string; market: string }): Promise<SpotifyTrackSearchResult[]> {
+  async searchTracks(args: {
+    query: string;
+    market: string;
+  }): Promise<SpotifyTrackSearchResult[]> {
     const [artist, ...rest] = args.query.split(" - ");
     const title = rest.join(" - ") || artist;
     const id = `${artist}-${title}`.toLowerCase().replace(/[^a-z0-9]+/g, "");
@@ -41,20 +52,25 @@ class ControllableAdapter implements SpotifyAdapter {
         isPlayable: true,
         market: args.market,
         externalUrl: `https://open.spotify.com/track/${id}`,
-        albumArtUrl: `https://img/${id}`
-      }
+        albumArtUrl: `https://img/${id}`,
+      },
     ];
   }
 
   async transferPlayback(args: { deviceId: string }): Promise<void> {
     this.transferCalls.push({ deviceId: args.deviceId });
   }
-  async resolvePlaybackDeviceId(args: { preferredDeviceId: string }): Promise<string> {
+  async resolvePlaybackDeviceId(args: {
+    preferredDeviceId: string;
+  }): Promise<string> {
     return args.preferredDeviceId;
   }
   async skipToNext(): Promise<void> {}
   async skipToPrevious(): Promise<void> {}
-  async startPlayback(args: { deviceId: string; uris: string[] }): Promise<void> {
+  async startPlayback(args: {
+    deviceId: string;
+    uris: string[];
+  }): Promise<void> {
     this.startCalls.push({ deviceId: args.deviceId, uris: args.uris });
   }
   async addToQueue(args: { deviceId: string; uri: string }): Promise<void> {
@@ -88,7 +104,7 @@ function buildService(overrides: Record<string, string> = {}) {
     SPOTIFY_MOCK: "true",
     XAI_MOCK: "true",
     CORS_ORIGIN: "http://localhost:5173",
-    ...overrides
+    ...overrides,
   });
   const db = openDatabase(config.DATABASE_PATH);
   migrate(db);
@@ -101,8 +117,13 @@ function buildService(overrides: Record<string, string> = {}) {
     new MockTidalAdapter(),
     new SpotifyAuthService(config, store),
     adapter,
-    new XaiSongScout({ apiKey: config.XAI_API_KEY, baseUrl: config.XAI_BASE_URL, model: config.XAI_MODEL, mock: true }),
-    new NoopOpenMusicClient()
+    new XaiSongScout({
+      apiKey: config.XAI_API_KEY,
+      baseUrl: config.XAI_BASE_URL,
+      model: config.XAI_MODEL,
+      mock: true,
+    }),
+    new NoopOpenMusicClient(),
   );
   return { service, store, adapter, db };
 }
@@ -113,9 +134,11 @@ async function startSpotifyJourney(service: JourneyService) {
     userPrompt: "cinematic golden-hour drive",
     passengerMode: "solo",
     provider: "spotify",
-    deviceId: "tesla-web-device"
+    deviceId: "tesla-web-device",
   });
-  await service.registerSpotifyDevice(journey.id, "tesla-web-device", "ready", { syncOnly: true });
+  await service.registerSpotifyDevice(journey.id, "tesla-web-device", "ready", {
+    syncOnly: true,
+  });
   return journey;
 }
 
@@ -136,14 +159,19 @@ async function explicitlyPickDevice(
  * with the active track de-duplicated out of the queue. Returns both the internal track id
  * (what the session stores in played/queued) and the providerTrackId (what Spotify reports).
  */
-function modelOf(store: Store, journeyId: string): Array<{ id: string; providerTrackId: string }> {
+function modelOf(
+  store: Store,
+  journeyId: string,
+): Array<{ id: string; providerTrackId: string }> {
   const session = store.getPlaybackSession(journeyId)!;
-  const stored = store.listResolvedTracks(journeyId).filter((t) => t.provider === "spotify");
+  const stored = store
+    .listResolvedTracks(journeyId)
+    .filter((t) => t.provider === "spotify");
   const byId = new Map(stored.map((t) => [t.id, t]));
   const activeId = session.activeTrack?.id;
   const orderedIds = [
     ...(activeId ? [activeId] : []),
-    ...session.queuedTrackIds.filter((id) => id !== activeId)
+    ...session.queuedTrackIds.filter((id) => id !== activeId),
   ];
   return orderedIds
     .map((id) => byId.get(id))
@@ -158,7 +186,11 @@ describe("reconcileSpotifyPlayback", () => {
     const before = store.getPlaybackSession(journey.id)!;
     const model = modelOf(store, journey.id);
 
-    adapter.playbackState = { isPlaying: true, activeProviderTrackId: model[0].providerTrackId, queuedProviderTrackIds: [] };
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: model[0].providerTrackId,
+      queuedProviderTrackIds: [],
+    };
     const outcome = await service.reconcileSpotifyPlayback(journey.id);
 
     expect(outcome).toBe("playing");
@@ -174,54 +206,68 @@ describe("reconcileSpotifyPlayback", () => {
     expect(model.length).toBeGreaterThanOrEqual(3);
 
     // Simulate two native skips: Spotify is now playing the 3rd track in our model.
-    adapter.playbackState = { isPlaying: true, activeProviderTrackId: model[2].providerTrackId, queuedProviderTrackIds: [] };
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: model[2].providerTrackId,
+      queuedProviderTrackIds: [],
+    };
     const outcome = await service.reconcileSpotifyPlayback(journey.id);
 
     expect(outcome).toBe("playing");
     const after = store.getPlaybackSession(journey.id)!;
-    expect((after.activeTrack as { providerTrackId: string }).providerTrackId).toBe(model[2].providerTrackId);
+    expect(
+      (after.activeTrack as { providerTrackId: string }).providerTrackId,
+    ).toBe(model[2].providerTrackId);
     // The two skipped-over tracks moved into history (session stores internal track ids).
     expect(after.playedTrackIds).toContain(model[0].id);
     expect(after.playedTrackIds).toContain(model[1].id);
   });
 
-  it("native Tesla skip advances and refills on the locked device without restarting", { timeout: 30_000 }, async () => {
-    const { service, store, adapter } = buildService({
-      SPOTIFY_REFILL_MIN_INTERVAL_SECONDS: "0",
-      SPOTIFY_REFILL_THRESHOLD: "4",
-      SPOTIFY_QUEUE_ADD_DELAY_MS: "0",
-    });
-    const journey = await startSpotifyJourney(service);
-    await explicitlyPickDevice(service, journey.id, "native-tesla-app");
-    const model = modelOf(store, journey.id);
-    expect(model.length).toBeGreaterThanOrEqual(3);
+  it(
+    "native Tesla skip advances and refills on the locked device without restarting",
+    { timeout: 30_000 },
+    async () => {
+      const { service, store, adapter } = buildService({
+        SPOTIFY_REFILL_MIN_INTERVAL_SECONDS: "0",
+        SPOTIFY_REFILL_THRESHOLD: "4",
+        SPOTIFY_QUEUE_ADD_DELAY_MS: "0",
+      });
+      const journey = await startSpotifyJourney(service);
+      await explicitlyPickDevice(service, journey.id, "native-tesla-app");
+      const model = modelOf(store, journey.id);
+      expect(model.length).toBeGreaterThanOrEqual(3);
 
-    adapter.startCalls.length = 0;
-    adapter.queueCalls.length = 0;
-    adapter.transferCalls.length = 0;
-    adapter.playbackState = {
-      isPlaying: true,
-      activeProviderTrackId: model[2].providerTrackId,
-      queuedProviderTrackIds: [],
-      activeDeviceId: "native-tesla-app",
-      progressMs: 1_000,
-      durationMs: 180_000,
-    };
+      adapter.startCalls.length = 0;
+      adapter.queueCalls.length = 0;
+      adapter.transferCalls.length = 0;
+      adapter.playbackState = {
+        isPlaying: true,
+        activeProviderTrackId: model[2].providerTrackId,
+        queuedProviderTrackIds: [],
+        activeDeviceId: "native-tesla-app",
+        progressMs: 1_000,
+        durationMs: 180_000,
+      };
 
-    const outcome = await service.reconcileSpotifyPlayback(journey.id);
+      const outcome = await service.reconcileSpotifyPlayback(journey.id);
 
-    expect(outcome).toBe("playing");
-    const after = store.getPlaybackSession(journey.id)!;
-    expect((after.activeTrack as { providerTrackId: string }).providerTrackId).toBe(
-      model[2].providerTrackId,
-    );
-    expect(after.playedTrackIds).toContain(model[0].id);
-    expect(after.playedTrackIds).toContain(model[1].id);
-    expect(adapter.startCalls.length).toBe(0);
-    expect(adapter.transferCalls.length).toBe(0);
-    expect(adapter.queueCalls.length).toBeGreaterThan(0);
-    expect(adapter.queueCalls.every((call) => call.deviceId === "native-tesla-app")).toBe(true);
-  });
+      expect(outcome).toBe("playing");
+      const after = store.getPlaybackSession(journey.id)!;
+      expect(
+        (after.activeTrack as { providerTrackId: string }).providerTrackId,
+      ).toBe(model[2].providerTrackId);
+      expect(after.playedTrackIds).toContain(model[0].id);
+      expect(after.playedTrackIds).toContain(model[1].id);
+      expect(adapter.startCalls.length).toBe(0);
+      expect(adapter.transferCalls.length).toBe(0);
+      expect(adapter.queueCalls.length).toBeGreaterThan(0);
+      expect(
+        adapter.queueCalls.every(
+          (call) => call.deviceId === "native-tesla-app",
+        ),
+      ).toBe(true);
+    },
+  );
 
   it("pauses curation (status=external) when an off-journey track is playing", async () => {
     const { service, store, adapter } = buildService();
@@ -231,7 +277,7 @@ describe("reconcileSpotifyPlayback", () => {
     adapter.playbackState = {
       isPlaying: true,
       activeProviderTrackId: "foreign-track-not-ours",
-      queuedProviderTrackIds: []
+      queuedProviderTrackIds: [],
     };
     const outcome = await service.reconcileSpotifyPlayback(journey.id);
 
@@ -247,11 +293,19 @@ describe("reconcileSpotifyPlayback", () => {
     const journey = await startSpotifyJourney(service);
     const model = modelOf(store, journey.id);
 
-    adapter.playbackState = { isPlaying: true, activeProviderTrackId: "foreign", queuedProviderTrackIds: [] };
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: "foreign",
+      queuedProviderTrackIds: [],
+    };
     await service.reconcileSpotifyPlayback(journey.id);
     expect(store.getPlaybackSession(journey.id)!.status).toBe("external");
 
-    adapter.playbackState = { isPlaying: true, activeProviderTrackId: model[0].providerTrackId, queuedProviderTrackIds: [] };
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: model[0].providerTrackId,
+      queuedProviderTrackIds: [],
+    };
     const outcome = await service.reconcileSpotifyPlayback(journey.id);
 
     expect(outcome).toBe("playing");
@@ -273,7 +327,9 @@ describe("reconcileSpotifyPlayback", () => {
 
   it("returns idle for a non-existent / non-spotify journey without throwing", async () => {
     const { service } = buildService();
-    await expect(service.reconcileSpotifyPlayback("does-not-exist")).resolves.toBe("idle");
+    await expect(
+      service.reconcileSpotifyPlayback("does-not-exist"),
+    ).resolves.toBe("idle");
   });
 
   it("marks the session paused when the remote device stops playing, and resumes", async () => {
@@ -304,7 +360,9 @@ describe("reconcileSpotifyPlayback", () => {
     const model = modelOf(store, journey.id);
     adapter.startCalls.length = 0;
     adapter.transferCalls.length = 0;
-    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("tesla-web-device");
+    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe(
+      "tesla-web-device",
+    );
 
     // Our active track is now playing on a *different* Connect device (native Tesla app).
     adapter.playbackState = {
@@ -317,8 +375,12 @@ describe("reconcileSpotifyPlayback", () => {
 
     expect(outcome).toBe("playing");
     // Re-bound to the device the user is actually listening on…
-    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("native-tesla-app");
-    expect(store.getPlaybackSession(journey.id)!.deviceId).toBe("native-tesla-app");
+    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe(
+      "native-tesla-app",
+    );
+    expect(store.getPlaybackSession(journey.id)!.deviceId).toBe(
+      "native-tesla-app",
+    );
     // …and nothing was transferred or (re)started — following is passive.
     expect(adapter.startCalls.length).toBe(0);
     expect(adapter.transferCalls.length).toBe(0);
@@ -344,7 +406,8 @@ describe("reconcileSpotifyPlayback", () => {
 
     const deadline = Date.now() + 20_000;
     while (service.isAnalysisPending(journey.id)) {
-      if (Date.now() > deadline) throw new Error("refill analysis did not finish");
+      if (Date.now() > deadline)
+        throw new Error("refill analysis did not finish");
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
 
@@ -378,9 +441,9 @@ describe("reconcileSpotifyPlayback", () => {
     expect(outcome).toBe("playing");
     const after = store.getPlaybackSession(journey.id)!;
     expect(after.status).toBe("playing");
-    expect((after.activeTrack as { providerTrackId: string }).providerTrackId).toBe(
-      ours!.providerTrackId,
-    );
+    expect(
+      (after.activeTrack as { providerTrackId: string }).providerTrackId,
+    ).toBe(ours!.providerTrackId);
     // The modeled queue stays upcoming instead of being wiped.
     expect(after.queuedTrackIds.length).toBeGreaterThan(0);
   });
@@ -394,7 +457,10 @@ describe("reconcileSpotifyPlayback", () => {
     store.savePlaybackSession({
       ...session,
       queuedTrackIds: [],
-      playedTrackIds: [...(session.playedTrackIds ?? []), ...session.queuedTrackIds],
+      playedTrackIds: [
+        ...(session.playedTrackIds ?? []),
+        ...session.queuedTrackIds,
+      ],
     });
     adapter.startCalls.length = 0;
 
@@ -417,7 +483,8 @@ describe("reconcileSpotifyPlayback", () => {
     // Wait for any in-flight background analyze to finish before afterEach cleanup.
     const deadline = Date.now() + 20_000;
     while (service.isAnalysisPending(journey.id)) {
-      if (Date.now() > deadline) throw new Error("wish analysis did not finish");
+      if (Date.now() > deadline)
+        throw new Error("wish analysis did not finish");
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   });
@@ -455,14 +522,23 @@ describe("reconcileSpotifyPlayback", () => {
 
     expect(adapter.startCalls.length).toBe(0); // no transfer/start
     expect(result.deviceId).toBe("tesla-web-device"); // current session returned
-    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("tesla-web-device");
+    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe(
+      "tesla-web-device",
+    );
 
     // Explicit user choice still switches.
-    await service.registerSpotifyDevice(journey.id, "browser-webplayer", "ready", {
-      syncOnly: true,
-      transfer: true,
-    });
-    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("browser-webplayer");
+    await service.registerSpotifyDevice(
+      journey.id,
+      "browser-webplayer",
+      "ready",
+      {
+        syncOnly: true,
+        transfer: true,
+      },
+    );
+    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe(
+      "browser-webplayer",
+    );
     expect(adapter.startCalls.length).toBeGreaterThan(0);
   });
 
@@ -494,24 +570,29 @@ describe("reconcileSpotifyPlayback", () => {
     expect(adapter.startCalls.length).toBe(0);
   });
 
-  it("pre-warms the candidate pool after analysis when it falls below the floor", { timeout: 20_000 }, async () => {
-    // Floor high enough that the post-start pool is always below it; refill throttle off so
-    // the pre-warm is not blocked by the just-finished initial analysis. In mock mode the
-    // deterministic scout regenerates identical tracks (dedup → no row growth), so the
-    // observable contract is the pool_prewarmed audit proving the full pipeline ran.
-    const { service, store } = buildService({
-      CANDIDATE_POOL_FLOOR: "50",
-      SPOTIFY_REFILL_MIN_INTERVAL_SECONDS: "0",
-    });
-    const journey = await startSpotifyJourney(service);
+  it(
+    "pre-warms the candidate pool after analysis when it falls below the floor",
+    { timeout: 20_000 },
+    async () => {
+      // Floor high enough that the post-start pool is always below it; refill throttle off so
+      // the pre-warm is not blocked by the just-finished initial analysis. In mock mode the
+      // deterministic scout regenerates identical tracks (dedup → no row growth), so the
+      // observable contract is the pool_prewarmed audit proving the full pipeline ran.
+      const { service, store } = buildService({
+        CANDIDATE_POOL_FLOOR: "50",
+        SPOTIFY_REFILL_MIN_INTERVAL_SECONDS: "0",
+      });
+      const journey = await startSpotifyJourney(service);
 
-    const deadline = Date.now() + 15_000;
-    for (;;) {
-      if (store.latestAuditEvent(journey.id, "recommendation.pool_prewarmed")) break;
-      if (Date.now() > deadline) throw new Error("pool did not pre-warm");
-      await new Promise((resolve) => setTimeout(resolve, 200));
-    }
-  });
+      const deadline = Date.now() + 15_000;
+      for (;;) {
+        if (store.latestAuditEvent(journey.id, "recommendation.pool_prewarmed"))
+          break;
+        if (Date.now() > deadline) throw new Error("pool did not pre-warm");
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+    },
+  );
 
   it("skips pre-warming when disabled via a zero floor", async () => {
     const { service, store } = buildService({
@@ -577,126 +658,149 @@ describe("connect-mode queue sync", () => {
   });
 
   // Two full analysis passes (initial + wish rebuild) with real per-add pacing → allow 30s.
-  it("keeps every wish-rebuild queue add inside the visible model", { timeout: 30_000 }, async () => {
-    const { service, store, adapter } = buildService();
-    const journey = await startSpotifyJourney(service);
-    const before = adapter.queueCalls.length;
+  it(
+    "keeps every wish-rebuild queue add inside the visible model",
+    { timeout: 30_000 },
+    async () => {
+      const { service, store, adapter } = buildService();
+      const journey = await startSpotifyJourney(service);
+      const before = adapter.queueCalls.length;
 
-    await service.createMusicWish(journey.id, {
-      text: "mehr Taylor Swift",
-      source: "text",
-    });
+      await service.createMusicWish(journey.id, {
+        text: "mehr Taylor Swift",
+        source: "text",
+      });
 
-    const deadline = Date.now() + 20_000;
-    while (service.isAnalysisPending(journey.id)) {
-      if (Date.now() > deadline) throw new Error("wish analysis did not finish");
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
+      const deadline = Date.now() + 20_000;
+      while (service.isAnalysisPending(journey.id)) {
+        if (Date.now() > deadline)
+          throw new Error("wish analysis did not finish");
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
 
-    const model = modelOf(store, journey.id);
-    const modelUris = new Set(
-      model.map((track) => `spotify:track:${track.providerTrackId}`),
-    );
-    const newAdds = adapter.queueCalls.slice(before).map((call) => call.uri);
-    expect(newAdds.length).toBeGreaterThan(0);
-    for (const uri of newAdds) {
-      expect(modelUris.has(uri)).toBe(true);
-    }
-  });
+      const model = modelOf(store, journey.id);
+      const modelUris = new Set(
+        model.map((track) => `spotify:track:${track.providerTrackId}`),
+      );
+      const newAdds = adapter.queueCalls.slice(before).map((call) => call.uri);
+      expect(newAdds.length).toBeGreaterThan(0);
+      for (const uri of newAdds) {
+        expect(modelUris.has(uri)).toBe(true);
+      }
+    },
+  );
 
-  it("opens the journey with a taste-anchor track", { timeout: 20_000 }, async () => {
-    const { service, store } = buildService();
-    // The reconcile harness adapter has no getTopArtists, so seed the taste profile
-    // directly — the opening anchor is drawn from representativeArtists.
-    const tasteArtists = [
-      "Bonobo",
-      "Tame Impala",
-      "Khruangbin",
-      "Tycho",
-      "The War on Drugs",
-    ];
-    store.saveCachedTasteProfile("local", {
-      topGenres: ["downtempo", "indie"],
-      representativeArtists: tasteArtists,
-    });
+  it(
+    "opens the journey with a taste-anchor track",
+    { timeout: 20_000 },
+    async () => {
+      const { service, store } = buildService();
+      // The reconcile harness adapter has no getTopArtists, so seed the taste profile
+      // directly — the opening anchor is drawn from representativeArtists.
+      const tasteArtists = [
+        "Bonobo",
+        "Tame Impala",
+        "Khruangbin",
+        "Tycho",
+        "The War on Drugs",
+      ];
+      store.saveCachedTasteProfile("local", {
+        topGenres: ["downtempo", "indie"],
+        representativeArtists: tasteArtists,
+      });
 
-    const journey = await startSpotifyJourney(service);
-    const session = store.getPlaybackSession(journey.id)!;
-    expect(session.activeTrack?.artist).toBeDefined();
-    expect(tasteArtists).toContain(session.activeTrack!.artist);
-  });
+      const journey = await startSpotifyJourney(service);
+      const session = store.getPlaybackSession(journey.id)!;
+      expect(session.activeTrack?.artist).toBeDefined();
+      expect(tasteArtists).toContain(session.activeTrack!.artist);
+    },
+  );
 
-  it("a border crossing schedules local hits with a priority slot", { timeout: 20_000 }, async () => {
-    const { service, store } = buildService({
-      SPOTIFY_REFILL_MIN_INTERVAL_SECONDS: "0",
-    });
-    const journey = await startSpotifyJourney(service);
+  it(
+    "a border crossing schedules local hits with a priority slot",
+    { timeout: 20_000 },
+    async () => {
+      const { service, store } = buildService({
+        SPOTIFY_REFILL_MIN_INTERVAL_SECONDS: "0",
+      });
+      const journey = await startSpotifyJourney(service);
 
-    // Telemetrie-Historie: Deutschland → Italien (älterer Snapshot zuerst gespeichert).
-    store.saveTelemetry(
-      journey.id,
-      {
-        timestampIso: new Date(Date.now() - 60_000).toISOString(),
-        countryCode: "DE",
-        countryName: "Germany",
-      } as any,
-      "cruise",
-    );
-    store.saveTelemetry(
-      journey.id,
-      {
-        timestampIso: new Date().toISOString(),
-        countryCode: "IT",
-        countryName: "Italy",
-      } as any,
-      "cruise",
-    );
-
-    await service.evaluateJourneyMoments(journey.id);
-    // moment:border_crossing ist vibe-changing → Analyse lief; Moment-Kandidaten gespeichert.
-    const deadline = Date.now() + 15_000;
-    while (service.isAnalysisPending(journey.id)) {
-      if (Date.now() > deadline) throw new Error("moment analysis did not finish");
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    const candidates = store.listResolvedTracks(journey.id);
-    expect(candidates.length).toBeGreaterThan(0);
-    const audit = store.latestAuditEvent(journey.id, "moment.triggered");
-    expect(audit).toBeDefined();
-  });
-
-  it("a charge stop opens a new leg (legIndex increments)", { timeout: 20_000 }, async () => {
-    const { service, store } = buildService({
-      SPOTIFY_REFILL_MIN_INTERVAL_SECONDS: "0",
-    });
-    const journey = await startSpotifyJourney(service);
-    expect(store.getJourney(journey.id)!.legIndex ?? 0).toBe(0);
-
-    // Telemetry: battery low for two readings, then a sustained jump after charging (oldest first).
-    const battery = [18, 20, 80, 82];
-    battery.forEach((batteryPercent, i) => {
+      // Telemetrie-Historie: Deutschland → Italien (älterer Snapshot zuerst gespeichert).
       store.saveTelemetry(
         journey.id,
         {
-          timestampIso: new Date(Date.now() - (battery.length - i) * 60_000).toISOString(),
-          countryCode: "FR",
-          countryName: "France",
-          batteryPercent,
+          timestampIso: new Date(Date.now() - 60_000).toISOString(),
+          countryCode: "DE",
+          countryName: "Germany",
         } as any,
         "cruise",
       );
-    });
+      store.saveTelemetry(
+        journey.id,
+        {
+          timestampIso: new Date().toISOString(),
+          countryCode: "IT",
+          countryName: "Italy",
+        } as any,
+        "cruise",
+      );
 
-    await service.evaluateJourneyMoments(journey.id);
-    const deadline = Date.now() + 15_000;
-    while (service.isAnalysisPending(journey.id)) {
-      if (Date.now() > deadline) throw new Error("moment analysis did not finish");
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
+      await service.evaluateJourneyMoments(journey.id);
+      // moment:border_crossing ist vibe-changing → Analyse lief; Moment-Kandidaten gespeichert.
+      const deadline = Date.now() + 15_000;
+      while (service.isAnalysisPending(journey.id)) {
+        if (Date.now() > deadline)
+          throw new Error("moment analysis did not finish");
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      const candidates = store.listResolvedTracks(journey.id);
+      expect(candidates.length).toBeGreaterThan(0);
+      const audit = store.latestAuditEvent(journey.id, "moment.triggered");
+      expect(audit).toBeDefined();
+    },
+  );
 
-    expect(store.getJourney(journey.id)!.legIndex).toBe(1);
-    expect(store.latestAuditEvent(journey.id, "moment.charge_resume_leg")).toBeDefined();
-  });
+  it(
+    "a charge stop opens a new leg (legIndex increments)",
+    { timeout: 20_000 },
+    async () => {
+      const { service, store } = buildService({
+        SPOTIFY_REFILL_MIN_INTERVAL_SECONDS: "0",
+      });
+      const journey = await startSpotifyJourney(service);
+      expect(store.getJourney(journey.id)!.legIndex ?? 0).toBe(0);
+
+      // Telemetry: battery low for two readings, then a sustained jump after charging (oldest first).
+      const battery = [18, 20, 80, 82];
+      battery.forEach((batteryPercent, i) => {
+        store.saveTelemetry(
+          journey.id,
+          {
+            timestampIso: new Date(
+              Date.now() - (battery.length - i) * 60_000,
+            ).toISOString(),
+            countryCode: "FR",
+            countryName: "France",
+            batteryPercent,
+          } as any,
+          "cruise",
+        );
+      });
+
+      await service.evaluateJourneyMoments(journey.id);
+      const deadline = Date.now() + 15_000;
+      while (service.isAnalysisPending(journey.id)) {
+        if (Date.now() > deadline)
+          throw new Error("moment analysis did not finish");
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      expect(store.getJourney(journey.id)!.legIndex).toBe(1);
+      expect(
+        store.latestAuditEvent(journey.id, "moment.charge_resume_leg"),
+      ).toBeDefined();
+    },
+  );
 
   it("derives weatherFeel for the journey context from on-board temperature", async () => {
     const { service, store } = buildService();
@@ -743,9 +847,13 @@ describe("connect-mode queue sync", () => {
       .listResolvedTracks(journey.id)
       .find((t) => t.providerTrackId === model[0].providerTrackId)!;
     expect(
-      service.skipFeedbackFor(journey.id).artists.get(normalizeText(skipped.artist)),
+      service
+        .skipFeedbackFor(journey.id)
+        .artists.get(normalizeText(skipped.artist)),
     ).toBeGreaterThan(0);
-    expect(store.latestAuditEvent(journey.id, "feedback.skip_learned")).toBeDefined();
+    expect(
+      store.latestAuditEvent(journey.id, "feedback.skip_learned"),
+    ).toBeDefined();
   });
 
   it("a finished track (>=90% progress) is not counted as a skip", async () => {
@@ -869,13 +977,22 @@ describe("respects user takeover (podcast / foreign device)", () => {
 });
 
 describe("inactivity auto-stop", () => {
-  function backdateActivity(db: ReturnType<typeof buildService>["db"], journeyId: string, minutesAgo: number) {
+  function backdateActivity(
+    db: ReturnType<typeof buildService>["db"],
+    journeyId: string,
+    minutesAgo: number,
+  ) {
     const iso = new Date(Date.now() - minutesAgo * 60_000).toISOString();
-    db.run("UPDATE journeys SET last_active_at = ? WHERE id = ?", [iso, journeyId]);
+    db.run("UPDATE journeys SET last_active_at = ? WHERE id = ?", [
+      iso,
+      journeyId,
+    ]);
   }
 
   it("stops a journey with no activity past the threshold", async () => {
-    const { service, store, db } = buildService({ JOURNEY_INACTIVITY_STOP_MINUTES: "45" });
+    const { service, store, db } = buildService({
+      JOURNEY_INACTIVITY_STOP_MINUTES: "45",
+    });
     const journey = await startSpotifyJourney(service);
     backdateActivity(db, journey.id, 60);
 
@@ -886,7 +1003,9 @@ describe("inactivity auto-stop", () => {
   });
 
   it("keeps a journey with recent activity active", async () => {
-    const { service, store, db } = buildService({ JOURNEY_INACTIVITY_STOP_MINUTES: "45" });
+    const { service, store, db } = buildService({
+      JOURNEY_INACTIVITY_STOP_MINUTES: "45",
+    });
     const journey = await startSpotifyJourney(service);
     backdateActivity(db, journey.id, 5);
 
@@ -896,7 +1015,9 @@ describe("inactivity auto-stop", () => {
   });
 
   it("never auto-stops when the threshold is 0 (disabled)", async () => {
-    const { service, store, db } = buildService({ JOURNEY_INACTIVITY_STOP_MINUTES: "0" });
+    const { service, store, db } = buildService({
+      JOURNEY_INACTIVITY_STOP_MINUTES: "0",
+    });
     const journey = await startSpotifyJourney(service);
     backdateActivity(db, journey.id, 10_000);
 
@@ -906,7 +1027,9 @@ describe("inactivity auto-stop", () => {
   });
 
   it("telemetry ingest refreshes last activity", async () => {
-    const { service, store, db } = buildService({ JOURNEY_INACTIVITY_STOP_MINUTES: "45" });
+    const { service, store, db } = buildService({
+      JOURNEY_INACTIVITY_STOP_MINUTES: "45",
+    });
     const journey = await startSpotifyJourney(service);
     backdateActivity(db, journey.id, 60);
 
@@ -916,13 +1039,19 @@ describe("inactivity auto-stop", () => {
     } as never);
 
     const refreshed = store.getJourney(journey.id)!;
-    expect(Date.now() - new Date(refreshed.lastActiveAtIso!).getTime()).toBeLessThan(10_000);
+    expect(
+      Date.now() - new Date(refreshed.lastActiveAtIso!).getTime(),
+    ).toBeLessThan(10_000);
   });
 });
 
 describe("device pin (explicit choice defended)", () => {
   /** Explicitly pick a device (pin:true), like the driver tapping it in the picker. */
-  async function pickDevice(service: JourneyService, journeyId: string, deviceId: string) {
+  async function pickDevice(
+    service: JourneyService,
+    journeyId: string,
+    deviceId: string,
+  ) {
     await explicitlyPickDevice(service, journeyId, deviceId);
   }
 
@@ -944,8 +1073,12 @@ describe("device pin (explicit choice defended)", () => {
 
     expect(outcome).toBe("playing");
     // The explicit pick is defended — NOT rebound to the browser.
-    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("native-tesla-app");
-    expect(store.getPlaybackSession(journey.id)!.deviceId).toBe("native-tesla-app");
+    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe(
+      "native-tesla-app",
+    );
+    expect(store.getPlaybackSession(journey.id)!.deviceId).toBe(
+      "native-tesla-app",
+    );
     expect(
       store.latestAuditEvent(journey.id, "spotify.device_follow_suppressed"),
     ).toBeDefined();
@@ -977,8 +1110,12 @@ describe("device pin (explicit choice defended)", () => {
     const outcome = await service.reconcileSpotifyPlayback(journey.id);
 
     expect(outcome).toBe("playing");
-    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("native-tesla-app");
-    expect(store.getPlaybackSession(journey.id)!.deviceId).toBe("native-tesla-app");
+    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe(
+      "native-tesla-app",
+    );
+    expect(store.getPlaybackSession(journey.id)!.deviceId).toBe(
+      "native-tesla-app",
+    );
     expect(
       store.latestAuditEvent(journey.id, "spotify.device_follow_suppressed"),
     ).toBeDefined();
@@ -1014,7 +1151,10 @@ describe("device pin (explicit choice defended)", () => {
     store.savePlaybackSession({
       ...session,
       queuedTrackIds: [],
-      playedTrackIds: [...(session.playedTrackIds ?? []), ...session.queuedTrackIds],
+      playedTrackIds: [
+        ...(session.playedTrackIds ?? []),
+        ...session.queuedTrackIds,
+      ],
     });
     adapter.startCalls.length = 0;
 
@@ -1034,7 +1174,8 @@ describe("device pin (explicit choice defended)", () => {
 
     const deadline = Date.now() + 20_000;
     while (service.isAnalysisPending(journey.id)) {
-      if (Date.now() > deadline) throw new Error("reclaim analysis did not finish");
+      if (Date.now() > deadline)
+        throw new Error("reclaim analysis did not finish");
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   });
@@ -1057,8 +1198,12 @@ describe("device pin (explicit choice defended)", () => {
     );
 
     expect(result.deviceId).toBe("native-tesla-app");
-    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("native-tesla-app");
-    expect(store.getPlaybackSession(journey.id)!.deviceId).toBe("native-tesla-app");
+    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe(
+      "native-tesla-app",
+    );
+    expect(store.getPlaybackSession(journey.id)!.deviceId).toBe(
+      "native-tesla-app",
+    );
     expect(adapter.startCalls.length).toBe(0);
     expect(
       store.latestAuditEvent(journey.id, "spotify.device_register_suppressed"),
@@ -1070,11 +1215,16 @@ describe("device pin (explicit choice defended)", () => {
     const journey = await startSpotifyJourney(service);
     // Backend primitive: a non-pinning registration (transfer but pin:false) must not lock the
     // journey, so the passive Connect-follow stays free to track wherever playback actually is.
-    await service.registerSpotifyDevice(journey.id, "native-tesla-app", "ready", {
-      syncOnly: true,
-      transfer: true,
-      pin: false,
-    });
+    await service.registerSpotifyDevice(
+      journey.id,
+      "native-tesla-app",
+      "ready",
+      {
+        syncOnly: true,
+        transfer: true,
+        pin: false,
+      },
+    );
     const model = modelOf(store, journey.id);
 
     adapter.playbackState = {
@@ -1095,11 +1245,16 @@ describe("device pin (explicit choice defended)", () => {
     // The driver opened Spotify on the Tesla → the web client auto-adopts WITH pin:true, locking the
     // device exactly like an explicit picker tap (no in-browser player exists, so the active device
     // is always a real Connect device worth defending).
-    await service.registerSpotifyDevice(journey.id, "native-tesla-app", "ready", {
-      syncOnly: true,
-      transfer: true,
-      pin: true,
-    });
+    await service.registerSpotifyDevice(
+      journey.id,
+      "native-tesla-app",
+      "ready",
+      {
+        syncOnly: true,
+        transfer: true,
+        pin: true,
+      },
+    );
     const model = modelOf(store, journey.id);
 
     // A lingering open.spotify.com tab momentarily reports the same journey track as active.
@@ -1113,8 +1268,12 @@ describe("device pin (explicit choice defended)", () => {
 
     expect(outcome).toBe("playing");
     // The auto-adopted Tesla is defended — playback is NOT bounced back to the browser tab.
-    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("native-tesla-app");
-    expect(store.getPlaybackSession(journey.id)!.deviceId).toBe("native-tesla-app");
+    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe(
+      "native-tesla-app",
+    );
+    expect(store.getPlaybackSession(journey.id)!.deviceId).toBe(
+      "native-tesla-app",
+    );
     expect(
       store.latestAuditEvent(journey.id, "spotify.device_follow_suppressed"),
     ).toBeDefined();
@@ -1132,9 +1291,14 @@ describe("device pin (explicit choice defended)", () => {
       deviceId: "native-tesla-app",
       lockDevice: true,
     });
-    await service.registerSpotifyDevice(journey.id, "native-tesla-app", "ready", {
-      syncOnly: true,
-    });
+    await service.registerSpotifyDevice(
+      journey.id,
+      "native-tesla-app",
+      "ready",
+      {
+        syncOnly: true,
+      },
+    );
     const model = modelOf(store, journey.id);
 
     // A lingering open.spotify.com tab momentarily reports the same journey track as active.
@@ -1148,8 +1312,12 @@ describe("device pin (explicit choice defended)", () => {
 
     expect(outcome).toBe("playing");
     // The device chosen at start is defended — playback is NOT bounced to the browser tab.
-    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("native-tesla-app");
-    expect(store.getPlaybackSession(journey.id)!.deviceId).toBe("native-tesla-app");
+    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe(
+      "native-tesla-app",
+    );
+    expect(store.getPlaybackSession(journey.id)!.deviceId).toBe(
+      "native-tesla-app",
+    );
     expect(
       store.latestAuditEvent(journey.id, "spotify.device_follow_suppressed"),
     ).toBeDefined();
@@ -1164,9 +1332,14 @@ describe("device pin (explicit choice defended)", () => {
       provider: "spotify",
       deviceId: "tesla-web-device",
     });
-    await service.registerSpotifyDevice(journey.id, "tesla-web-device", "ready", {
-      syncOnly: true,
-    });
+    await service.registerSpotifyDevice(
+      journey.id,
+      "tesla-web-device",
+      "ready",
+      {
+        syncOnly: true,
+      },
+    );
     const model = modelOf(store, journey.id);
 
     adapter.playbackState = {
@@ -1178,7 +1351,9 @@ describe("device pin (explicit choice defended)", () => {
     await service.reconcileSpotifyPlayback(journey.id);
 
     // No lock requested → the follow is free to track the device playback actually moved to.
-    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("native-tesla-app");
+    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe(
+      "native-tesla-app",
+    );
   });
 
   it("explicit skips target the locked Tesla device even with a stale caller device id", async () => {
@@ -1194,7 +1369,9 @@ describe("device pin (explicit choice defended)", () => {
 
     expect(adapter.startCalls.at(-1)?.deviceId).toBe("native-tesla-app");
     expect(adapter.queueCalls.length).toBeGreaterThan(0);
-    expect(adapter.queueCalls.every((call) => call.deviceId === "native-tesla-app")).toBe(true);
+    expect(
+      adapter.queueCalls.every((call) => call.deviceId === "native-tesla-app"),
+    ).toBe(true);
   });
 });
 

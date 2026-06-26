@@ -107,6 +107,10 @@ export interface JourneyContext {
   recentlyPlayedArtists?: string[];
   /** Mood tags the listener has been skipping this session — surfaced so the scout avoids them. */
   skippedMoodTags?: string[];
+  /** Real, current releases (artist – title) used to ground the "current" LLM lens. */
+  currentReleases?: string[];
+  /** Taste artists with their Spotify ids for the release-radar candidate source. */
+  tasteArtistsWithIds?: Array<{ id: string; name: string }>;
   /** Live-Verkehrsverzögerung der Route in Minuten (Telemetrie). */
   trafficDelayMinutes?: number;
   /** Fahrstil aus Beschleunigungs-Varianz (nur Streaming-Telemetrie). */
@@ -222,7 +226,8 @@ export interface SongCandidate {
     | "listenbrainz"
     | "lastfm"
     | "music-wish"
-    | "lastfm-similar";
+    | "lastfm-similar"
+    | "spotify-fresh";
   confidence: number;
 }
 

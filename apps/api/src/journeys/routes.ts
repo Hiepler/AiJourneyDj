@@ -169,7 +169,8 @@ export async function registerJourneyRoutes(
           const m = store.latestMomentEvent(id);
           if (!m) return undefined;
           const ageMs = Date.now() - new Date(m.createdAtIso).getTime();
-          if (!(ageMs >= 0) || ageMs > MOMENT_BANNER_WINDOW_MS) return undefined;
+          if (!(ageMs >= 0) || ageMs > MOMENT_BANNER_WINDOW_MS)
+            return undefined;
           return { type: m.type, country: m.country, atIso: m.createdAtIso };
         })(),
       },
@@ -195,7 +196,10 @@ export async function registerJourneyRoutes(
   app.post("/journeys/:id/geo", async (request, reply) => {
     const { id } = z.object({ id: z.string() }).parse(request.params);
     const { lat, lon } = z
-      .object({ lat: z.number().min(-90).max(90), lon: z.number().min(-180).max(180) })
+      .object({
+        lat: z.number().min(-90).max(90),
+        lon: z.number().min(-180).max(180),
+      })
       .parse(request.body);
     service.getJourneyOrThrow(id);
     await service.setBrowserGeo(id, lat, lon);
@@ -307,13 +311,17 @@ export async function registerJourneyRoutes(
   });
 
   app.patch("/journeys/:id/music-wishes/:wishId", async (request) => {
-    const { id, wishId } = z.object({ id: z.string(), wishId: z.string() }).parse(request.params);
+    const { id, wishId } = z
+      .object({ id: z.string(), wishId: z.string() })
+      .parse(request.params);
     const payload = musicWishPatchSchema.parse(request.body);
     return service.updateMusicWish(id, wishId, payload);
   });
 
   app.post("/journeys/:id/music-wishes/:wishId/undo", async (request) => {
-    const { id, wishId } = z.object({ id: z.string(), wishId: z.string() }).parse(request.params);
+    const { id, wishId } = z
+      .object({ id: z.string(), wishId: z.string() })
+      .parse(request.params);
     return service.undoMusicWish(id, wishId);
   });
 

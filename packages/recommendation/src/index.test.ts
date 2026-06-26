@@ -9,6 +9,8 @@ import { normalizeText, songKey } from "@ai-journey-dj/core";
 
 import type { RecommendationPolicy } from "./index.js";
 
+import { releaseRecencyScore } from "./index.js";
+
 import {
   assertJourneyContextIsPrivacySafe,
   assertPromptIsPrivacySafe,
@@ -440,7 +442,9 @@ describe("recommendation", () => {
     });
     // Was 0.78 (fresh-only) — now relaxed so timeless singalongs can surface.
     expect(familyPolicy.recencyBias).toBeLessThan(0.78);
-    expect(familyPolicy.recencyBias).toBeGreaterThanOrEqual(soloPolicy.recencyBias);
+    expect(familyPolicy.recencyBias).toBeGreaterThanOrEqual(
+      soloPolicy.recencyBias,
+    );
 
     // The family fallback pool now contains real animated-film singalongs, not just current pop.
     const fallbackArtists = fallbackCandidates(
@@ -477,7 +481,11 @@ describe("recommendation", () => {
   });
 
   it("kids mode resolves the all-ages mood profile for coherent energy/valence", () => {
-    const kidsContext = { ...context, passengerMode: "solo" as const, kidsMode: true };
+    const kidsContext = {
+      ...context,
+      passengerMode: "solo" as const,
+      kidsMode: true,
+    };
     const brief = buildMusicalBrief(kidsContext);
     // Previously kids stayed on the time-of-day mood; now it shares family's all-ages profile.
     expect(brief.moodKey).toBe("family_singalong");
@@ -488,8 +496,16 @@ describe("recommendation", () => {
 
   it("kids mode draws fallback candidates from the all-ages family pool, even solo", () => {
     const poolArtists = (ctx: JourneyContext) =>
-      [...new Set(fallbackCandidates(ctx, 50).map((candidate) => candidate.artist))].sort();
-    const kids = poolArtists({ ...context, passengerMode: "solo", kidsMode: true });
+      [
+        ...new Set(
+          fallbackCandidates(ctx, 50).map((candidate) => candidate.artist),
+        ),
+      ].sort();
+    const kids = poolArtists({
+      ...context,
+      passengerMode: "solo",
+      kidsMode: true,
+    });
     const family = poolArtists({ ...context, passengerMode: "family" });
     const solo = poolArtists({ ...context, passengerMode: "solo" });
     // Kids (even on a solo drive) uses the same curated all-ages pool as family…
@@ -508,7 +524,10 @@ describe("recommendation", () => {
     expect(selectJourneyLenses(friends).map((lens) => lens.key)).toContain(
       "good_mood",
     );
-    const policy = buildRecommendationPolicy({ ...context, passengerMode: "friends" });
+    const policy = buildRecommendationPolicy({
+      ...context,
+      passengerMode: "friends",
+    });
     expect(policy.targetPopularity).toBe(66);
     expect(policy.preferDistinctArtists).toBe(true);
   });
@@ -524,8 +543,14 @@ describe("recommendation", () => {
       "cinematic_warmth",
     );
     // A couple gets a touch more discovery room than the solo baseline.
-    const couplePolicy = buildRecommendationPolicy({ ...context, passengerMode: "couple" });
-    const soloPolicy = buildRecommendationPolicy({ ...context, passengerMode: "solo" });
+    const couplePolicy = buildRecommendationPolicy({
+      ...context,
+      passengerMode: "couple",
+    });
+    const soloPolicy = buildRecommendationPolicy({
+      ...context,
+      passengerMode: "solo",
+    });
     expect(couplePolicy.targetDiscoveryRatio ?? 0).toBeGreaterThan(
       soloPolicy.targetDiscoveryRatio ?? 0,
     );
@@ -573,7 +598,8 @@ describe("recommendation", () => {
     const lenses = selectJourneyLenses(franceBrief);
     const localLens = lenses.find((lens) => lens.key === "local_language_hits");
     const neutralLens = lenses.find(
-      (lens) => lens.key !== "local_language_hits" && lens.key !== "regional_texture",
+      (lens) =>
+        lens.key !== "local_language_hits" && lens.key !== "regional_texture",
     );
     expect(localLens).toBeDefined();
     expect(neutralLens).toBeDefined();
@@ -582,7 +608,9 @@ describe("recommendation", () => {
     expect(buildLensPrompt(localLens!, franceBrief, 5)).toMatch(
       /prioritize current, well-loved songs sung in French by homegrown French artists/i,
     );
-    expect(buildLensPrompt(neutralLens!, franceBrief, 5)).not.toMatch(/Local touch/i);
+    expect(buildLensPrompt(neutralLens!, franceBrief, 5)).not.toMatch(
+      /Local touch/i,
+    );
   });
 
   it("local touch: unmapped country falls back to inferring the local language from the place", () => {
@@ -593,7 +621,9 @@ describe("recommendation", () => {
       (lens) => lens.key === "local_language_hits",
     );
     expect(localLens).toBeDefined();
-    expect(buildLensPrompt(localLens!, brief, 5)).toMatch(/LOCAL LANGUAGE of Northern Italy/i);
+    expect(buildLensPrompt(localLens!, brief, 5)).toMatch(
+      /LOCAL LANGUAGE of Northern Italy/i,
+    );
   });
 
   it("lastfmTracksToCandidates maps geo/tag chart tracks into chart-aware candidates", () => {
@@ -634,8 +664,20 @@ describe("recommendation", () => {
   it("lastfmTracksToCandidates drops Hörspiele from the German charts", () => {
     const candidates = lastfmTracksToCandidates(
       [
-        { artist: "Die drei ???", title: "Folge 215", rank: 1, country: "Germany", source: "lastfm-geo" },
-        { artist: "Miley Cyrus", title: "Flowers", rank: 2, country: "Germany", source: "lastfm-geo" },
+        {
+          artist: "Die drei ???",
+          title: "Folge 215",
+          rank: 1,
+          country: "Germany",
+          source: "lastfm-geo",
+        },
+        {
+          artist: "Miley Cyrus",
+          title: "Flowers",
+          rank: 2,
+          country: "Germany",
+          source: "lastfm-geo",
+        },
       ],
       context,
       ["pop"],
@@ -1248,7 +1290,12 @@ describe("buildMusicalBrief — time/trip/mood", () => {
       plannedDurationMinutes: 360,
       elapsedMinutes: 200,
       etaMinutes: 160,
-      driveState: { mode: "calm", reason: "long drive", intensity: 1, signals: [] },
+      driveState: {
+        mode: "calm",
+        reason: "long drive",
+        intensity: 1,
+        signals: [],
+      },
     });
     expect(brief.moodKey).toBe("night_cruise");
     expect(brief.timeBand).toBe("deep_night");
@@ -1561,7 +1608,9 @@ describe("scout grounding", () => {
       recentlyPlayedArtists: ["Dua Lipa", "The Weeknd"],
     });
     expect(brief.weatherFeel).toBe("warm and clear");
-    expect(brief.explorationAngle).toBe("favor a different era than the most obvious one");
+    expect(brief.explorationAngle).toBe(
+      "favor a different era than the most obvious one",
+    );
     expect(brief.avoidRecentArtists).toEqual(["Dua Lipa", "The Weeknd"]);
   });
 
@@ -1614,7 +1663,11 @@ describe("variety-aware ranking", () => {
 
     const gap: ResolvedTrack[] = [
       trackOf("weak", "Weak", "Weak", 30),
-      { ...trackOf("strong", "Strong", "Strong", 99), matchConfidence: 0.99, chartRank: 1 },
+      {
+        ...trackOf("strong", "Strong", "Strong", 99),
+        matchConfidence: 0.99,
+        chartRank: 1,
+      },
     ];
     const ranked = rankResolvedTracksForPolicy(gap, policy, {
       now: new Date("2026-06-03"),
@@ -1635,13 +1688,17 @@ describe("variety-aware ranking", () => {
     ];
     const ranked = rankResolvedTracksForPolicy(tracks, policy, {
       now: new Date("2026-06-03"),
-      recentSongPenalty: new Map([[songKey("Tired Artist", "Tired Song"), 0.5]]),
+      recentSongPenalty: new Map([
+        [songKey("Tired Artist", "Tired Song"), 0.5],
+      ]),
     });
     expect(ranked[0].providerTrackId).toBe("fresh");
 
     const exempt = rankResolvedTracksForPolicy(tracks, policy, {
       now: new Date("2026-06-03"),
-      recentSongPenalty: new Map([[songKey("Tired Artist", "Tired Song"), 0.5]]),
+      recentSongPenalty: new Map([
+        [songKey("Tired Artist", "Tired Song"), 0.5],
+      ]),
       fatigueExemptArtists: ["Tired Artist"],
     });
     expect(exempt[0].providerTrackId).toBe("tired");
@@ -1665,7 +1722,10 @@ describe("artist ban ranking", () => {
 
   it("hard-excludes banned artists but never exempted ones", () => {
     const policy = buildRecommendationPolicy(context);
-    const tracks: ResolvedTrack[] = [bTrack("a", "Banned Star"), bTrack("b", "Fresh Find")];
+    const tracks: ResolvedTrack[] = [
+      bTrack("a", "Banned Star"),
+      bTrack("b", "Fresh Find"),
+    ];
 
     const ranked = rankResolvedTracksForPolicy(tracks, policy, {
       now: new Date("2026-06-11"),
@@ -1679,5 +1739,60 @@ describe("artist ban ranking", () => {
       fatigueExemptArtists: ["Banned Star"],
     });
     expect(exempt.map((t) => t.providerTrackId).sort()).toEqual(["a", "b"]);
+  });
+});
+
+describe("releaseRecencyScore date-based curve", () => {
+  const now = new Date("2026-06-26T00:00:00Z");
+  it("scores brand-new releases highest and decays by days", () => {
+    expect(releaseRecencyScore("2026-06-10", now, true)).toBe(1);
+    expect(releaseRecencyScore("2026-04-01", now, true)).toBeCloseTo(0.85, 2);
+    expect(releaseRecencyScore("2025-10-01", now, true)).toBeCloseTo(0.6, 2);
+    // a classic stays above the legacy floor, never crashes to 0
+    expect(releaseRecencyScore("1999-01-01", now, true)).toBeGreaterThanOrEqual(
+      0.18,
+    );
+  });
+  it("falls back to year-buckets when dateScoring is off", () => {
+    expect(releaseRecencyScore("2026-01-01", now, false)).toBe(1);
+    expect(releaseRecencyScore("2020-01-01", now, false)).toBeCloseTo(0.58, 2);
+  });
+  it("returns the neutral default for a missing date", () => {
+    expect(releaseRecencyScore(undefined, now, true)).toBe(0.35);
+  });
+});
+
+describe("current lens grounding", () => {
+  const makeJourneyContext = (
+    overrides: Partial<JourneyContext>,
+  ): JourneyContext => ({
+    destination: "Hamburg",
+    coarseRegion: "Northern Germany",
+    localTimeIso: "2026-06-26T14:00:00.000Z",
+    etaMinutes: 60,
+    speedBucket: "highway",
+    phase: "cruise",
+    userPrompt: "upbeat drive",
+    passengerMode: "solo",
+    ...overrides,
+  });
+
+  it("injects real releases into the current lens prompt", () => {
+    const ctx = makeJourneyContext({
+      currentReleases: ["Bonobo – Fresh Drop", "Fresh Act – Chart Newcomer"],
+    });
+    const brief = buildMusicalBrief(ctx);
+    const currentLens = DEFAULT_LENSES.find((l) => l.key === "current")!;
+    const prompt = buildLensPrompt(currentLens, brief, 5);
+    expect(prompt).toContain("Bonobo – Fresh Drop");
+  });
+
+  it("does not inject for non-current lenses", () => {
+    const ctx = makeJourneyContext({
+      currentReleases: ["Bonobo – Fresh Drop"],
+    });
+    const brief = buildMusicalBrief(ctx);
+    const classics = DEFAULT_LENSES.find((l) => l.key === "classics")!;
+    expect(buildLensPrompt(classics, brief, 5)).not.toContain("Fresh Drop");
   });
 });

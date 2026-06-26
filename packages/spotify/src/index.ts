@@ -59,6 +59,14 @@ export interface SpotifyArtist {
   genres: string[];
 }
 
+export interface SpotifyAlbum {
+  id: string;
+  name: string;
+  artist: string;
+  releaseDate?: string;
+  albumType?: string;
+}
+
 export interface SpotifyAdapter {
   searchTracks(args: {
     accessToken: string;
@@ -77,6 +85,22 @@ export interface SpotifyAdapter {
     limit?: number;
     signal?: AbortSignal;
   }): Promise<SpotifyArtist[]>;
+  /** Recent albums/singles for an artist (release radar). Optional: adapters may omit it. */
+  getArtistAlbums?(args: {
+    accessToken: string;
+    artistId: string;
+    includeGroups?: string;
+    market?: string;
+    limit?: number;
+    signal?: AbortSignal;
+  }): Promise<SpotifyAlbum[]>;
+  /** Spotify's curated new releases for a country. Optional. */
+  getNewReleases?(args: {
+    accessToken: string;
+    country?: string;
+    limit?: number;
+    signal?: AbortSignal;
+  }): Promise<SpotifyAlbum[]>;
   transferPlayback(args: {
     accessToken: string;
     deviceId: string;
@@ -190,6 +214,46 @@ export class OfficialSpotifyAdapter implements SpotifyAdapter {
           )
         : [],
     }));
+  }
+
+  async getArtistAlbums(args: {
+    accessToken: string;
+    artistId: string;
+    includeGroups?: string;
+    market?: string;
+    limit?: number;
+    signal?: AbortSignal;
+  }): Promise<SpotifyAlbum[]> {
+    const url = new URL(`${this.baseUrl}/artists/${args.artistId}/albums`);
+    url.searchParams.set(
+      "include_groups",
+      args.includeGroups ?? "album,single",
+    );
+    if (args.market) url.searchParams.set("market", args.market);
+    url.searchParams.set("limit", String(args.limit ?? 20));
+    const payload = await this.request<any>(url, args.accessToken, {
+      signal: args.signal,
+    });
+    const items = Array.isArray(payload?.items) ? payload.items : [];
+    return items.map(mapSpotifyAlbum);
+  }
+
+  async getNewReleases(args: {
+    accessToken: string;
+    country?: string;
+    limit?: number;
+    signal?: AbortSignal;
+  }): Promise<SpotifyAlbum[]> {
+    const url = new URL(`${this.baseUrl}/browse/new-releases`);
+    if (args.country) url.searchParams.set("country", args.country);
+    url.searchParams.set("limit", String(args.limit ?? 20));
+    const payload = await this.request<any>(url, args.accessToken, {
+      signal: args.signal,
+    });
+    const items = Array.isArray(payload?.albums?.items)
+      ? payload.albums.items
+      : [];
+    return items.map(mapSpotifyAlbum);
   }
 
   async transferPlayback(args: {
@@ -338,9 +402,7 @@ export class OfficialSpotifyAdapter implements SpotifyAdapter {
           ? payload.currently_playing_type
           : undefined,
       activeDeviceId:
-        typeof payload?.device?.id === "string"
-          ? payload.device.id
-          : undefined,
+        typeof payload?.device?.id === "string" ? payload.device.id : undefined,
       activeDeviceName:
         typeof payload?.device?.name === "string"
           ? payload.device.name
@@ -623,6 +685,48 @@ export class MockSpotifyAdapter implements SpotifyAdapter {
       : artists;
   }
 
+  async getArtistAlbums(args: {
+    accessToken: string;
+    artistId: string;
+    includeGroups?: string;
+    market?: string;
+    limit?: number;
+    signal?: AbortSignal;
+  }): Promise<SpotifyAlbum[]> {
+    return [
+      {
+        id: `mock-album-${args.artistId}-fresh`,
+        name: "Fresh Drop",
+        artist: args.artistId.replace(/^mock-/, "").replace(/-/g, " "),
+        releaseDate: new Date(Date.now() - 11 * 86_400_000)
+          .toISOString()
+          .slice(0, 10),
+        albumType: "single",
+      },
+      {
+        id: `mock-album-${args.artistId}-old`,
+        name: "Old Record",
+        artist: args.artistId.replace(/^mock-/, "").replace(/-/g, " "),
+        releaseDate: "2019-03-01",
+        albumType: "album",
+      },
+    ];
+  }
+
+  async getNewReleases(): Promise<SpotifyAlbum[]> {
+    return [
+      {
+        id: "mock-newrelease-1",
+        name: "Chart Newcomer",
+        artist: "Fresh Act",
+        releaseDate: new Date(Date.now() - 16 * 86_400_000)
+          .toISOString()
+          .slice(0, 10),
+        albumType: "album",
+      },
+    ];
+  }
+
   async transferPlayback(): Promise<void> {}
 
   async resolvePlaybackDeviceId(args: {
@@ -821,7 +925,9 @@ export class SpotifyResolver {
           candidate.source === "music-wish" &&
           candidate.lens === "music-wish-artist";
         if (isArtistWish && best) {
-          const seenIds = new Set(resolved.map((track) => track.providerTrackId));
+          const seenIds = new Set(
+            resolved.map((track) => track.providerTrackId),
+          );
           for (const extra of results) {
             if (resolved.length >= target) break;
             if (seenIds.has(extra.id)) continue;
@@ -887,7 +993,10 @@ function spotifySearchQueryForCandidate(candidate: SongCandidate): string {
   if (candidate.isrc) {
     return `isrc:${candidate.isrc}`;
   }
-  if (candidate.source === "music-wish" && candidate.lens === "music-wish-artist") {
+  if (
+    candidate.source === "music-wish" &&
+    candidate.lens === "music-wish-artist"
+  ) {
     return `artist:"${candidate.artist.replaceAll('"', "").trim()}"`;
   }
   return `${candidate.artist} - ${candidate.title}`;
@@ -944,22 +1053,22 @@ export function bestSpotifyMatch(
       ? 0.99
       : artistWishOnly && artistMatch
         ? 0.9
-      : artistMatch && titleMatch
-        ? 0.94
-        : artistMatch && titleContains
-          ? 0.84
-          : titleMatch
-            ? 0.72
-            : 0.4;
+        : artistMatch && titleMatch
+          ? 0.94
+          : artistMatch && titleContains
+            ? 0.84
+            : titleMatch
+              ? 0.72
+              : 0.4;
     const reason = isrcMatch
       ? "isrc match"
       : artistWishOnly && artistMatch
         ? "artist wish match"
-      : artistMatch && titleMatch
-        ? "artist and title match"
-        : artistMatch && titleContains
-          ? "artist and fuzzy title match"
-          : "low-confidence fuzzy match";
+        : artistMatch && titleMatch
+          ? "artist and title match"
+          : artistMatch && titleContains
+            ? "artist and fuzzy title match"
+            : "low-confidence fuzzy match";
     const popularityTieBreak = (track.popularity ?? 0) / 10_000;
     const adjusted = confidence + popularityTieBreak;
     if (
@@ -1053,6 +1162,23 @@ function spreadGenres<T extends ResolvedTrack>(
     ordered.push(pick);
   }
   return ordered;
+}
+
+function mapSpotifyAlbum(item: any): SpotifyAlbum {
+  return {
+    id: String(item?.id ?? ""),
+    name: String(item?.name ?? "Unknown album"),
+    artist: Array.isArray(item?.artists)
+      ? item.artists
+          .map((a: { name?: string }) => a.name)
+          .filter(Boolean)
+          .join(", ")
+      : "Unknown artist",
+    releaseDate:
+      typeof item?.release_date === "string" ? item.release_date : undefined,
+    albumType:
+      typeof item?.album_type === "string" ? item.album_type : undefined,
+  };
 }
 
 function mapSpotifyTrack(item: any, market?: string): SpotifyTrackSearchResult {

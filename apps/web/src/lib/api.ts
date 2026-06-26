@@ -108,7 +108,12 @@ export interface JourneyDetail {
     coarseRegion?: string;
     countryName?: string;
     countryCode?: string;
-    geoSource?: "reverse-geocode" | "manual" | "simulated" | "browser-gps" | "destination";
+    geoSource?:
+      | "reverse-geocode"
+      | "manual"
+      | "simulated"
+      | "browser-gps"
+      | "destination";
     localTimeIso?: string;
     lastTelemetryAt?: string;
     driveMode?: "calm" | "focus" | "neutral";
@@ -118,7 +123,13 @@ export interface JourneyDetail {
     telemetrySource?: "streaming" | "polling";
     /** Freshly-fired journey moment for the family-event banner. */
     moment?: {
-      type: "traffic_jam" | "traffic_release" | "golden_hour" | "temp_swing" | "border_crossing" | "arrival";
+      type:
+        | "traffic_jam"
+        | "traffic_release"
+        | "golden_hour"
+        | "temp_swing"
+        | "border_crossing"
+        | "arrival";
       country?: string;
       atIso: string;
     };
@@ -142,7 +153,12 @@ export interface LiveTelemetry {
     coarseRegion?: string;
     countryName?: string;
     countryCode?: string;
-    geoSource?: "reverse-geocode" | "manual" | "simulated" | "browser-gps" | "destination";
+    geoSource?:
+      | "reverse-geocode"
+      | "manual"
+      | "simulated"
+      | "browser-gps"
+      | "destination";
     speedBucket?: string;
     temperatureBucket?: string;
     autopilotState?: "off" | "available" | "active" | "unknown";
@@ -313,7 +329,13 @@ export const api = {
     }),
   registerSpotifyDevice: (
     id: string,
-    payload: { deviceId: string; status?: string; syncOnly?: boolean; transfer?: boolean; pin?: boolean },
+    payload: {
+      deviceId: string;
+      status?: string;
+      syncOnly?: boolean;
+      transfer?: boolean;
+      pin?: boolean;
+    },
   ) =>
     request<JourneyDetail["playbackSession"]>(
       `/journeys/${id}/playback/device`,
@@ -356,13 +378,13 @@ export const api = {
       pinned?: boolean;
     },
   ) =>
-    request<{ wish: MusicWish; update?: { id: string; batchSize: number; status: string } }>(
-      `/journeys/${id}/music-wishes`,
-      {
-        method: "POST",
-        body: JSON.stringify(payload),
-      },
-    ),
+    request<{
+      wish: MusicWish;
+      update?: { id: string; batchSize: number; status: string };
+    }>(`/journeys/${id}/music-wishes`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   updateMusicWish: (
     id: string,
     wishId: string,
