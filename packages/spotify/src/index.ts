@@ -697,7 +697,7 @@ export class MockSpotifyAdapter implements SpotifyAdapter {
         id: `mock-album-${args.artistId}-fresh`,
         name: "Fresh Drop",
         artist: args.artistId.replace(/^mock-/, "").replace(/-/g, " "),
-        releaseDate: "2026-06-15",
+        releaseDate: new Date(Date.now() - 11 * 86_400_000).toISOString().slice(0, 10),
         albumType: "single",
       },
       {
@@ -716,7 +716,7 @@ export class MockSpotifyAdapter implements SpotifyAdapter {
         id: "mock-newrelease-1",
         name: "Chart Newcomer",
         artist: "Fresh Act",
-        releaseDate: "2026-06-10",
+        releaseDate: new Date(Date.now() - 16 * 86_400_000).toISOString().slice(0, 10),
         albumType: "album",
       },
     ];

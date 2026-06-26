@@ -753,7 +753,6 @@ export class Store {
   /** Resolved Tracks inkl. Kandidaten-Attribution für die whyLine. */
   listResolvedTracksDetailed(journeyId: string): Array<
     ReturnType<Store["listResolvedTracks"]>[number] & {
-      lens?: string;
       candidateLens?: string;
       candidateReason?: string;
       candidateSource?: string;
@@ -773,7 +772,6 @@ export class Store {
       return meta
         ? {
             ...track,
-            lens: meta.lens ?? undefined,
             candidateLens: meta.lens ?? undefined,
             candidateReason: meta.reason ?? undefined,
             candidateSource: meta.source ?? undefined,
