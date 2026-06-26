@@ -1162,7 +1162,25 @@ export class JourneyService {
     try {
       const cached = this.store.getCachedTasteProfile("local");
       if (cached) {
-        // cachedTasteArtistsWithIds may already be populated from a prior fetch this session.
+        // On a DB cache hit, cachedTasteArtistsWithIds is empty after a restart (in-memory only).
+        // Re-fetch top artists best-effort so the release-radar source has its seed even without
+        // waiting for the ~24h profile TTL to expire.
+        if (!this.cachedTasteArtistsWithIds && this.spotifyAdapter.getTopArtists) {
+          try {
+            const artists = await this.spotifyAdapter.getTopArtists({
+              accessToken,
+              timeRange: "medium_term",
+              limit: 30,
+              signal: AbortSignal.timeout(TASTE_FETCH_TIMEOUT_MS),
+            });
+            this.cachedTasteArtistsWithIds = artists
+              .filter((a) => a.id && a.name)
+              .map((a) => ({ id: a.id, name: a.name }));
+          } catch {
+            // Best-effort: if the fetch fails the release-radar source simply produces nothing
+            // this session, which is the same degraded behaviour as before this fix.
+          }
+        }
         return cached;
       }
       if (!this.spotifyAdapter.getTopArtists) {
