@@ -110,6 +110,6 @@ describe("release-radar source", () => {
     await service.analyzeJourney(journey.id, "manual");
 
     const detailed = store.listResolvedTracksDetailed(journey.id);
-    expect(detailed.some((t) => t.lens === "release-radar")).toBe(true);
+    expect(detailed.some((t) => t.candidateLens === "release-radar")).toBe(true);
   });
 });

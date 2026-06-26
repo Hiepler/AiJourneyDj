@@ -992,6 +992,11 @@ describe("getArtistAlbums", () => {
       artistId: "mock-bonobo",
     });
     expect(albums.length).toBeGreaterThan(0);
-    expect(albums.some((a) => a.releaseDate === "2026-06-15")).toBe(true);
+    // Fresh album date is now relative to now (11 days ago); verify it's within the last 30 days.
+    const freshAlbum = albums.find((a) => a.id?.endsWith("-fresh"));
+    expect(freshAlbum).toBeDefined();
+    const freshDate = freshAlbum?.releaseDate ? new Date(freshAlbum.releaseDate) : null;
+    expect(freshDate).not.toBeNull();
+    expect(Date.now() - freshDate!.getTime()).toBeLessThan(30 * 86_400_000);
   });
 });
