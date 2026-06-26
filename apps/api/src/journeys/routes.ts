@@ -24,6 +24,7 @@ const startSchema = z.object({
     .default("solo"),
   provider: z.enum(["spotify", "tidal"]).default("spotify"),
   deviceId: z.string().min(1).optional(),
+  lockDevice: z.boolean().optional(),
 });
 
 const deviceSchema = z.object({

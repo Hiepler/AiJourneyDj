@@ -149,10 +149,11 @@ const schema = z.object({
   WISH_QUOTA_MAX_SLOTS: z.coerce.number().int().min(0).max(5).default(3),
   PLAYBACK_RECLAIM_ENABLED: envBoolean(true),
   PLAYBACK_RECLAIM_COOLDOWN_SECONDS: z.coerce.number().int().min(10).default(120),
-  // After an explicit device pick (the driver chose the native Tesla app), honor that choice for
-  // this grace window: the passive Connect-follow won't rebind away to a transient/foreign active
-  // device (e.g. a lingering web player), and reclaim targets the pinned device. 0 disables.
-  PLAYBACK_DEVICE_PIN_SECONDS: z.coerce.number().int().min(0).default(45),
+  // Once a device is established for a journey (the driver picked it, or auto-adopt bound it), keep
+  // that device locked for the journey: passive Connect-follow / auto-adopt won't rebind away to a
+  // transient active device (e.g. a lingering web player), and reclaim/refills target the locked
+  // device. Set false to fall back to the legacy free-follow behavior.
+  PLAYBACK_DEVICE_LOCK_ENABLED: envBoolean(true),
   // Don't hijack the user: suppress automated pushes when they've taken over playback
   // (podcast/episode, a foreign device, or an off-journey track). Kill-switch, default on.
   PLAYBACK_RESPECT_USER_TAKEOVER: envBoolean(true),

@@ -123,6 +123,13 @@ export interface StartJourneyInput {
   passengerMode: "solo" | "couple" | "family" | "friends";
   provider?: StreamingProvider;
   deviceId?: string;
+  /**
+   * Defend the start device for the journey (passive Connect-follow / auto-adopt won't rebind away
+   * from it), exactly like an explicit picker tap. Set when Spotify is already playing on the
+   * driver's chosen Connect device at start (the regular flow) so playback can't bounce to a
+   * transient/foreign active device right after start. Ignored without a deviceId.
+   */
+  lockDevice?: boolean;
 }
 
 /** Minimal structured logger (satisfied by the Fastify/pino logger). */
@@ -148,14 +155,13 @@ export class JourneyService {
   /** Last autoplay-reclaim attempt per journey — prevents fighting a user who chose Spotify. */
   private readonly reclaimAttemptAt = new Map<string, number>();
   /**
-   * Explicitly chosen Connect device per journey, defended for a grace window. While the pin is
-   * live, the passive Connect-follow won't rebind away to a transient/foreign active device and
-   * reclaim targets the pinned device — so an explicit "play on the Tesla" pick isn't silently lost.
+   * The locked Connect device id per journey. While a lock is live, passive Connect-follow /
+   * auto-adopt won't rebind away to a transient active device and playback commands target the
+   * locked device — so a "play on the Tesla" choice isn't silently lost. Set when the device is
+   * established (explicit pick, auto-adopt, or a deviceId at start); cleared only when the journey
+   * stops or a new choice replaces it.
    */
-  private readonly devicePinByJourney = new Map<
-    string,
-    { deviceId: string; expiresAt: number }
-  >();
+  private readonly lockedDeviceByJourney = new Map<string, string>();
   /** Journeys with a candidate-pool pre-warm in flight (dedupe; never two at once). */
   private readonly prewarmInFlight = new Set<string>();
   /** Per-journey, per-moment-type last-fire timestamp (cooldown enforcement). */
@@ -411,6 +417,13 @@ export class JourneyService {
         targetBufferSize: 5,
         lastHeartbeatAt: new Date().toISOString(),
       });
+      // Spotify is already playing on the driver's chosen Connect device (the regular flow: the
+      // native Tesla app) → lock it for the journey before the first analyze, so curation/start
+      // targets it and the passive Connect-follow can't bounce playback to a transient/foreign
+      // active device right after start. Same defended treatment as an explicit picker tap.
+      if (input.deviceId && input.lockDevice) {
+        this.lockDevice(id, input.deviceId);
+      }
     }
 
     // Pull a live reading right now so the first queue is context-aware (region / ETA / phase),
@@ -435,6 +448,7 @@ export class JourneyService {
   }
 
   async stopJourney(id: string): Promise<JourneyRecord> {
+    this.lockedDeviceByJourney.delete(id);
     this.store.stopJourney(id);
     this.store.audit(id, "journey.stopped", "Journey stopped.");
     return this.getJourneyOrThrow(id);
@@ -1061,18 +1075,44 @@ export class JourneyService {
     }
   }
 
+  /** The locked Connect device id for a journey, or undefined if none is locked. */
+  private getLockedDeviceId(journeyId: string): string | undefined {
+    return this.lockedDeviceByJourney.get(journeyId);
+  }
+
   /**
-   * The live device pin for a journey, or undefined once it has expired (lazy cleanup). The pin
-   * defends a just-made explicit device choice against the passive Connect-follow / reclaim.
+   * Lock a journey to a Connect device so the passive Connect-follow / auto-adopt can't rebind away
+   * from it and playback commands target it. No-op when device locking is disabled. The single
+   * writer for the lock — every establishment path (explicit pick, auto-adopt, start) routes here.
    */
-  private getActiveDevicePin(journeyId: string): string | undefined {
-    const pin = this.devicePinByJourney.get(journeyId);
-    if (!pin) return undefined;
-    if (pin.expiresAt <= Date.now()) {
-      this.devicePinByJourney.delete(journeyId);
-      return undefined;
-    }
-    return pin.deviceId;
+  private lockDevice(journeyId: string, deviceId: string): void {
+    if (!this.config.PLAYBACK_DEVICE_LOCK_ENABLED) return;
+    this.lockedDeviceByJourney.set(journeyId, deviceId);
+    this.store.audit(
+      journeyId,
+      "spotify.device_locked",
+      "Locked the journey to the chosen Connect device.",
+      { deviceId },
+    );
+  }
+
+  /**
+   * The device a playback command should target: the locked device wins (a journey defends its
+   * chosen Connect device), then the caller-supplied device, then the journey/session device. The
+   * single source of the lock-first targeting precedence used by skip/transport/refill.
+   */
+  private resolveTargetDevice(
+    journeyId: string,
+    journey: JourneyRecord,
+    session: PlaybackSession | undefined,
+    callerDeviceId?: string,
+  ): string | undefined {
+    return (
+      this.getLockedDeviceId(journeyId) ??
+      callerDeviceId ??
+      journey.spotifyDeviceId ??
+      session?.deviceId
+    );
   }
 
   async registerSpotifyDevice(
@@ -1086,18 +1126,28 @@ export class JourneyService {
       throw new Error("Cannot register a Spotify device for a TIDAL journey.");
     }
 
-    // An explicit human pick (the driver tapped this device in the picker) pins it for a grace
-    // window so the passive Connect-follow can't rebind away to a transient/foreign active device.
-    // Opportunistic auto-adopt passes pin:false and must NOT set a pin. Set before analyze so the
-    // very first reconcile already honors it. 0s disables the feature.
-    if (options.pin && this.config.PLAYBACK_DEVICE_PIN_SECONDS > 0) {
-      this.devicePinByJourney.set(journeyId, {
-        deviceId,
-        expiresAt: Date.now() + this.config.PLAYBACK_DEVICE_PIN_SECONDS * 1000,
-      });
+    const existing = this.store.getPlaybackSession(journeyId);
+
+    // An explicit human pick (the driver tapped this device in the picker, or auto-adopt when they
+    // opened Spotify on the Tesla) locks it for the journey so the passive Connect-follow can't
+    // rebind away to a transient browser device. A non-locking registration passes pin:false.
+    if (options.pin) {
+      this.lockDevice(journeyId, deviceId);
     }
 
-    const existing = this.store.getPlaybackSession(journeyId);
+    const lockedDeviceId = this.getLockedDeviceId(journeyId);
+    if (!options.pin && lockedDeviceId && lockedDeviceId !== deviceId) {
+      this.store.audit(
+        journeyId,
+        "spotify.device_register_suppressed",
+        "Kept the explicitly chosen device; ignored passive device registration.",
+        { lockedDeviceId, requestedDeviceId: deviceId },
+      );
+      if (existing) {
+        return existing;
+      }
+    }
+
     // Device affinity: a passive registration (page load, refresh) must never steal playback
     // from a device that is actively playing (e.g. the Tesla via Connect). Only an explicit
     // user choice (transfer: true) may switch devices.
@@ -1222,8 +1272,12 @@ export class JourneyService {
       stored,
       session,
     );
-    const effectiveDeviceId =
-      deviceId ?? journey.spotifyDeviceId ?? session?.deviceId;
+    const effectiveDeviceId = this.resolveTargetDevice(
+      journeyId,
+      journey,
+      session,
+      deviceId,
+    );
     const accessToken = await this.spotifyAuth.getAccessToken();
 
     if (direction === "next") {
@@ -1385,8 +1439,12 @@ export class JourneyService {
       );
     }
     const session = this.store.getPlaybackSession(journeyId);
-    const effectiveDeviceId =
-      deviceId ?? journey.spotifyDeviceId ?? session?.deviceId;
+    const effectiveDeviceId = this.resolveTargetDevice(
+      journeyId,
+      journey,
+      session,
+      deviceId,
+    );
     if (effectiveDeviceId) {
       try {
         const accessToken = await this.spotifyAuth.getAccessToken();
@@ -2125,12 +2183,9 @@ export class JourneyService {
     }
 
     session = this.store.getPlaybackSession(journeyId);
-    // A vibe shift forces a start/transfer; target the explicitly pinned device first so we re-assert
-    // on the driver's chosen Connect device (e.g. the native Tesla app), never a lingering web player.
-    const deviceId =
-      (isVibeShift ? this.getActiveDevicePin(journeyId) : undefined) ??
-      journey.spotifyDeviceId ??
-      session?.deviceId;
+    // Target the locked device first so all starts/refills land on the driver's chosen Connect
+    // device (e.g. the native Tesla app), never a lingering web player.
+    const deviceId = this.resolveTargetDevice(journeyId, journey, session);
     // The visible model decides what reaches the device: Spotify must never be sent a
     // track the 5-slot model doesn't show, or the reconciler later flags our own queue
     // as "external". Compute the model first and sync exactly its delta.
@@ -3010,22 +3065,17 @@ export class JourneyService {
       result.kind === "drifted"
     ) {
       this.store.touchJourneyActivity(journeyId);
-      const pinnedDeviceId = this.getActiveDevicePin(journeyId);
-      // The pinned choice is now the active device → the driver's pick took effect. Clear the pin
-      // so a genuine later device move (e.g. to a phone) is followed immediately, not held off.
-      if (pinnedDeviceId && state.activeDeviceId === pinnedDeviceId) {
-        this.devicePinByJourney.delete(journeyId);
-      }
+      const lockedDeviceId = this.getLockedDeviceId(journeyId);
       if (state.activeDeviceId && state.activeDeviceId !== session.deviceId) {
-        if (pinnedDeviceId && state.activeDeviceId !== pinnedDeviceId) {
+        if (lockedDeviceId && state.activeDeviceId !== lockedDeviceId) {
           // A different (transient/foreign, e.g. a lingering web player) device is momentarily
-          // active right after an explicit pick. Don't follow it — that would silently undo the
-          // driver's choice. Keep the session bound to the pinned device so refills target it.
+          // active right after the device was locked. Don't follow it — that would silently undo
+          // the driver's choice. Keep the session bound to the locked device so refills target it.
           this.store.audit(
             journeyId,
             "spotify.device_follow_suppressed",
             "Kept the explicitly chosen device; ignored a transient active device.",
-            { pinnedDeviceId, activeDeviceId: state.activeDeviceId },
+            { lockedDeviceId, activeDeviceId: state.activeDeviceId },
           );
         } else {
           const previousDeviceId = session.deviceId;
@@ -3095,10 +3145,10 @@ export class JourneyService {
       const queueDrained = session.queuedTrackIds.length <= 1;
       // Reclaim onto the device autoplay actually took over (the one the user is listening on
       // via Connect), not the bound browser player — otherwise we'd steal back to the browser.
-      // An explicit pin wins: reclaim there so a queue-drained moment also (re)asserts the driver's
-      // chosen Tesla device instead of starting our next track on a transient/foreign active one.
+      // The lock wins: reclaim there so a queue-drained moment also (re)asserts the driver's chosen
+      // Tesla device instead of starting our next track on a transient/foreign active one.
       const reclaimDeviceId =
-        this.getActiveDevicePin(journeyId) ??
+        this.getLockedDeviceId(journeyId) ??
         state.activeDeviceId ??
         session.deviceId;
       if (

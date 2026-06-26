@@ -119,6 +119,18 @@ async function startSpotifyJourney(service: JourneyService) {
   return journey;
 }
 
+async function explicitlyPickDevice(
+  service: JourneyService,
+  journeyId: string,
+  deviceId: string,
+) {
+  await service.registerSpotifyDevice(journeyId, deviceId, "ready", {
+    syncOnly: true,
+    transfer: true,
+    pin: true,
+  });
+}
+
 /**
  * Reconstructs the ordered playback model exactly as the service does: [active, ...queued]
  * with the active track de-duplicated out of the queue. Returns both the internal track id
@@ -171,6 +183,44 @@ describe("reconcileSpotifyPlayback", () => {
     // The two skipped-over tracks moved into history (session stores internal track ids).
     expect(after.playedTrackIds).toContain(model[0].id);
     expect(after.playedTrackIds).toContain(model[1].id);
+  });
+
+  it("native Tesla skip advances and refills on the locked device without restarting", { timeout: 30_000 }, async () => {
+    const { service, store, adapter } = buildService({
+      SPOTIFY_REFILL_MIN_INTERVAL_SECONDS: "0",
+      SPOTIFY_REFILL_THRESHOLD: "4",
+      SPOTIFY_QUEUE_ADD_DELAY_MS: "0",
+    });
+    const journey = await startSpotifyJourney(service);
+    await explicitlyPickDevice(service, journey.id, "native-tesla-app");
+    const model = modelOf(store, journey.id);
+    expect(model.length).toBeGreaterThanOrEqual(3);
+
+    adapter.startCalls.length = 0;
+    adapter.queueCalls.length = 0;
+    adapter.transferCalls.length = 0;
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: model[2].providerTrackId,
+      queuedProviderTrackIds: [],
+      activeDeviceId: "native-tesla-app",
+      progressMs: 1_000,
+      durationMs: 180_000,
+    };
+
+    const outcome = await service.reconcileSpotifyPlayback(journey.id);
+
+    expect(outcome).toBe("playing");
+    const after = store.getPlaybackSession(journey.id)!;
+    expect((after.activeTrack as { providerTrackId: string }).providerTrackId).toBe(
+      model[2].providerTrackId,
+    );
+    expect(after.playedTrackIds).toContain(model[0].id);
+    expect(after.playedTrackIds).toContain(model[1].id);
+    expect(adapter.startCalls.length).toBe(0);
+    expect(adapter.transferCalls.length).toBe(0);
+    expect(adapter.queueCalls.length).toBeGreaterThan(0);
+    expect(adapter.queueCalls.every((call) => call.deviceId === "native-tesla-app")).toBe(true);
   });
 
   it("pauses curation (status=external) when an off-journey track is playing", async () => {
@@ -873,11 +923,7 @@ describe("inactivity auto-stop", () => {
 describe("device pin (explicit choice defended)", () => {
   /** Explicitly pick a device (pin:true), like the driver tapping it in the picker. */
   async function pickDevice(service: JourneyService, journeyId: string, deviceId: string) {
-    await service.registerSpotifyDevice(journeyId, deviceId, "ready", {
-      syncOnly: true,
-      transfer: true,
-      pin: true,
-    });
+    await explicitlyPickDevice(service, journeyId, deviceId);
   }
 
   it("does not follow away from an explicitly pinned device to a transient one", async () => {
@@ -905,13 +951,13 @@ describe("device pin (explicit choice defended)", () => {
     ).toBeDefined();
   });
 
-  it("clears the pin once the chosen device is active, then follows a genuine later move", async () => {
+  it("keeps the explicit lock once the chosen device is active", async () => {
     const { service, store, adapter } = buildService();
     const journey = await startSpotifyJourney(service);
     await pickDevice(service, journey.id, "native-tesla-app");
     const model = modelOf(store, journey.id);
 
-    // The chosen device becomes the active one → pin fulfilled.
+    // The chosen device becomes the active one.
     adapter.playbackState = {
       isPlaying: true,
       activeProviderTrackId: model[0].providerTrackId,
@@ -920,24 +966,27 @@ describe("device pin (explicit choice defended)", () => {
     };
     await service.reconcileSpotifyPlayback(journey.id);
 
-    // Later the driver genuinely moves playback to their phone in the Spotify app — we follow it
-    // (the pin no longer suppresses, proving it's a short grace window, not a permanent lock).
+    // Later a foreground browser/player briefly reports the same journey track as active. The
+    // explicit Tesla choice is sticky for the journey and must not be followed away.
     adapter.playbackState = {
       isPlaying: true,
       activeProviderTrackId: model[0].providerTrackId,
       queuedProviderTrackIds: [],
-      activeDeviceId: "pixel-phone",
+      activeDeviceId: "this-browser",
     };
     const outcome = await service.reconcileSpotifyPlayback(journey.id);
 
     expect(outcome).toBe("playing");
-    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("pixel-phone");
-    expect(store.getPlaybackSession(journey.id)!.deviceId).toBe("pixel-phone");
+    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("native-tesla-app");
+    expect(store.getPlaybackSession(journey.id)!.deviceId).toBe("native-tesla-app");
+    expect(
+      store.latestAuditEvent(journey.id, "spotify.device_follow_suppressed"),
+    ).toBeDefined();
   });
 
-  it("follows immediately when the pin window is disabled (0s)", async () => {
+  it("follows immediately when explicit device locking is disabled", async () => {
     const { service, store, adapter } = buildService({
-      PLAYBACK_DEVICE_PIN_SECONDS: "0",
+      PLAYBACK_DEVICE_LOCK_ENABLED: "false",
     });
     const journey = await startSpotifyJourney(service);
     await pickDevice(service, journey.id, "native-tesla-app");
@@ -990,10 +1039,37 @@ describe("device pin (explicit choice defended)", () => {
     }
   });
 
-  it("auto-adopt (pin:false) does not pin — a later follow is not suppressed", async () => {
+  it("auto-adopt (pin:false) cannot override an explicit lock", async () => {
     const { service, store, adapter } = buildService();
     const journey = await startSpotifyJourney(service);
-    // Opportunistic auto-adopt path: transfer but NO pin.
+    await pickDevice(service, journey.id, "native-tesla-app");
+    adapter.startCalls.length = 0;
+
+    const result = await service.registerSpotifyDevice(
+      journey.id,
+      "this-browser",
+      "ready",
+      {
+        syncOnly: true,
+        transfer: true,
+        pin: false,
+      },
+    );
+
+    expect(result.deviceId).toBe("native-tesla-app");
+    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("native-tesla-app");
+    expect(store.getPlaybackSession(journey.id)!.deviceId).toBe("native-tesla-app");
+    expect(adapter.startCalls.length).toBe(0);
+    expect(
+      store.latestAuditEvent(journey.id, "spotify.device_register_suppressed"),
+    ).toBeDefined();
+  });
+
+  it("passive registration (pin:false) does not lock — the follow stays free", async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+    // Backend primitive: a non-pinning registration (transfer but pin:false) must not lock the
+    // journey, so the passive Connect-follow stays free to track wherever playback actually is.
     await service.registerSpotifyDevice(journey.id, "native-tesla-app", "ready", {
       syncOnly: true,
       transfer: true,
@@ -1009,8 +1085,116 @@ describe("device pin (explicit choice defended)", () => {
     };
     await service.reconcileSpotifyPlayback(journey.id);
 
-    // No pin → the follow is free to track the active device (auto-adopt never locks a choice).
+    // No lock → the follow is free to track the active device.
     expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("this-browser");
+  });
+
+  it("an auto-adopted establishment (pin:true) is defended against a later transient device", async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await startSpotifyJourney(service);
+    // The driver opened Spotify on the Tesla → the web client auto-adopts WITH pin:true, locking the
+    // device exactly like an explicit picker tap (no in-browser player exists, so the active device
+    // is always a real Connect device worth defending).
+    await service.registerSpotifyDevice(journey.id, "native-tesla-app", "ready", {
+      syncOnly: true,
+      transfer: true,
+      pin: true,
+    });
+    const model = modelOf(store, journey.id);
+
+    // A lingering open.spotify.com tab momentarily reports the same journey track as active.
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: model[0].providerTrackId,
+      queuedProviderTrackIds: [],
+      activeDeviceId: "this-browser",
+    };
+    const outcome = await service.reconcileSpotifyPlayback(journey.id);
+
+    expect(outcome).toBe("playing");
+    // The auto-adopted Tesla is defended — playback is NOT bounced back to the browser tab.
+    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("native-tesla-app");
+    expect(store.getPlaybackSession(journey.id)!.deviceId).toBe("native-tesla-app");
+    expect(
+      store.latestAuditEvent(journey.id, "spotify.device_follow_suppressed"),
+    ).toBeDefined();
+  });
+
+  it("a journey started on an already-active device (lockDevice) defends it against a transient device", async () => {
+    const { service, store, adapter } = buildService();
+    // Regular flow: Spotify is already playing on the native Tesla app; the driver opens the Tesla
+    // browser and starts the journey, which resolves that active device and asks to lock it.
+    const journey = await service.startJourney({
+      destination: "Dijon",
+      userPrompt: "cinematic golden-hour drive",
+      passengerMode: "solo",
+      provider: "spotify",
+      deviceId: "native-tesla-app",
+      lockDevice: true,
+    });
+    await service.registerSpotifyDevice(journey.id, "native-tesla-app", "ready", {
+      syncOnly: true,
+    });
+    const model = modelOf(store, journey.id);
+
+    // A lingering open.spotify.com tab momentarily reports the same journey track as active.
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: model[0].providerTrackId,
+      queuedProviderTrackIds: [],
+      activeDeviceId: "this-browser",
+    };
+    const outcome = await service.reconcileSpotifyPlayback(journey.id);
+
+    expect(outcome).toBe("playing");
+    // The device chosen at start is defended — playback is NOT bounced to the browser tab.
+    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("native-tesla-app");
+    expect(store.getPlaybackSession(journey.id)!.deviceId).toBe("native-tesla-app");
+    expect(
+      store.latestAuditEvent(journey.id, "spotify.device_follow_suppressed"),
+    ).toBeDefined();
+  });
+
+  it("a journey started without lockDevice keeps the free passive follow", async () => {
+    const { service, store, adapter } = buildService();
+    const journey = await service.startJourney({
+      destination: "Dijon",
+      userPrompt: "cinematic golden-hour drive",
+      passengerMode: "solo",
+      provider: "spotify",
+      deviceId: "tesla-web-device",
+    });
+    await service.registerSpotifyDevice(journey.id, "tesla-web-device", "ready", {
+      syncOnly: true,
+    });
+    const model = modelOf(store, journey.id);
+
+    adapter.playbackState = {
+      isPlaying: true,
+      activeProviderTrackId: model[0].providerTrackId,
+      queuedProviderTrackIds: [],
+      activeDeviceId: "native-tesla-app",
+    };
+    await service.reconcileSpotifyPlayback(journey.id);
+
+    // No lock requested → the follow is free to track the device playback actually moved to.
+    expect(store.getJourney(journey.id)!.spotifyDeviceId).toBe("native-tesla-app");
+  });
+
+  it("explicit skips target the locked Tesla device even with a stale caller device id", async () => {
+    const { service, adapter } = buildService({
+      SPOTIFY_QUEUE_ADD_DELAY_MS: "0",
+    });
+    const journey = await startSpotifyJourney(service);
+    await pickDevice(service, journey.id, "native-tesla-app");
+    adapter.startCalls.length = 0;
+    adapter.queueCalls.length = 0;
+
+    await service.skipSpotifyTrack(journey.id, "next", "this-browser");
+
+    expect(adapter.startCalls.at(-1)?.deviceId).toBe("native-tesla-app");
+    expect(adapter.queueCalls.length).toBeGreaterThan(0);
+    expect(adapter.queueCalls.every((call) => call.deviceId === "native-tesla-app")).toBe(true);
   });
 });
 
