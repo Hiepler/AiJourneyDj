@@ -137,7 +137,6 @@ const schema = z.object({
   // Variety engine: keep journeys fresh without breaking telemetry/mood fit.
   VARIETY_BUCKET_MINUTES: z.coerce.number().int().min(1).default(20),
   LASTFM_CHART_ROTATION_ENABLED: envBoolean(true),
-  LASTFM_CHART_WINDOW: z.coerce.number().int().min(10).max(1000).default(100),
   LASTFM_CHART_PAGES: z.coerce.number().int().min(1).max(10).default(3),
   RANK_JITTER_ENABLED: envBoolean(true),
   RANK_JITTER_STRENGTH: z.coerce.number().min(0).max(0.3).default(0.06),
