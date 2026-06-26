@@ -1177,6 +1177,8 @@ export interface MusicalBrief {
   localLanguage?: string;
   /** Demonym for homegrown-artist phrasing (e.g. "French", "Italian"), paired with localLanguage. */
   localDemonym?: string;
+  /** Confirmed real current releases (artist – title) for the "current" lens grounding line. */
+  currentReleases?: string[];
 }
 
 /**
@@ -1974,6 +1976,7 @@ export function buildMusicalBrief(
     skippedMoodTags: context.skippedMoodTags ?? [],
     storyDirective: context.storyDirective,
     momentDirective: context.momentDirective,
+    currentReleases: context.currentReleases,
   };
 }
 
@@ -2306,6 +2309,9 @@ export function buildLensPrompt(
       : brief.passengerMode === "family"
         ? "Family mode: prefer clean/radio-friendly current pop, dance-pop, upbeat singalong tracks; avoid explicit, aggressive, gloomy, sleepy, or novelty children-song picks."
         : "",
+    lens.key === "current" && brief.currentReleases?.length
+      ? `These tracks are confirmed real and current — prefer this stylistic neighborhood and never invent release dates: ${brief.currentReleases.slice(0, 12).join("; ")}.`
+      : "",
     `For each song also give "energy" (0=calm … 1=high) and "valence" (-1=dark … +1=bright) — your honest read of how the recording actually feels. These sequence the set into a smooth arc, so be discerning rather than defaulting to the middle.`,
     `Return ONLY JSON {"songs":[{"artist","title","year","genre","reason","role","energy","valence"}]} with exactly ${count} real, released songs.`,
     `If you include role, use one of: ${SET_ROLES.join(", ")}.`,

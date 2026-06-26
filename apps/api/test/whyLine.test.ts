@@ -37,5 +37,12 @@ describe("composeWhyLine", () => {
       composeWhyLine({ lens: "deep_cuts", reason: "fits the interlude", source: "gemini" }),
     ).toContain("Deep Cut");
     expect(composeWhyLine(undefined)).toBeUndefined();
+    expect(
+      composeWhyLine({ lens: "release-radar", reason: "x", source: "spotify-fresh" }),
+    ).toContain("Frisch erschienen");
+    // moment still wins over a fresh track
+    expect(
+      composeWhyLine({ lens: "moment:traffic_release", reason: "x", source: "spotify-fresh" }),
+    ).toContain("Stau aufgelöst");
   });
 });

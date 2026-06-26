@@ -32,6 +32,9 @@ export function composeWhyLine(input?: WhyLineInput): string | undefined {
   if (lens.startsWith("lastfm-similar:")) {
     return `Weil dir ${lens.slice("lastfm-similar:".length)} gefällt`;
   }
+  if (lens === "release-radar") {
+    return "Frisch erschienen — neu von diesem Artist";
+  }
   if (input.chartCountry) {
     return `Gerade angesagt in ${input.chartCountry}`;
   }
