@@ -11,6 +11,7 @@ import type {
 import { clampConfidence, normalizeText, songKey } from "@ai-journey-dj/core";
 import { seededJitter } from "./variety.js";
 import { looksLikeSpokenWord } from "./spokenWord.js";
+import { releaseAgeDays } from "./releaseRadar.js";
 import type { LastfmChartTrack } from "./lastfm.js";
 import type {
   TimeBand,
@@ -1400,12 +1401,9 @@ export function releaseRecencyScore(
     if (age <= 15) return 0.35;
     return 0.18;
   }
-  const parsed = new Date(
-    releaseDate.length === 4 ? `${releaseDate}-01-01` : releaseDate,
-  );
-  const ms = parsed.getTime();
-  if (!Number.isFinite(ms)) return 0.35;
-  const ageDays = Math.max(0, (now.getTime() - ms) / 86_400_000);
+  const rawAge = releaseAgeDays(releaseDate, now);
+  if (rawAge === null) return 0.35;
+  const ageDays = Math.max(0, rawAge);
   if (ageDays <= 30) return 1;
   if (ageDays <= 90) return 0.85;
   if (ageDays <= 365) return 0.6;
@@ -3048,6 +3046,7 @@ export {
 export {
   releaseRadarCandidates,
   isWithinFreshWindow,
+  releaseAgeDays,
   type AlbumSource,
 } from "./releaseRadar.js";
 

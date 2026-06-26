@@ -31,6 +31,7 @@ import {
   isSpotifyRateLimitError,
   queueTracksForBuffer,
   type SpotifyAdapter,
+  type SpotifyAlbum,
   type SpotifyDevice,
 } from "@ai-journey-dj/spotify";
 import type {
@@ -190,20 +191,13 @@ export class JourneyService {
    */
   private readonly freshAlbumSource: AlbumSource | undefined;
   /**
-   * In-memory album cache per artist id: { at: epoch ms, albums: RadarAlbum[] }.
-   * Restart-loss is acceptable (same as moment cooldowns). TTL = FRESH_CACHE_HOURS.
+   * In-memory album cache keyed by artist id (plus a reserved key for the curated new-releases
+   * feed): { at: epoch ms, albums }. Restart-loss is acceptable (same as moment cooldowns).
+   * TTL = FRESH_CACHE_HOURS.
    */
   private readonly freshAlbumCache = new Map<
     string,
-    {
-      at: number;
-      albums: Array<{
-        id: string;
-        name: string;
-        artist: string;
-        releaseDate?: string;
-      }>;
-    }
+    { at: number; albums: SpotifyAlbum[] }
   >();
   /**
    * Cached taste artists with Spotify ids — populated alongside the TasteProfile by loadTasteProfile.
@@ -230,50 +224,37 @@ export class JourneyService {
       const cacheMap = this.freshAlbumCache;
       const getCacheHours = () => this.config.FRESH_CACHE_HOURS;
       const getAccessToken = () => this.spotifyAuth.getAccessToken();
+      // Reserved cache key for the curated new-releases feed; ':' never appears in a Spotify id.
+      const NEW_RELEASES_KEY = "::new-releases::";
+      const cachedFetch = async (
+        key: string,
+        fetchAlbums: (token: string) => Promise<SpotifyAlbum[]>,
+      ): Promise<SpotifyAlbum[]> => {
+        const now = Date.now();
+        const cached = cacheMap.get(key);
+        if (cached && now - cached.at < getCacheHours() * 3_600_000) {
+          return cached.albums;
+        }
+        let token: string;
+        try {
+          token = await getAccessToken();
+        } catch {
+          return [];
+        }
+        const albums = await fetchAlbums(token);
+        cacheMap.set(key, { at: now, albums });
+        return albums;
+      };
       this.freshAlbumSource = {
-        async getArtistAlbums(artistId: string) {
-          const now = Date.now();
-          const cached = cacheMap.get(artistId);
-          if (cached && now - cached.at < getCacheHours() * 3_600_000) {
-            return cached.albums;
-          }
-          let token: string;
-          try {
-            token = await getAccessToken();
-          } catch {
-            return [];
-          }
-          const albums = await adapter.getArtistAlbums!({
-            accessToken: token,
-            artistId,
-          });
-          const mapped = albums.map((a) => ({
-            id: a.id,
-            name: a.name,
-            artist: a.artist,
-            releaseDate: a.releaseDate,
-          }));
-          cacheMap.set(artistId, { at: now, albums: mapped });
-          return mapped;
-        },
+        getArtistAlbums: (artistId: string) =>
+          cachedFetch(artistId, (accessToken) =>
+            adapter.getArtistAlbums!({ accessToken, artistId }),
+          ),
         getNewReleases: adapter.getNewReleases
-          ? async () => {
-              let token: string;
-              try {
-                token = await getAccessToken();
-              } catch {
-                return [];
-              }
-              const albums = await adapter.getNewReleases!({
-                accessToken: token,
-              });
-              return albums.map((a) => ({
-                id: a.id,
-                name: a.name,
-                artist: a.artist,
-                releaseDate: a.releaseDate,
-              }));
-            }
+          ? () =>
+              cachedFetch(NEW_RELEASES_KEY, (accessToken) =>
+                adapter.getNewReleases!({ accessToken }),
+              )
           : undefined,
       };
     }
@@ -2011,9 +1992,9 @@ export class JourneyService {
         if (freshForGrounding.length > 0) {
           scoutContext = {
             ...scoutContext,
-            currentReleases: freshForGrounding
-              .slice(0, 12)
-              .map((c) => `${c.artist} – ${c.title}`),
+            currentReleases: freshForGrounding.map(
+              (c) => `${c.artist} – ${c.title}`,
+            ),
           };
         }
       }
@@ -3703,9 +3684,7 @@ export class JourneyService {
         : Promise.resolve([] as SongCandidate[]);
     // Vierte Quelle: Release-Radar — frische Alben/Singles der Taste-Artisten + kuratierte New Releases.
     const freshPromise: Promise<SongCandidate[]> =
-      this.config.SPOTIFY_FRESH_ENABLED &&
-      this.spotifyAdapter.getArtistAlbums &&
-      this.freshAlbumSource
+      this.config.SPOTIFY_FRESH_ENABLED && this.freshAlbumSource
         ? releaseRadarCandidates({
             albums: this.freshAlbumSource,
             tasteArtists: this.freshSeedArtists(context),
