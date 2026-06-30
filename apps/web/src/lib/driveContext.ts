@@ -26,11 +26,11 @@ export type TelemetryLiveness =
 export const TELEMETRY_LIVE_THRESHOLD_SECONDS = 180;
 
 function formatAgo(secondsAgo: number): string {
-  if (secondsAgo < 5) return "gerade eben";
-  if (secondsAgo < 60) return `vor ${secondsAgo}s`;
-  if (secondsAgo < 3600) return `vor ${Math.floor(secondsAgo / 60)} min`;
+  if (secondsAgo < 5) return "just now";
+  if (secondsAgo < 60) return `${secondsAgo}s ago`;
+  if (secondsAgo < 3600) return `${Math.floor(secondsAgo / 60)} min ago`;
   const hours = Math.floor(secondsAgo / 3600);
-  return `vor ${hours} Std`;
+  return `${hours} h ago`;
 }
 
 /**
@@ -38,15 +38,15 @@ function formatAgo(secondsAgo: number): string {
  * `nowMs` is injected so this stays pure and unit-testable.
  */
 export function telemetryLiveness(lastTelemetryAt: string | undefined, nowMs: number): TelemetryLiveness {
-  if (!lastTelemetryAt) return { state: "none", label: "Keine Live-Daten" };
+  if (!lastTelemetryAt) return { state: "none", label: "No live data" };
   const ts = new Date(lastTelemetryAt).getTime();
-  if (Number.isNaN(ts)) return { state: "none", label: "Keine Live-Daten" };
+  if (Number.isNaN(ts)) return { state: "none", label: "No live data" };
   const secondsAgo = Math.max(0, Math.round((nowMs - ts) / 1000));
   const ago = formatAgo(secondsAgo);
   if (secondsAgo <= TELEMETRY_LIVE_THRESHOLD_SECONDS) {
     return { state: "live", secondsAgo, label: `Live · ${ago}` };
   }
-  return { state: "stale", secondsAgo, label: `Zuletzt ${ago}` };
+  return { state: "stale", secondsAgo, label: `Last seen ${ago}` };
 }
 
 const PACE_LABEL: Record<string, string> = {

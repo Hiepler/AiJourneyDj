@@ -58,21 +58,21 @@ import {
 
 const passengerModes = ["solo", "couple", "family", "friends"];
 
-// Short German labels for where the journey's location came from (shown on the cockpit geo chip).
+// Short labels for where the journey's location came from (shown on the cockpit geo chip).
 const GEO_SOURCE_LABELS: Record<string, string> = {
   "reverse-geocode": "GPS",
   "browser-gps": "Browser",
-  destination: "Ziel",
-  manual: "manuell",
+  destination: "Destination",
+  manual: "Manual",
   simulated: "Sim",
 };
 
-// German labels for the Adaptive Drive Mode reasons surfaced by the backend.
+// Labels for the Adaptive Drive Mode reasons surfaced by the backend.
 const DRIVE_MODE_REASON_LABELS: Record<string, string> = {
-  "heavy traffic": "zäher Verkehr",
-  "low range": "wenig Reichweite",
-  "wintry conditions": "winterlich",
-  "long night drive": "Nachtfahrt",
+  "heavy traffic": "heavy traffic",
+  "low range": "low range",
+  "wintry conditions": "wintry",
+  "long night drive": "night drive",
 };
 
 // Synced-karaoke tuning. Lines light up slightly early so they're easy to follow; we re-sync the
@@ -103,21 +103,21 @@ function momentEventLabel(moment: { type: string; country?: string }): {
       return {
         emoji: "🎉",
         text: moment.country
-          ? `Willkommen in ${moment.country}!`
-          : "Neues Land!",
+          ? `Welcome to ${moment.country}!`
+          : "New country!",
       };
     case "traffic_release":
-      return { emoji: "🚀", text: "Freie Fahrt — der Stau ist durch!" };
+      return { emoji: "🚀", text: "Open road — the jam has cleared!" };
     case "traffic_jam":
-      return { emoji: "🧘", text: "Stau — wir bleiben entspannt" };
+      return { emoji: "🧘", text: "Traffic — let's stay relaxed" };
     case "golden_hour":
-      return { emoji: "🌇", text: "Golden Hour" };
+      return { emoji: "🌇", text: "Golden hour" };
     case "temp_swing":
-      return { emoji: "🌡️", text: "Das Wetter dreht" };
+      return { emoji: "🌡️", text: "The weather is turning" };
     case "arrival":
-      return { emoji: "🏁", text: "Gleich da!" };
+      return { emoji: "🏁", text: "Almost there!" };
     default:
-      return { emoji: "✨", text: "Neuer Moment" };
+      return { emoji: "✨", text: "New moment" };
   }
 }
 
@@ -455,10 +455,10 @@ export function App() {
     if (health.spotifyMock) return "Demo mode — playback is simulated.";
     if (activeJourneyId && detail) {
       if (needsConnectDevice) {
-        return "Starte Spotify einmal auf dem Tesla-Display — die Wiedergabe wird dann automatisch übernommen.";
+        return "Open Spotify once on the Tesla display — playback will then be picked up automatically.";
       }
       if (needsConnectStart) {
-        return "Tracks ready — tap “Im Auto starten” to play on your Spotify Connect device.";
+        return "Tracks ready — tap “Start in the car” to play on your Spotify Connect device.";
       }
       const queueHint =
         detail.journey.provider === "spotify"
@@ -642,20 +642,20 @@ export function App() {
 
   const VIBE_DIRECTIVES = [
     {
-      label: "⚡ Schneller",
-      text: "schneller",
+      label: "⚡ Faster",
+      text: "faster",
       match: (i: { type?: string; direction?: string }) =>
         i?.type === "tempo" && i.direction === "faster",
     },
     {
-      label: "🎤 Mitsingen",
-      text: "was zum Mitsingen",
+      label: "🎤 Singalong",
+      text: "singalong",
       match: (i: { type?: string; role?: string }) =>
         i?.type === "role" && i.role === "singalong",
     },
     {
-      label: "☀️ Wach bleiben",
-      text: "mach alle wieder wach",
+      label: "☀️ Stay awake",
+      text: "wake everyone up",
       match: (i: { type?: string; role?: string }) =>
         i?.type === "role" && i.role === "wake_up",
     },
@@ -753,7 +753,7 @@ export function App() {
       const deviceId = await resolveConnectDeviceId();
       if (!deviceId) {
         setError(
-          "Kein aktives Spotify-Gerät gefunden. Starte Spotify einmal auf dem Tesla-Display — die Wiedergabe wird dann automatisch übernommen.",
+          "No active Spotify device found. Open Spotify once on the Tesla display — playback will then be picked up automatically.",
         );
         return;
       }
@@ -1211,9 +1211,9 @@ export function App() {
           {activeJourneyId && detail?.playbackSession?.status === "external" ? (
             <span
               className="chip warn"
-              title="In Spotify läuft ein Track außerhalb der Journey — der DJ pausiert die Kuratierung, bis wieder ein Journey-Song spielt."
+              title="A track is playing in Spotify outside the journey — the DJ pauses curation until a journey song plays again."
             >
-              <Radio size={15} /> Externe Wiedergabe
+              <Radio size={15} /> External playback
             </span>
           ) : null}
           {activeJourneyId &&
@@ -1223,15 +1223,15 @@ export function App() {
               className={`chip telemetry ${liveness.state}`}
               title={
                 liveness.state === "live"
-                  ? "Live-Fahrdaten von Tesla kommen gerade rein"
+                  ? "Live drive data from Tesla is coming in"
                   : liveness.state === "stale"
-                    ? "Letzte Tesla-Fahrdaten – aktuell kein frischer Abruf (Auto schläft/parkt?)"
-                    : "Noch keine Live-Fahrdaten abgerufen – Journey starten und losfahren"
+                    ? "Last Tesla drive data – no fresh reading right now (car asleep/parked?)"
+                    : "No live drive data fetched yet – start a journey and drive off"
               }
             >
               <Satellite size={15} />{" "}
               {liveness.state === "none"
-                ? "Keine Live-Daten"
+                ? "No live data"
                 : liveness.state === "live" &&
                     detail?.context?.telemetrySource === "streaming"
                   ? "Live (Streaming)"
@@ -1243,13 +1243,13 @@ export function App() {
               className={`chip drive-mode ${driveMode}`}
               title={`${
                 driveMode === "calm"
-                  ? "Ruhigere, vertraute Musik für die aktuelle Fahrsituation"
-                  : "Wachere Musik gegen Monotonie"
+                  ? "Calmer, familiar music for the current drive situation"
+                  : "More alert music to fight monotony"
               }${
                 detail.context?.driveModeSignals?.length
                   ? ` · ${detail.context.driveModeSignals.join(", ")}`
                   : ""
-              } — Komfortfunktion, kein Sicherheitssystem.`}
+              } — comfort feature, not a safety system.`}
             >
               {driveMode === "calm" ? <Wind size={15} /> : <Moon size={15} />}{" "}
               {driveMode === "calm" ? "Calm" : "Focus"}
@@ -1513,7 +1513,7 @@ export function App() {
                       next.toLowerCase() !== dest.toLowerCase() ? (
                       <>
                         {next}{" "}
-                        <span className="dest-final">· Ziel: {dest}</span>
+                        <span className="dest-final">· Destination: {dest}</span>
                       </>
                     ) : (
                       dest
@@ -1551,7 +1551,7 @@ export function App() {
                         className="geo-input"
                         disabled={geoBusy}
                         onChange={(event) => setGeoInput(event.target.value)}
-                        placeholder="Ort/Land, z.B. Marseille"
+                        placeholder="City/country, e.g. Marseille"
                         value={geoInput}
                       />
                       <button
@@ -1594,14 +1594,14 @@ export function App() {
                         );
                         setGeoEditing(true);
                       }}
-                      title="Standort korrigieren — bestimmt den lokalen Musik-Touch"
+                      title="Correct location — sets the local music touch"
                       type="button"
                     >
                       <MapPin size={13} />
                       <span className="geo-place">
                         {detail?.context?.coarseRegion ??
                           detail?.context?.countryName ??
-                          "Standort setzen"}
+                          "Set location"}
                       </span>
                       {detail?.context?.geoSource ? (
                         <span className="geo-src">
@@ -1637,7 +1637,7 @@ export function App() {
                       onClick={() => setKaraokeOn((on) => !on)}
                       type="button"
                     >
-                      <Mic size={14} /> {karaokeOn ? "Lyrics aus" : "Mitsingen"}
+                      <Mic size={14} /> {karaokeOn ? "Lyrics off" : "Sing along"}
                     </button>
                   </div>
                 </div>
@@ -1671,11 +1671,11 @@ export function App() {
               )}
 
               {karaokeOn && heroTrack ? (
-                <div className="karaoke" aria-label="Songtext zum Mitsingen">
+                <div className="karaoke" aria-label="Lyrics to sing along">
                   {lyricsLoading && lyrics?.trackId !== heroTrack.id ? (
                     <p className="karaoke-empty">
-                      <Loader2 className="spin" size={16} /> Songtext wird
-                      geladen…
+                      <Loader2 className="spin" size={16} /> Loading
+                      lyrics…
                     </p>
                   ) : lyrics?.synced && lyrics.synced.length > 0 ? (
                     <div className="karaoke-lines">
@@ -1702,7 +1702,7 @@ export function App() {
                     <pre className="karaoke-plain">{lyrics.plain}</pre>
                   ) : (
                     <p className="karaoke-empty">
-                      Kein Songtext gefunden — einfach mitsummen 🎶
+                      No lyrics found — just hum along 🎶
                     </p>
                   )}
                 </div>
@@ -1729,8 +1729,8 @@ export function App() {
                   )
                 ) : needsConnectDevice ? (
                   <span className="transport-note">
-                    Starte Spotify einmal auf dem Tesla-Display — die Wiedergabe
-                    wird dann automatisch übernommen.
+                    Open Spotify once on the Tesla display — playback will then
+                    be picked up automatically.
                   </span>
                 ) : needsConnectStart ? (
                   <button
@@ -1744,7 +1744,7 @@ export function App() {
                     ) : (
                       <Play size={22} />
                     )}
-                    <span>Im Auto starten</span>
+                    <span>Start in the car</span>
                   </button>
                 ) : (
                   <>
@@ -1782,7 +1782,7 @@ export function App() {
                 {boundDeviceId &&
                 (sessionStatus === "playing" || sessionStatus === "paused") ? (
                   <span className="transport-note">
-                    {sessionStatus === "playing" ? "Spielt" : "Pausiert"} auf{" "}
+                    {sessionStatus === "playing" ? "Playing" : "Paused"} on{" "}
                     {activeDeviceLabel(devices, boundDeviceId)}
                   </span>
                 ) : null}
@@ -1885,7 +1885,7 @@ export function App() {
                   className={`vibe-toggle${detail?.journey.kidsMode ? " on" : ""}`}
                   disabled={kidsBusy || !activeJourneyId}
                   onClick={toggleKidsMode}
-                  title="Kids am Steuer — Disney- & Film-Singalongs für die Kleinen"
+                  title="Kids at the wheel — Disney & movie singalongs for the little ones"
                   type="button"
                 >
                   🧸 Kids
@@ -1904,13 +1904,13 @@ export function App() {
                   <input
                     disabled={wishLoading || !activeJourneyId}
                     onChange={(event) => setWishText(event.target.value)}
-                    placeholder="Musikwunsch..."
+                    placeholder="Music wish..."
                     value={wishText}
                   />
                   <button
                     className="icon-btn"
                     disabled={wishLoading || !wishText.trim()}
-                    title="Wunsch senden"
+                    title="Send wish"
                     type="submit"
                   >
                     {wishLoading ? (
@@ -1925,8 +1925,8 @@ export function App() {
                     onClick={startWishSpeech}
                     title={
                       speechSupported
-                        ? "Spracheingabe"
-                        : "Spracheingabe ist in diesem Browser nicht verfügbar"
+                        ? "Voice input"
+                        : "Voice input is not available in this browser"
                     }
                     type="button"
                   >
@@ -1934,7 +1934,7 @@ export function App() {
                   </button>
                 </form>
                 <div className="wish-chips">
-                  {["Mitsingen", "Mehr Pop", "Weniger ruhig"].map((chip) => (
+                  {["Singalong", "More pop", "Less mellow"].map((chip) => (
                     <button
                       disabled={wishLoading}
                       key={chip}
@@ -1949,7 +1949,7 @@ export function App() {
                     onClick={() => setWishDrawerOpen(true)}
                     type="button"
                   >
-                    Wünsche
+                    Wishes
                   </button>
                 </div>
                 {detail?.activeMusicWishes?.length ? (
@@ -2043,16 +2043,16 @@ export function App() {
                   aria-pressed={detail?.context?.adaptiveModeEnabled ?? true}
                   className={`ghost adaptive-btn${(detail?.context?.adaptiveModeEnabled ?? true) ? " on" : ""}`}
                   onClick={toggleAdaptiveMode}
-                  title="Passt die Musik automatisch an die Fahrsituation an (Stau, Reichweite, Nachtfahrt). Komfortfunktion — kein Sicherheitssystem."
+                  title="Automatically adapts the music to the drive situation (traffic, range, night driving). Comfort feature — not a safety system."
                   type="button"
                 >
                   <Wind size={14} /> Adaptive Drive Mode:{" "}
                   {(detail?.context?.adaptiveModeEnabled ?? true)
-                    ? "An"
-                    : "Aus"}
+                    ? "On"
+                    : "Off"}
                 </button>
                 <small className="muted">
-                  Komfortfunktion, kein Sicherheitssystem.
+                  Comfort feature, not a safety system.
                 </small>
               </div>
 
@@ -2136,10 +2136,10 @@ export function App() {
                 </div>
                 <div className="wish-drawer-chips">
                   {[
-                    "Spiel jetzt gute Laune",
-                    "Mehr 90s Pop",
-                    "Nicht so langsam",
-                    "Für die Kinder hinten",
+                    "Play now feelgood",
+                    "More 90s pop",
+                    "Not so slow",
+                    "For the kids",
                   ].map((chip) => (
                     <button
                       disabled={wishLoading}
@@ -2187,7 +2187,7 @@ export function App() {
                       </div>
                     ))
                   ) : (
-                    <p className="muted">Noch keine Musikwünsche.</p>
+                    <p className="muted">No music wishes yet.</p>
                   )}
                 </div>
               </div>
