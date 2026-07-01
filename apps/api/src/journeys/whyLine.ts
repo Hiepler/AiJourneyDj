@@ -1,4 +1,4 @@
-/** Server-komponierte „Warum dieser Song?“-Zeile — die UI rendert nur den String. */
+/** Server-composed "Why this song?" line — the UI only renders the string. */
 export interface WhyLineInput {
   lens?: string | null;
   reason?: string | null;
@@ -7,13 +7,13 @@ export interface WhyLineInput {
 }
 
 const MOMENT_LINES: Record<string, string> = {
-  "moment:traffic_release": "Stau aufgelöst — der Befreiungs-Banger",
-  "moment:traffic_jam": "Geduldig durch den Stau",
-  "moment:golden_hour": "Golden Hour — cinematischer Swell",
-  "moment:temp_swing": "Das Wetter dreht — die Musik dreht mit",
-  "moment:border_crossing": "Local Hit",
-  "taste-anchor:opening": "Opening Title — dein vertrauter Einstieg",
-  "taste-anchor:arrival": "Arrival Anthem — das Finale vor der Ankunft",
+  "moment:traffic_release": "Jam cleared — the release banger",
+  "moment:traffic_jam": "Patient through the jam",
+  "moment:golden_hour": "Golden hour — cinematic swell",
+  "moment:temp_swing": "The weather's turning — the music turns with it",
+  "moment:border_crossing": "Local hit",
+  "taste-anchor:opening": "Opening title — your familiar way in",
+  "taste-anchor:arrival": "Arrival anthem — the finale before you arrive",
 };
 
 export function composeWhyLine(input?: WhyLineInput): string | undefined {
@@ -22,24 +22,24 @@ export function composeWhyLine(input?: WhyLineInput): string | undefined {
   for (const [key, line] of Object.entries(MOMENT_LINES)) {
     if (lens.startsWith(key)) {
       return key === "moment:border_crossing" && input.chartCountry
-        ? `${line}: gerade angesagt in ${input.chartCountry}`
+        ? `${line}: trending in ${input.chartCountry} right now`
         : line;
     }
   }
   if (input.source === "music-wish" || lens.startsWith("music-wish")) {
-    return "Dein Wunsch wirkt hier";
+    return "Your wish is shaping this";
   }
   if (lens.startsWith("lastfm-similar:")) {
-    return `Weil dir ${lens.slice("lastfm-similar:".length)} gefällt`;
+    return `Because you like ${lens.slice("lastfm-similar:".length)}`;
   }
   if (lens === "release-radar") {
-    return "Frisch erschienen — neu von diesem Artist";
+    return "Fresh release — new from this artist";
   }
   if (input.chartCountry) {
-    return `Gerade angesagt in ${input.chartCountry}`;
+    return `Trending in ${input.chartCountry} right now`;
   }
   if (lens === "deep_cuts") {
-    return "Deep Cut — abseits der üblichen Namen";
+    return "Deep cut — off the usual names";
   }
   return input.reason ?? undefined;
 }

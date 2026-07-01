@@ -74,7 +74,7 @@ export async function momentumRadioCandidates(args: {
       artist,
       title,
       lens: `lastfm-similar:${seedLabel}`,
-      reason: `Weil dir ${seedLabel} gefällt`,
+      reason: `Because you like ${seedLabel}`,
       source: "lastfm-similar",
       confidence,
       moodTags: args.moodTags,

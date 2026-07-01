@@ -2589,8 +2589,8 @@ export class JourneyService {
       role: "anchor",
       reason:
         kind === "opening"
-          ? `Vertrauter Einstieg: ein Signature-Track von ${artist}, passend zur Ziel-Stimmung`
-          : `Arrival anthem: ein vertrautes ${artist}-Finale vor der Ankunft`,
+          ? `Familiar way in: a signature track from ${artist}, matched to the destination mood`
+          : `Arrival anthem: a familiar ${artist} finale before you arrive`,
       source: "fallback",
       confidence: 0.9,
       moodTags: ["anchor"],

@@ -23,7 +23,7 @@ const ROLE_PATTERNS: Array<{
   patterns: string[];
 }> = [
   { role: "singalong", patterns: ["mitsingen", "singalong", "karaoke"] },
-  { role: "wake_up", patterns: ["wach", "aufwecken", "energie", "wieder wach"] },
+  { role: "wake_up", patterns: ["wach", "aufwecken", "energie", "wieder wach", "wake", "energy"] },
   { role: "kids", patterns: ["kinder", "kids", "hinten", "backseat"] },
   { role: "calm_down", patterns: ["ruhiger", "calm", "runter", "entspannen"] },
 ];
@@ -125,23 +125,23 @@ export function roleTagsForWish(
 
 export function musicWishSummary(intents: MusicWishIntent[]): string {
   const first = intents[0];
-  if (!first) return "Ich bin nicht sicher, welchen Musikwunsch du meinst.";
-  if (first.type === "song") return `${first.immediate ? "Spiel jetzt" : "Mehr"} ${first.title}`;
-  if (first.type === "artist") return `Mehr ${first.artist}`;
-  if (first.type === "genre") return `Mehr ${first.genre}`;
-  if (first.type === "mood") return `Mehr ${first.moodTags.join(", ")}`;
+  if (!first) return "I'm not sure which music wish you mean.";
+  if (first.type === "song") return `${first.immediate ? "Play now" : "More"} ${first.title}`;
+  if (first.type === "artist") return `More ${first.artist}`;
+  if (first.type === "genre") return `More ${first.genre}`;
+  if (first.type === "mood") return `More ${first.moodTags.join(", ")}`;
   if (first.type === "role") {
     return {
-      singalong: "Mehr Musik zum Mitsingen",
-      wake_up: "Mehr Energie für die nächsten Songs",
-      kids: "Mehr Musik für die Kinder",
-      calm_down: "Ruhiger für die nächsten Songs",
+      singalong: "More music to sing along to",
+      wake_up: "More energy for the next songs",
+      kids: "More music for the kids",
+      calm_down: "Calmer for the next songs",
     }[first.role];
   }
   if (first.type === "tempo") {
     return first.direction === "faster"
-      ? "Schneller & energiegeladener"
-      : "Langsamer & entspannter";
+      ? "Faster & more energetic"
+      : "Slower & more relaxed";
   }
   if (first.type === "avoid") {
     const avoid = [
@@ -149,7 +149,7 @@ export function musicWishSummary(intents: MusicWishIntent[]): string {
       ...(first.moodTags ?? []),
       ...(first.songKeys ?? []),
     ].join(", ");
-    return avoid ? `Vermeide ${avoid}` : "Vermeide diesen Vibe";
+    return avoid ? `Avoid ${avoid}` : "Avoid this vibe";
   }
   return assertNever(first);
 }
@@ -159,7 +159,7 @@ export function parseMusicWish(rawText: string): ParsedMusicWish {
   const normalized = normalizeText(text);
   const intents: MusicWishIntent[] = [];
 
-  const immediateMatch = text.match(/^(spiel|spiele|play)\s+(jetzt|sofort)\s+(.+)$/i);
+  const immediateMatch = text.match(/^(spiel|spiele|play)\s+(jetzt|sofort|now)\s+(.+)$/i);
   if (immediateMatch?.[3]) {
     const subject = cleanSubject(immediateMatch[3]);
     const artistTitle = subject.match(/^(.+)\s+-\s+(.+)$/);
@@ -207,11 +207,11 @@ export function parseMusicWish(rawText: string): ParsedMusicWish {
     return { rawText: text, status: "active", confidence: 0.82, summary: musicWishSummary(intents), intents };
   }
 
-  const avoidMatch = text.match(/^(keine|kein|nicht|weniger|not|no)\s+(schon wieder\s+)?(.+)$/i);
+  const avoidMatch = text.match(/^(keine|kein|nicht|weniger|less|not|no)\s+(schon wieder\s+)?(.+)$/i);
   if (avoidMatch?.[3]) {
     const subject = cleanSubject(avoidMatch[3]);
     const key = normalizeText(subject);
-    if (/langsam|ruhig|mellow|sleepy|schlaf/i.test(subject)) {
+    if (/langsam|ruhig|mellow|sleepy|schlaf|slow|calm|quiet/i.test(subject)) {
       intents.push({ type: "avoid", moodTags: ["mellow", "sleepy", "slow"] });
     } else if (GENRE_TAGS[key]) {
       intents.push({ type: "avoid", moodTags: GENRE_TAGS[key] });

@@ -19,7 +19,7 @@ describe("parseMusicWish", () => {
     expect(wish.intents).toEqual([
       { type: "song", artist: "Taylor Swift", title: "Shake It Off", immediate: true },
     ]);
-    expect(musicWishSummary(wish.intents)).toBe("Spiel jetzt Shake It Off");
+    expect(musicWishSummary(wish.intents)).toBe("Play now Shake It Off");
   });
 
   it("parses non-immediate artist boosts", () => {
@@ -29,7 +29,7 @@ describe("parseMusicWish", () => {
     expect(wish.intents).toEqual([
       { type: "artist", artist: "Taylor Swift", strength: 0.9 },
     ]);
-    expect(musicWishSummary(wish.intents)).toBe("Mehr Taylor Swift");
+    expect(musicWishSummary(wish.intents)).toBe("More Taylor Swift");
   });
 
   it("treats a short bare artist name as a low-friction artist boost", () => {
@@ -40,7 +40,7 @@ describe("parseMusicWish", () => {
     expect(wish.intents).toEqual([
       { type: "artist", artist: "Nina Chuba", strength: 0.86 },
     ]);
-    expect(musicWishSummary(wish.intents)).toBe("Mehr Nina Chuba");
+    expect(musicWishSummary(wish.intents)).toBe("More Nina Chuba");
   });
 
   it("parses avoid wishes without interrupting playback", () => {
@@ -68,13 +68,40 @@ describe("parseMusicWish", () => {
     ]);
   });
 
+  it("parses the English cockpit preset chips", () => {
+    expect(parseMusicWish("Singalong").intents).toEqual([
+      { type: "role", role: "singalong", strength: 0.86 },
+    ]);
+    expect(parseMusicWish("wake everyone up").intents).toEqual([
+      { type: "role", role: "wake_up", strength: 0.86 },
+    ]);
+    expect(parseMusicWish("faster").intents).toEqual([
+      { type: "tempo", direction: "faster", strength: 0.8 },
+    ]);
+    expect(parseMusicWish("More pop").intents).toEqual([
+      { type: "mood", moodTags: ["pop"], strength: 0.82 },
+    ]);
+    expect(parseMusicWish("Less mellow").intents).toEqual([
+      { type: "avoid", moodTags: ["mellow", "sleepy", "slow"] },
+    ]);
+    expect(parseMusicWish("Not so slow").intents).toEqual([
+      { type: "avoid", moodTags: ["mellow", "sleepy", "slow"] },
+    ]);
+    expect(parseMusicWish("For the kids").intents).toEqual([
+      { type: "role", role: "kids", strength: 0.86 },
+    ]);
+    expect(parseMusicWish("Play now feelgood").intents).toEqual([
+      { type: "song", title: "feelgood", immediate: true },
+    ]);
+  });
+
   it("returns pending confirmation for ambiguous text", () => {
     const wish = parseMusicWish("irgendwie anders");
 
     expect(wish.status).toBe("pending_confirmation");
     expect(wish.confidence).toBeLessThan(0.65);
     expect(wish.intents).toEqual([]);
-    expect(wish.summary).toBe("Ich bin nicht sicher, welchen Musikwunsch du meinst.");
+    expect(wish.summary).toBe("I'm not sure which music wish you mean.");
   });
 });
 
@@ -88,7 +115,7 @@ describe("MusicWish shared type", () => {
       intents: [{ type: "artist", artist: "Taylor Swift", strength: 0.9 }],
       status: "active",
       confidence: 0.82,
-      summary: "Mehr Taylor Swift",
+      summary: "More Taylor Swift",
       pinned: true,
       expiresAfterTracks: 5,
       remainingTracks: 5,

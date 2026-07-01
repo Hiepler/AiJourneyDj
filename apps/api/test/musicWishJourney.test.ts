@@ -68,13 +68,13 @@ describe("music wish routes", () => {
       wish: {
         rawText: "mehr Taylor Swift",
         status: "active",
-        summary: "Mehr Taylor Swift",
+        summary: "More Taylor Swift",
       },
     });
 
     const detail = await app.inject({ method: "GET", url: `/journeys/${journey.id}` });
     expect(detail.json().activeMusicWishes).toEqual([
-      expect.objectContaining({ summary: "Mehr Taylor Swift", status: "active" }),
+      expect.objectContaining({ summary: "More Taylor Swift", status: "active" }),
     ]);
 
     await app.close();
@@ -174,14 +174,14 @@ describe("music wish routes", () => {
     expect(wishResponse.json()).toMatchObject({
       wish: {
         status: "active",
-        summary: "Mehr Nina Chuba",
+        summary: "More Nina Chuba",
         intents: [{ type: "artist", artist: "Nina Chuba" }],
       },
     });
 
     const detail = await waitForAnalysis(app, journey.id);
     expect(detail.activeMusicWishes).toEqual([
-      expect.objectContaining({ summary: "Mehr Nina Chuba", status: "active" }),
+      expect.objectContaining({ summary: "More Nina Chuba", status: "active" }),
     ]);
     const queuedTracks = detail.playbackSession.queuedTrackIds.map((id: string) =>
       detail.tracks.find((track: { id: string }) => track.id === id),

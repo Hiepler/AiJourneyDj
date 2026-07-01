@@ -54,23 +54,23 @@ describe("telemetryLiveness", () => {
   const now = Date.parse("2026-06-01T12:00:00.000Z");
 
   it("reports none when no telemetry has ever arrived", () => {
-    expect(telemetryLiveness(undefined, now)).toEqual({ state: "none", label: "Keine Live-Daten" });
+    expect(telemetryLiveness(undefined, now)).toEqual({ state: "none", label: "No live data" });
   });
 
   it("reports none for an unparseable timestamp", () => {
     expect(telemetryLiveness("not-a-date", now).state).toBe("none");
   });
 
-  it("treats a very recent reading as live with 'gerade eben'", () => {
+  it("treats a very recent reading as live with 'just now'", () => {
     const result = telemetryLiveness("2026-06-01T11:59:58.000Z", now);
     expect(result.state).toBe("live");
-    expect(result.label).toBe("Live · gerade eben");
+    expect(result.label).toBe("Live · just now");
   });
 
   it("shows seconds for a reading within the live window", () => {
     const result = telemetryLiveness("2026-06-01T11:59:15.000Z", now); // 45s ago
     expect(result.state).toBe("live");
-    expect(result.label).toBe("Live · vor 45s");
+    expect(result.label).toBe("Live · 45s ago");
   });
 
   it("is still live at the 3-minute boundary", () => {
@@ -81,13 +81,13 @@ describe("telemetryLiveness", () => {
   it("becomes stale just past the threshold and shows minutes", () => {
     const result = telemetryLiveness("2026-06-01T11:55:00.000Z", now); // 5 min ago
     expect(result.state).toBe("stale");
-    expect(result.label).toBe("Zuletzt vor 5 min");
+    expect(result.label).toBe("Last seen 5 min ago");
   });
 
   it("shows hours for very old readings", () => {
     const result = telemetryLiveness("2026-06-01T10:00:00.000Z", now); // 2h ago
     expect(result.state).toBe("stale");
-    expect(result.label).toBe("Zuletzt vor 2 Std");
+    expect(result.label).toBe("Last seen 2 h ago");
   });
 
   it("never reports negative ages for clock skew", () => {

@@ -10,7 +10,7 @@ describe("composeWhyLine", () => {
         reason: "x",
         source: "lastfm",
       }),
-    ).toContain("Stau aufgelöst");
+    ).toContain("Jam cleared");
     expect(
       composeWhyLine({
         lens: "moment:border_crossing",
@@ -25,7 +25,7 @@ describe("composeWhyLine", () => {
         reason: "Artist boost from music wish: mehr X",
         source: "music-wish",
       }),
-    ).toContain("Wunsch");
+    ).toContain("wish");
     expect(
       composeWhyLine({
         lens: "lastfm-similar:Bonobo",
@@ -39,7 +39,7 @@ describe("composeWhyLine", () => {
         reason: "fits the interlude",
         source: "gemini",
       }),
-    ).toContain("Deep Cut");
+    ).toContain("Deep cut");
     expect(composeWhyLine(undefined)).toBeUndefined();
     expect(
       composeWhyLine({
@@ -47,7 +47,7 @@ describe("composeWhyLine", () => {
         reason: "x",
         source: "spotify-fresh",
       }),
-    ).toContain("Frisch erschienen");
+    ).toContain("Fresh release");
     // moment still wins over a fresh track
     expect(
       composeWhyLine({
@@ -55,6 +55,6 @@ describe("composeWhyLine", () => {
         reason: "x",
         source: "spotify-fresh",
       }),
-    ).toContain("Stau aufgelöst");
+    ).toContain("Jam cleared");
   });
 });
